@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.1.0] - 2026-03-07
 
-Initial beta release. One plugin, 9 domains, 117 actions.
+Initial beta release. One plugin, 9 domains, 119 actions.
 
 ### Added
 
@@ -20,15 +20,22 @@ Initial beta release. One plugin, 9 domains, 117 actions.
 - **MonolithAnimation** — 23 actions: montage sections, blend space samples, ABP graph reading, notify editing, bone tracks, skeleton info
 - **MonolithNiagara** — 39 actions: system/emitter management, module stack operations, parameters, renderers, batch execute, declarative system builder
 - **MonolithNiagara** — 6 reimplemented NiagaraEditor helpers (Epic APIs not exported)
-- **MonolithEditor** — 11 actions: Live Coding build triggers, log ring buffer (10K entries), crash context
+- **MonolithEditor** — 13 actions: Live Coding build triggers, compile output capture, log ring buffer (10K entries), crash context
 - **MonolithConfig** — 6 actions: INI resolution, explain (multi-layer), diff from default, search, section read
 - **MonolithIndex** — SQLite FTS5 project indexer with 4 indexers (Blueprint, Material, Generic, Dependency)
 - **MonolithIndex** — 5 actions: full-text search, reference tracing, type filtering, stats, asset deep inspection
 - **MonolithSource** — Python tree-sitter engine source indexer (C++ and shader parsing)
 - **MonolithSource** — 10 actions: source reading, call graphs, class hierarchy, symbol context, module info
-- **8 Claude Code skills** — Domain-specific workflow guides for animation, blueprints, C++, debugging, materials, Niagara, performance, project search
+- **9 Claude Code skills** — Domain-specific workflow guides for animation, blueprints, build decisions, C++, debugging, materials, Niagara, performance, project search
 - **Templates** — `.mcp.json.example` and `CLAUDE.md.example` for quick project setup
 - All 9 modules compiling clean on UE 5.7
+- **MonolithEditor** — `get_compile_output` action for Live Coding compile result capture with time-windowed error filtering
+- **MonolithEditor** — Auto hot-swap on editor exit (stages update, swaps on close)
+- **MonolithEditor** — Re-index buttons in Project Settings UI
+- **MonolithEditor** — Improved Live Coding integration with compile output capture, time-windowed errors, category filtering
+- **unreal-build skill** — Smart build decision-making guide (Live Coding vs full rebuild)
+- **Logging** — 80% reduction in Log-level noise across all modules (kept Warnings/Errors, demoted routine logs to Verbose)
+- **README** — Complete rewrite with Installation for Dummies walkthrough
 
 ### Fixed
 
