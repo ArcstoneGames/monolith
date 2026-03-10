@@ -18,7 +18,7 @@ It works with **Claude Code**, **Cursor**, or any MCP-compatible client. If your
 
 ## Why Monolith?
 
-Most MCP integrations register every action as a separate tool, which floods the AI's context window with tool descriptions. Monolith uses a **namespace dispatch pattern** instead: each domain exposes a single `{namespace}.query(action, params)` tool, and a central `monolith.discover()` call lists what's available. This keeps the tool list small (around a dozen entries) while still exposing over a hundred actions across nine domains.
+Most MCP integrations register every action as a separate tool, which floods the AI's context window with tool descriptions. Monolith uses a **namespace dispatch pattern** instead: each domain exposes a single `{namespace}_query(action, params)` tool, and a central `monolith_discover()` call lists what's available. This keeps the tool list small (around a dozen entries) while still exposing over a hundred actions across nine domains.
 
 ## Features
 
@@ -143,7 +143,7 @@ If you see `Monolith MCP server listening on port 9316`, you're good.
 2. Claude Code auto-detects `.mcp.json` and connects to Monolith
 3. Verify it works by asking: *"What Monolith tools do you have?"*
 
-Your AI should list the Monolith namespace tools (blueprint.query, material.query, etc.).
+Your AI should list the Monolith namespace tools (`blueprint_query`, `material_query`, etc.).
 
 ### Step 5: (Optional) Engine Source Index
 
@@ -152,7 +152,7 @@ If you want your AI to look up Unreal Engine C++ APIs, function signatures, call
 1. Install **Python 3.10+**
 2. Run the source indexer script (see `Source/MonolithSource/` for details)
 3. This builds a local SQLite database of the entire UE source tree
-4. Once indexed, `source.query` actions become available
+4. Once indexed, `source_query` actions become available
 
 ### Verify Everything Works
 
@@ -182,8 +182,8 @@ cp -r Plugins/Monolith/Skills/* ~/.claude/skills/
 Monolith.uplugin
   MonolithCore          — HTTP server, tool registry, discovery, auto-updater (4 actions)
   MonolithBlueprint     — Blueprint graph reading (6 actions)
-  MonolithMaterial      — Material inspection + graph editing (14 actions)
-  MonolithAnimation     — Animation sequences, montages, ABPs (23 actions)
+  MonolithMaterial      — Material inspection + graph editing + CRUD (25 actions)
+  MonolithAnimation     — Animation sequences, montages, ABPs, PoseSearch (67 actions)
   MonolithNiagara       — Niagara particle systems (41 actions)
   MonolithEditor        — Build triggers, log capture, compile output, crash context (13 actions)
   MonolithConfig        — Config/INI resolution and search (6 actions)
@@ -191,7 +191,7 @@ Monolith.uplugin
   MonolithSource        — Engine source + API lookup (10 actions)
 ```
 
-**122 actions total across 9 modules, exposed through ~14 namespace tools.**
+**177 actions total across 9 modules, exposed through ~14 namespace tools.**
 
 ### Tool Reference
 
@@ -201,14 +201,14 @@ Monolith.uplugin
 | `monolith` | `monolith_status` | — | Server health, version, index status |
 | `monolith` | `monolith_reindex` | — | Trigger full project re-index |
 | `monolith` | `monolith_update` | — | Check or install updates |
-| `blueprint` | `blueprint.query` | 6 | Graph topology, variables, execution flow, node search, graph summary |
-| `material` | `material.query` | 14 | Inspection, editing, graph building, previews, validation |
-| `animation` | `animation.query` | 23 | Montages, blend spaces, ABPs, skeletons, bone tracks |
-| `niagara` | `niagara.query` | 41 | Systems, emitters, modules, parameters, renderers, HLSL |
-| `editor` | `editor.query` | 13 | Build triggers, error logs, compile output, crash context |
-| `config` | `config.query` | 6 | INI resolution, explain, diff, search |
-| `project` | `project.query` | 5 | Deep project search — FTS5 across all indexed assets |
-| `source` | `source.query` | 10 | Engine source lookup, call graphs, class hierarchy |
+| `blueprint` | `blueprint_query` | 6 | Graph topology, variables, execution flow, node search, graph summary |
+| `material` | `material_query` | 25 | Inspection, editing, graph building, previews, validation, CRUD |
+| `animation` | `animation_query` | 67 | Montages, blend spaces, ABPs, skeletons, bone tracks, PoseSearch |
+| `niagara` | `niagara_query` | 41 | Systems, emitters, modules, parameters, renderers, HLSL |
+| `editor` | `editor_query` | 13 | Build triggers, error logs, compile output, crash context |
+| `config` | `config_query` | 6 | INI resolution, explain, diff, search |
+| `project` | `project_query` | 5 | Deep project search — FTS5 across all indexed assets |
+| `source` | `source_query` | 10 | Engine source lookup, call graphs, class hierarchy |
 
 ---
 

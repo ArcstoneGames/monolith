@@ -1,6 +1,6 @@
 # Monolith — TODO
 
-Last updated: 2026-03-09
+Last updated: 2026-03-10
 
 ---
 
@@ -42,6 +42,20 @@ None! All moderate bugs resolved.
 ### Platform
 
 - [ ] **Mac/Linux support** — DEFERRED (Windows-only project). All build-related actions are `#if PLATFORM_WINDOWS` guarded. Live Coding is Windows-only. Update system is Windows-only.
+
+### Animation Module — Wishlist
+
+Priority features identified for future waves:
+
+- [x] **Wave 1 — Read actions (EASY, ~8 actions):** DONE (2026-03-10)
+- [x] **Wave 2 — Notify CRUD (EASY, ~4 actions):** DONE (2026-03-10)
+- [x] **Wave 3 — Curve CRUD (EASY, ~5 actions):** DONE (2026-03-10)
+- [x] **Wave 4 — Skeleton sockets (EASY, ~4 actions):** DONE (2026-03-10) — expanded to 6 actions (added set_blend_space_axis, set_root_motion_settings)
+- [x] **Wave 5 — Creation + editing (MODERATE, ~6 actions):** DONE (2026-03-10)
+- [x] **Wave 6 — PoseSearch/Motion Matching (MODERATE, ~5 actions):** DONE (2026-03-10)
+- [x] **Wave 7 — Anim Modifiers + Composites (MODERATE, ~5 actions):** DONE (2026-03-10)
+- [ ] **Wave 8 — IKRig + Control Rig (HARD, ~6 actions):** `get_ikrig_info`, `add_ik_solver`, `get_retargeter_info`, `get_control_rig_info` — requires IKRig/ControlRig module dependencies
+- [ ] **Deferred — ABP write ops (HARD):** State machine structural writes (add state/transition) require Blueprint graph mutation, high complexity
 
 ---
 
@@ -151,7 +165,7 @@ None! All moderate bugs resolved.
 - [x] Material `get_thumbnail` now accepts `save_to_file` param (2026-03-09)
 - [x] Niagara `get_compiled_gpu_hlsl` auto-compiles system if HLSL not available (2026-03-09)
 - [x] Niagara `User.` prefix stripped in get_parameter_value, trace_parameter_binding, remove_user_parameter, set_parameter_default (2026-03-09)
-- [x] Per-action param schemas in `monolith.discover()` output — all 122 actions now have param documentation (2026-03-09)
+- [x] Per-action param schemas in `monolith_discover()` output — all 122 actions now have param documentation (2026-03-09)
 - [x] Niagara `get_module_inputs` — types now use `PinToTypeDefinition` instead of default Vector4f (2026-03-09)
 - [x] Niagara `get_ordered_modules` — usage filter now works with shorthands ("spawn", "update"), returns error on invalid values, returns all stages when omitted (2026-03-09)
 - [x] Niagara `get_renderer_bindings` — clean JSON output (name/bound_to/type) instead of raw UE struct dumps (2026-03-09)
@@ -160,3 +174,23 @@ None! All moderate bugs resolved.
 - [x] Material `validate_material` — seeds BFS from `UMaterialExpressionCustomOutput` subclasses + `UMaterialExpressionMaterialAttributeLayers`, added MP_MaterialAttributes + 6 missing properties. 0 false positives on standard materials (2026-03-09)
 - [x] Blueprint `get_execution_flow` — two-pass FindEntryNode: Pass 1 prefers events/functions, Pass 2 fuzzy fallback skips comments (2026-03-09)
 - [x] Blueprint `get_graph_summary` all-graphs mode — returns all graphs when graph_name empty, single graph when specified (2026-03-09)
+- [x] **CRITICAL: Hot-swap updater deletes Saved/** — swap script moved entire plugin dir to backup, then only preserved .git/.github. EngineSource.db (1.8GB) and ProjectIndex.db were destroyed on cleanup. Fixed: both static .bat script and C++ template (Windows + Mac/Linux) now preserve Saved/ alongside .git (2026-03-10)
+- [x] Material `build_material_graph` class lookup — `FindObject<UClass>(nullptr, ClassName)` always returned null. Changed to `FindFirstObject<UClass>(ClassName, NativeFirst)` with U-prefix fallback. Short names like "Constant", "VectorParameter" now resolve correctly (2026-03-10)
+- [x] Material `disconnect_expression` missing material outputs — `disconnect_outputs=true` only iterated other expressions' inputs, never checked material output properties. Added `GetExpressionInputForProperty()` loop over `MaterialOutputEntries` (2026-03-10)
+- [x] NEW: Material `create_material` — creates UMaterial asset at path with Opaque/DefaultLit/Surface defaults (2026-03-10)
+- [x] NEW: Material `create_material_instance` — creates UMaterialInstanceConstant from parent material with parameter overrides (2026-03-10)
+- [x] NEW: Material `set_material_property` — sets material properties (blend_mode, shading_model, etc.) via UMaterialEditingLibrary::SetMaterialUsage (2026-03-10)
+- [x] NEW: Material `delete_expression` — deletes expression node by name from material graph (2026-03-10)
+- [x] NEW: Material `get_material_parameters` — returns scalar/vector/texture/static_switch parameter arrays with values, works on UMaterial and UMaterialInstanceConstant (2026-03-10)
+- [x] NEW: Material `set_instance_parameter` — sets scalar/vector/texture/static_switch parameters on MIC (2026-03-10)
+- [x] NEW: Material `recompile_material` — forces material recompile via UMaterialEditingLibrary::RecompileMaterial (2026-03-10)
+- [x] NEW: Material `duplicate_material` — duplicates material asset to new path via UEditorAssetLibrary::DuplicateAsset (2026-03-10)
+- [x] NEW: Material `get_compilation_stats` — returns sampler count, texture estimates, UV scalars, blend mode, expression count. API corrected for UE 5.7 FMaterialResource (2026-03-10)
+- [x] NEW: Material `set_expression_property` — sets properties on expression nodes (e.g., DefaultValue on scalar param) (2026-03-10)
+- [x] NEW: Material `connect_expressions` — wires expression outputs to expression inputs or material property inputs. Supports expr-to-expr and expr-to-material-property (2026-03-10)
+- [x] **CRASH: `add_virtual_bone` no bone validation** — FIXED (2026-03-10). Added `FReferenceSkeleton::FindBoneIndex()` validation for both source and target bones before calling `AddNewVirtualBone()`. Previously created bogus virtual bones with non-existent bones, causing array OOB crash on skeleton access.
+- [x] **`set_notify_time` / `set_notify_duration` reject AnimMontage** — FIXED (2026-03-10). Changed `LoadAssetByPath<UAnimSequence>` to `LoadAssetByPath<UAnimSequenceBase>` so montages and composites are accepted. Also made `set_notify_duration` error message include `(total: N)` to match `set_notify_time`.
+- [x] **`remove_virtual_bones` false success for non-existent bones** — FIXED (2026-03-10). Now validates each bone name against actual virtual bones before removal. Returns `not_found` array and errors if all names are invalid.
+- [x] **`delete_montage_section` allows deleting last section** — FIXED (2026-03-10). Added guard: if montage has only 1 section remaining, returns error "Cannot delete the last remaining montage section".
+- [x] **`add_blendspace_sample` generic error on skeleton mismatch** — FIXED (2026-03-10). Added skeleton comparison before adding sample, returns descriptive error naming both skeletons when they don't match.
+- [x] **Animation Waves 1-7: 39 new actions** — IMPLEMENTED (2026-03-10). Total animation module: 62 actions + 5 PoseSearch = 67. Waves: 8 read actions, 4 notify CRUD, 5 curve CRUD, 6 skeleton+blendspace, 6 creation+montage, 5 PoseSearch, 5 modifiers+composites. Build errors fixed: BlendParameters private, GetTargetSkeleton removed, UMirrorDataTable forward-decl, GetBoneAnimationTracks deprecated, OpenBracket FText.

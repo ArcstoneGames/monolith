@@ -309,7 +309,19 @@ TSharedPtr<FJsonObject> FMonolithHttpServer::ProcessJsonRpcRequest(const TShared
 TSharedPtr<FJsonObject> FMonolithHttpServer::HandleInitialize(const TSharedPtr<FJsonValue>& Id, const TSharedPtr<FJsonObject>& Params)
 {
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-	Result->SetStringField(TEXT("protocolVersion"), TEXT("2025-03-26"));
+
+	// Protocol version negotiation: echo the client's requested version if we
+	// support it, otherwise fall back to the latest we support.
+	FString ClientVersion;
+	if (Params.IsValid() && Params->TryGetStringField(TEXT("protocolVersion"), ClientVersion)
+		&& (ClientVersion == TEXT("2024-11-05") || ClientVersion == TEXT("2025-03-26")))
+	{
+		Result->SetStringField(TEXT("protocolVersion"), ClientVersion);
+	}
+	else
+	{
+		Result->SetStringField(TEXT("protocolVersion"), TEXT("2025-03-26"));
+	}
 
 	// Server info
 	TSharedPtr<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
@@ -344,7 +356,7 @@ TSharedPtr<FJsonObject> FMonolithHttpServer::HandleToolsList(const TSharedPtr<FJ
 		if (Actions.Num() == 0) continue;
 
 		// Build the tool entry for this namespace
-		// Format: "namespace.query" with action as a parameter
+		// Format: "namespace_query" with action as a parameter
 		TSharedPtr<FJsonObject> Tool = MakeShared<FJsonObject>();
 
 		if (Namespace == TEXT("monolith"))
@@ -374,8 +386,9 @@ TSharedPtr<FJsonObject> FMonolithHttpServer::HandleToolsList(const TSharedPtr<FJ
 		}
 		else
 		{
-			// Domain tools use the dispatch pattern: namespace.query
-			FString ToolName = FString::Printf(TEXT("%s.query"), *Namespace);
+			// Domain tools use the dispatch pattern: namespace_query (underscore, not dot)
+			// Dots in tool names break Claude Code's mcp__server__tool mapping.
+			FString ToolName = FString::Printf(TEXT("%s_query"), *Namespace);
 			Tool->SetStringField(TEXT("name"), ToolName);
 
 			// Build description with action list
@@ -461,10 +474,10 @@ TSharedPtr<FJsonObject> FMonolithHttpServer::HandleToolsCall(const TSharedPtr<FJ
 		Namespace = TEXT("monolith");
 		Action = ToolName.Mid(9);
 	}
-	else if (ToolName.EndsWith(TEXT(".query")))
+	else if (ToolName.EndsWith(TEXT("_query")) || ToolName.EndsWith(TEXT(".query")))
 	{
-		// Domain tool: blueprint.query -> namespace="blueprint"
-		Namespace = ToolName.Left(ToolName.Len() - 6); // strip ".query"
+		// Domain tool: blueprint_query (or legacy blueprint.query) -> namespace="blueprint"
+		Namespace = ToolName.Left(ToolName.Len() - 6); // strip "_query" or ".query"
 
 		if (!Arguments->TryGetStringField(TEXT("action"), Action))
 		{

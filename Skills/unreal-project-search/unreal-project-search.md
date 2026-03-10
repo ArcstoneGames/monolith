@@ -5,12 +5,12 @@ description: Use when searching for assets, references, or dependencies across a
 
 # Unreal Project Search Workflows
 
-You have access to **Monolith** with a deep project index via `project.query()`.
+You have access to **Monolith** with a deep project index via `project_query()`.
 
 ## Discovery
 
 ```
-monolith.discover({ namespace: "project" })
+monolith_discover({ namespace: "project" })
 ```
 
 ## Asset Path Conventions
@@ -52,42 +52,42 @@ The `search` action uses SQLite FTS5 under the hood. Key syntax:
 
 ### Find any asset by name
 ```
-project.query({ action: "search", params: { query: "BP_Player*" } })
+project_query({ action: "search", params: { query: "BP_Player*" } })
 ```
 
 ### Find all Blueprints in the project
 ```
-project.query({ action: "find_by_type", params: { asset_type: "Blueprint" } })
+project_query({ action: "find_by_type", params: { asset_type: "Blueprint" } })
 ```
 
 ### Find all assets referencing a material
 ```
-project.query({ action: "find_references", params: { asset_path: "/Game/Materials/M_Skin" } })
+project_query({ action: "find_references", params: { asset_path: "/Game/Materials/M_Skin" } })
 ```
 
 ### Find references to a plugin asset
 ```
-project.query({ action: "find_references", params: { asset_path: "/CarnageFX/Materials/M_Blood" } })
+project_query({ action: "find_references", params: { asset_path: "/CarnageFX/Materials/M_Blood" } })
 ```
 
 ### Get detailed metadata for an asset
 ```
-project.query({ action: "get_asset_details", params: { asset_path: "/Game/Blueprints/BP_Player" } })
+project_query({ action: "get_asset_details", params: { asset_path: "/Game/Blueprints/BP_Player" } })
 ```
 
 ### Check index health
 ```
-project.query({ action: "get_stats", params: {} })
+project_query({ action: "get_stats", params: {} })
 ```
 
 ### Find all Niagara systems
 ```
-project.query({ action: "find_by_type", params: { asset_type: "NiagaraSystem" } })
+project_query({ action: "find_by_type", params: { asset_type: "NiagaraSystem" } })
 ```
 
 ### Find assets by variable or parameter name
 ```
-project.query({ action: "search", params: { query: "Health" } })
+project_query({ action: "search", params: { query: "Health" } })
 ```
 
 ## Supported Asset Types
@@ -102,9 +102,9 @@ The index covers these types for `find_by_type`:
 
 ## Tips
 
-- The index is built on first launch and auto-updates — use `monolith.reindex()` to force rebuild
+- The index is built on first launch and auto-updates — use `monolith_reindex()` to force rebuild
 - FTS5 search covers asset names, node names, variable names, parameter names, and comments
 - Use `find_references` to understand dependency chains before deleting or renaming assets
-- Combine with domain-specific tools: search first, then inspect with `blueprint.query`, `material.query`, etc.
-- `get_stats` shows last index time — if stale, trigger `monolith.reindex()`
-- Call `monolith.discover('namespace')` to see required/optional params for every action
+- Combine with domain-specific tools: search first, then inspect with `blueprint_query`, `material_query`, etc.
+- `get_stats` shows last index time — if stale, trigger `monolith_reindex()`
+- Call `monolith_discover('namespace')` to see required/optional params for every action

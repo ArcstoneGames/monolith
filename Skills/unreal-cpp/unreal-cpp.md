@@ -5,13 +5,13 @@ description: Use when writing or debugging Unreal Engine C++ code via Monolith M
 
 # Unreal C++ Development Workflows
 
-You have access to **Monolith** with 10 source actions via `source.query()` and 6 config actions via `config.query()`.
+You have access to **Monolith** with 10 source actions via `source_query()` and 6 config actions via `config_query()`.
 
 ## Discovery
 
 ```
-monolith.discover({ namespace: "source" })
-monolith.discover({ namespace: "config" })
+monolith_discover({ namespace: "source" })
+monolith_discover({ namespace: "config" })
 ```
 
 ## Source Actions (10)
@@ -39,34 +39,34 @@ monolith.discover({ namespace: "config" })
 
 ### Find and read an API
 ```
-source.query({ action: "search_source", params: { query: "ApplyDamage" } })
-source.query({ action: "read_source", params: { symbol: "UGameplayStatics::ApplyDamage" } })
+source_query({ action: "search_source", params: { query: "ApplyDamage" } })
+source_query({ action: "read_source", params: { symbol: "UGameplayStatics::ApplyDamage" } })
 ```
 
 ### Get symbol context (definition + surrounding code)
 ```
-source.query({ action: "get_symbol_context", params: { symbol: "UCharacterMovementComponent::PhysWalking" } })
+source_query({ action: "get_symbol_context", params: { symbol: "UCharacterMovementComponent::PhysWalking" } })
 ```
 
 ### Understand how Epic uses an API
 ```
-source.query({ action: "find_callers", params: { symbol: "UPrimitiveComponent::SetCollisionEnabled" } })
+source_query({ action: "find_callers", params: { symbol: "UPrimitiveComponent::SetCollisionEnabled" } })
 ```
 
 ### Explore a class hierarchy
 ```
-source.query({ action: "get_class_hierarchy", params: { symbol: "ACharacter" } })
+source_query({ action: "get_class_hierarchy", params: { symbol: "ACharacter" } })
 ```
 
 ### Read engine implementation details
 ```
-source.query({ action: "read_source", params: { symbol: "UCharacterMovementComponent::PhysWalking" } })
+source_query({ action: "read_source", params: { symbol: "UCharacterMovementComponent::PhysWalking" } })
 ```
 
 ### Resolve config/CVar values
 ```
-config.query({ action: "resolve_setting", params: { file: "DefaultEngine", section: "/Script/Engine.RendererSettings", key: "r.Lumen.TraceMeshSDFs" } })
-config.query({ action: "explain_setting", params: { setting: "r.DefaultFeature.AntiAliasing" } })
+config_query({ action: "resolve_setting", params: { file: "DefaultEngine", section: "/Script/Engine.RendererSettings", key: "r.Lumen.TraceMeshSDFs" } })
+config_query({ action: "explain_setting", params: { setting: "r.DefaultFeature.AntiAliasing" } })
 ```
 
 ## Build.cs Gotchas
@@ -76,8 +76,8 @@ Common linker errors and their fixes:
 | Error | Fix |
 |-------|-----|
 | `LNK2019` unresolved external for `UDeveloperSettings` | Add `"DeveloperSettings"` to Build.cs — it's a separate module from `Engine` |
-| `LNK2019` for any UE type | Check module with `source.query("get_module_info", ...)` and add to Build.cs |
-| Missing `#include` | Use `source.query("search_source", ...)` to find the correct header — never guess include paths |
+| `LNK2019` for any UE type | Check module with `source_query("get_module_info", ...)` and add to Build.cs |
+| Missing `#include` | Use `source_query("search_source", ...)` to find the correct header — never guess include paths |
 | Template instantiation errors | Check if the type needs explicit export (`_API` macro) |
 
 ## UE 5.7 API Notes
@@ -88,11 +88,11 @@ Common linker errors and their fixes:
 
 ## Tips
 
-- **Never guess** `#include` paths or function signatures — always verify with `source.query`
+- **Never guess** `#include` paths or function signatures — always verify with `source_query`
 - The search action is `search_source` (not `search`)
 - The source index covers engine Runtime, Editor, Developer modules + plugins + shaders (1M+ symbols)
 - Use `find_callers` to learn idiomatic usage patterns from Epic's own code
 - Use `get_symbol_context` for quick definition lookup without reading the full source
-- Combine `source.query` (engine) with project-level search for full picture
-- Use `config.query("explain_setting")` before changing any unfamiliar CVar
+- Combine `source_query` (engine) with project-level search for full picture
+- Use `config_query("explain_setting")` before changing any unfamiliar CVar
 - Non-existent actions: `get_include_path`, `get_function_signature`, `get_deprecation_warnings` — these do NOT exist

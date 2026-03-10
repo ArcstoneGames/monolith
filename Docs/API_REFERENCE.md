@@ -1,6 +1,6 @@
 # Monolith API Reference
 
-**Total Actions: 122** across 9 namespaces
+**Total Actions: 177** across 9 namespaces
 
 > Auto-generated from action registration code. Each action is called via HTTP POST to `http://localhost:<port>` with JSON body `{ "namespace": "<ns>", "action": "<action>", "params": { ... } }`.
 
@@ -12,8 +12,8 @@
 |-----------|---------|-------------|
 | [monolith](#monolith) | 4 | Core server tools (discover, status, update, reindex) |
 | [blueprint](#blueprint) | 6 | Blueprint graph introspection |
-| [material](#material) | 14 | Material graph editing and inspection |
-| [animation](#animation) | 23 | Animation montages, blend spaces, state machines, skeletons |
+| [material](#material) | 25 | Material graph editing, inspection, and CRUD |
+| [animation](#animation) | 67 | Animation curves, bone tracks, sync markers, root motion, compression, blend spaces, ABPs, montages, skeletons, PoseSearch |
 | [niagara](#niagara) | 41 | Niagara VFX system editing (emitters, modules, params, renderers) |
 | [editor](#editor) | 13 | Live Coding builds, compile output capture, and editor log capture |
 | [config](#config) | 6 | INI config file inspection and search |
@@ -26,11 +26,11 @@
 
 Core server management and introspection tools.
 
-### `monolith.discover`
+### `monolith_discover`
 
 List available tool namespaces and their actions. Pass namespace to filter.
 
-> **New in Wave 2:** `discover` now returns per-action param schemas for all 122 actions, so callers can see required/optional params without consulting docs.
+> **New in Wave 2:** `discover` now returns per-action param schemas for all 177 actions, so callers can see required/optional params without consulting docs.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -38,7 +38,7 @@ List available tool namespaces and their actions. Pass namespace to filter.
 
 ---
 
-### `monolith.status`
+### `monolith_status`
 
 Get Monolith server health: version, uptime, port, registered action count, module status.
 
@@ -56,7 +56,7 @@ Check for or install Monolith updates from GitHub Releases.
 
 ---
 
-### `monolith.reindex`
+### `monolith_reindex`
 
 Trigger a full project re-index of the Monolith project database.
 
@@ -308,71 +308,439 @@ Get Material Layer or Material Layer Blend info.
 
 ---
 
+### `material.create_material`
+
+Create a new UMaterial asset at the specified path.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path for the new material |
+| `blend_mode` | string | optional | Blend mode (Opaque, Masked, Translucent, etc.). Default: `"Opaque"` |
+| `shading_model` | string | optional | Shading model (DefaultLit, Unlit, etc.). Default: `"DefaultLit"` |
+| `material_domain` | string | optional | Material domain (Surface, DeferredDecal, etc.). Default: `"Surface"` |
+
+---
+
+### `material.create_material_instance`
+
+Create a UMaterialInstanceConstant from a parent material.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path for the new material instance |
+| `parent_material` | string | **required** | Package path of the parent material |
+| `parameters` | object | optional | Parameter overrides to set on creation |
+
+---
+
+### `material.set_material_property`
+
+Set material properties (blend_mode, shading_model, two_sided, etc.).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the material asset |
+| `property` | string | **required** | Property name to set |
+| `value` | any | **required** | Value to set |
+
+---
+
+### `material.delete_expression`
+
+Delete an expression node by name from a material graph.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the material asset |
+| `expression_name` | string | **required** | Name of the expression to delete |
+
+---
+
+### `material.get_material_parameters`
+
+List all parameter types (scalar, vector, texture, static switch) with current values. Works on both UMaterial and UMaterialInstanceConstant.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the material or material instance |
+
+---
+
+### `material.set_instance_parameter`
+
+Set a parameter value on a UMaterialInstanceConstant.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the material instance |
+| `parameter_name` | string | **required** | Name of the parameter |
+| `value` | any | **required** | Value to set |
+| `type` | string | **required** | Parameter type: `"scalar"`, `"vector"`, `"texture"`, `"static_switch"` |
+
+---
+
+### `material.recompile_material`
+
+Force a material recompile.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the material asset |
+
+---
+
+### `material.duplicate_material`
+
+Duplicate a material asset to a new path.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the source material |
+| `destination_path` | string | **required** | Package path for the duplicate |
+
+---
+
+### `material.get_compilation_stats`
+
+Get material compilation statistics: sampler count, texture estimates, UV scalars, blend mode, expression count.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the material asset |
+
+---
+
+### `material.set_expression_property`
+
+Set a property on an expression node (e.g., DefaultValue on a scalar parameter).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the material asset |
+| `expression_name` | string | **required** | Name of the expression node |
+| `property` | string | **required** | Property name to set |
+| `value` | any | **required** | Value to set |
+
+---
+
+### `material.connect_expressions`
+
+Wire an expression output to another expression input or a material property input.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the material asset |
+| `from` | string | **required** | Source: `"ExpressionName.OutputName"` |
+| `to` | string | **required** | Target: `"ExpressionName.InputName"` or `"Material.PropertyName"` |
+
+---
+
 ## animation
 
-Animation asset editing -- montages, blend spaces, state machines, notifies, bone tracks, and skeletons.
+Animation asset editing -- curves, bone tracks, sync markers, root motion, compression, blend spaces, ABPs, montages, notifies, skeletons, batch operations, and PoseSearch.
 
-### `animation.add_montage_section`
+### Curve Operations
 
-Add a section to an animation montage.
+#### `animation.get_curves`
+
+Get all curves in an animation sequence.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `asset_path` | string | **required** | Package path of the montage asset |
-| `section_name` | string | **required** | Name for the new section |
+| `asset_path` | string | **required** | Package path of the animation sequence |
+
+**Returns:** `curves` array with `name` and `type` for each curve.
+
+---
+
+#### `animation.add_curve`
+
+Add a curve to an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `curve_name` | string | **required** | Name for the new curve |
+| `curve_type` | string | optional | Curve type. Default: `"float"` |
+
+**Returns:** Added curve info (name, type).
+
+---
+
+#### `animation.remove_curve`
+
+Remove a curve from an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `curve_name` | string | **required** | Name of the curve to remove |
+
+**Returns:** Removed curve name.
+
+---
+
+#### `animation.set_curve_keys`
+
+Set keys on a curve in an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `curve_name` | string | **required** | Name of the curve |
+| `keys` | array | **required** | Array of key objects: `{ "time": float, "value": float }` |
+
+**Returns:** `key_count` — number of keys set.
+
+---
+
+#### `animation.get_curve_keys`
+
+Get all keys from a curve in an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `curve_name` | string | **required** | Name of the curve |
+
+**Returns:** `keys` array with `time` and `value` for each key.
+
+---
+
+#### `animation.rename_curve`
+
+Rename a curve in an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `old_name` | string | **required** | Current curve name |
+| `new_name` | string | **required** | New curve name |
+
+**Returns:** `old_name` and `new_name`.
+
+---
+
+#### `animation.get_curve_data`
+
+Get all curves with their keys and metadata from an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+
+**Returns:** `curves` array, each with `name`, `type`, and `keys` (array of `{ time, value }`).
+
+---
+
+### Bone Track Inspection
+
+#### `animation.get_bone_tracks`
+
+Get all bone tracks in an animation sequence with key counts.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+
+**Returns:** `tracks` array with `bone_name`, `num_pos_keys`, `num_rot_keys`, `num_scale_keys`.
+
+---
+
+#### `animation.get_bone_track_data`
+
+Get position, rotation, and scale key data for a specific bone track.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `bone_name` | string | **required** | Name of the bone |
+| `max_keys` | number | optional | Maximum number of keys to return per channel |
+
+**Returns:** `position_keys`, `rotation_keys`, `scale_keys` arrays with time and value data.
+
+---
+
+#### `animation.get_animation_statistics`
+
+Get animation sequence statistics.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+
+**Returns:** `compressed_size`, `num_curves`, `num_bone_tracks`, `duration`, `num_frames`, `frame_rate`, and other metadata.
+
+---
+
+### Sync Markers
+
+#### `animation.get_sync_markers`
+
+Get all sync markers in an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+
+**Returns:** `markers` array with `name` and `time`.
+
+---
+
+#### `animation.add_sync_marker`
+
+Add a sync marker to an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `marker_name` | string | **required** | Name for the sync marker |
+| `time` | number | **required** | Time position in seconds |
+
+**Returns:** Added marker info (name, time).
+
+---
+
+#### `animation.remove_sync_marker`
+
+Remove a sync marker from an animation sequence by name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `marker_name` | string | **required** | Name of the marker to remove |
+
+**Returns:** Removed marker name.
+
+---
+
+### Root Motion
+
+#### `animation.get_root_motion_info`
+
+Get root motion settings and accumulated totals for an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+
+**Returns:** `enable_root_motion`, `force_root_lock`, `root_motion_root_lock`, `total_translation` (vector), `total_rotation` (rotator).
+
+---
+
+#### `animation.extract_root_motion`
+
+Extract root motion translation and rotation over a time range.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
 | `start_time` | number | **required** | Start time in seconds |
+| `end_time` | number | **required** | End time in seconds |
+
+**Returns:** `translation` (vector) and `rotation` (rotator) for the specified range.
 
 ---
 
-### `animation.delete_montage_section`
+### Animation Compression
 
-Delete a section from an animation montage by index.
+#### `animation.get_compression_settings`
+
+Get compression codec information for an animation sequence.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `asset_path` | string | **required** | Package path of the montage asset |
-| `section_index` | number | **required** | Section index to delete |
+| `asset_path` | string | **required** | Package path of the animation sequence |
+
+**Returns:** `codec_name`, `codec_description`, `compression_scheme`.
 
 ---
 
-### `animation.set_section_next`
+#### `animation.apply_compression`
 
-Set the next section for a montage section.
+Apply compression to an animation sequence.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `asset_path` | string | **required** | Package path of the montage asset |
-| `section_name` | string | **required** | Source section name |
-| `next_section_name` | string | **required** | Target next section name |
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `codec_class` | string | optional | Codec class name to use. Default: engine default codec |
+
+**Returns:** `codec` used and `compressed_size`.
 
 ---
 
-### `animation.set_section_time`
+### BlendSpace Operations
 
-Set the start time of a montage section.
+#### `animation.get_blendspace_info`
+
+Get blend space axis info, dimensions, and sample count.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `asset_path` | string | **required** | Package path of the montage asset |
-| `section_name` | string | **required** | Section name |
-| `new_time` | number | **required** | New start time in seconds |
+| `asset_path` | string | **required** | Package path of the blend space asset |
+
+**Returns:** `axis_x` (name, min, max, grid_divisions), `axis_y`, `dimensions`, `sample_count`, `skeleton`.
 
 ---
 
-### `animation.add_blendspace_sample`
+#### `animation.add_blendspace_sample`
 
 Add a sample to a blend space.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `asset_path` | string | **required** | Package path of the blend space asset |
-| `anim_path` | string | **required** | Package path of the animation sequence |
+| `animation_path` | string | **required** | Package path of the animation sequence |
 | `x` | number | **required** | X-axis sample position |
 | `y` | number | **required** | Y-axis sample position |
 
+**Returns:** `index` and `sample_count`.
+
 ---
 
-### `animation.edit_blendspace_sample`
+#### `animation.remove_blendspace_sample`
+
+Remove a sample from a blend space by index.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the blend space asset |
+| `sample_index` | number | **required** | Index of the sample to remove |
+
+**Returns:** `removed_index` and `remaining_count`.
+
+---
+
+#### `animation.set_blendspace_axis`
+
+Set axis properties on a blend space.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the blend space asset |
+| `axis` | string | **required** | Axis to modify: `"X"` or `"Y"` |
+| `min` | number | optional | Minimum axis value |
+| `max` | number | optional | Maximum axis value |
+| `name` | string | optional | Axis display name |
+| `grid_divisions` | number | optional | Number of grid divisions |
+
+**Returns:** Updated axis info.
+
+---
+
+#### `animation.get_blendspace_samples`
+
+Get all samples in a blend space with their positions and animations.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the blend space asset |
+
+**Returns:** `samples` array with `index`, `animation`, `x`, `y`.
+
+---
+
+#### `animation.edit_blendspace_sample`
 
 Edit a blend space sample position and optionally its animation.
 
@@ -386,9 +754,9 @@ Edit a blend space sample position and optionally its animation.
 
 ---
 
-### `animation.delete_blendspace_sample`
+#### `animation.delete_blendspace_sample`
 
-Delete a sample from a blend space by index.
+Delete a sample from a blend space by index (legacy alias).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -397,7 +765,21 @@ Delete a sample from a blend space by index.
 
 ---
 
-### `animation.get_state_machines`
+### ABP Graph Reading
+
+#### `animation.get_anim_blueprint_info`
+
+Get animation blueprint overview: target skeleton, parent class, graph count, and variables.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the anim blueprint |
+
+**Returns:** `target_skeleton`, `parent_class`, `num_graphs`, `variables` array.
+
+---
+
+#### `animation.get_state_machines`
 
 Get all state machines in an animation blueprint.
 
@@ -405,9 +787,11 @@ Get all state machines in an animation blueprint.
 |-----------|------|----------|-------------|
 | `asset_path` | string | **required** | Package path of the anim blueprint |
 
+**Returns:** `machines` array with `name`, `num_states`, `num_transitions`.
+
 ---
 
-### `animation.get_state_info`
+#### `animation.get_state_info`
 
 Get detailed info about a state in a state machine.
 
@@ -417,20 +801,37 @@ Get detailed info about a state in a state machine.
 | `machine_name` | string | **required** | State machine name |
 | `state_name` | string | **required** | State name |
 
+**Returns:** State details including linked anim graph info.
+
 ---
 
-### `animation.get_transitions`
+#### `animation.get_transitions`
 
 Get all transitions in a state machine.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `asset_path` | string | **required** | Package path of the anim blueprint |
-| `machine_name` | string | **required** | State machine name |
+| `machine_name` | string | **required** | State machine name (empty string for ALL state machines) |
+
+**Returns:** `transitions` array with `from`, `to`, `from_type`, `to_type`, `priority`, `duration`.
 
 ---
 
-### `animation.get_blend_nodes`
+#### `animation.get_anim_graph_nodes`
+
+Get animation graph nodes with optional graph name filter.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the anim blueprint |
+| `graph_name` | string | optional | Filter to a specific graph by name |
+
+**Returns:** `nodes` array with `class`, `title`, `position`.
+
+---
+
+#### `animation.get_blend_nodes`
 
 Get blend nodes in an animation blueprint graph.
 
@@ -441,7 +842,7 @@ Get blend nodes in an animation blueprint graph.
 
 ---
 
-### `animation.get_linked_layers`
+#### `animation.get_linked_layers`
 
 Get linked animation layers in an animation blueprint.
 
@@ -451,7 +852,7 @@ Get linked animation layers in an animation blueprint.
 
 ---
 
-### `animation.get_graphs`
+#### `animation.get_graphs`
 
 Get all graphs in an animation blueprint.
 
@@ -461,7 +862,7 @@ Get all graphs in an animation blueprint.
 
 ---
 
-### `animation.get_nodes`
+#### `animation.get_nodes`
 
 Get animation nodes with optional class and graph filters.
 
@@ -473,7 +874,100 @@ Get animation nodes with optional class and graph filters.
 
 ---
 
-### `animation.set_notify_time`
+### Montage Operations
+
+#### `animation.get_montage_info`
+
+Get montage overview: sections, slots, blend settings, and sequence info.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the montage asset |
+
+**Returns:** `sections` array, `slots` array, `blend_in`, `blend_out`, sequence info.
+
+---
+
+#### `animation.add_montage_section`
+
+Add a section to an animation montage.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the montage asset |
+| `section_name` | string | **required** | Name for the new section |
+| `start_time` | number | **required** | Start time in seconds |
+
+**Returns:** Added section info.
+
+---
+
+#### `animation.delete_montage_section`
+
+Delete a section from an animation montage by name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the montage asset |
+| `section_name` | string | **required** | Name of the section to delete |
+
+**Returns:** Removed section name.
+
+---
+
+#### `animation.set_montage_section_link`
+
+Set the next section link for a montage section.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the montage asset |
+| `section_name` | string | **required** | Source section name |
+| `next_section` | string | **required** | Target next section name |
+
+**Returns:** Linked section names.
+
+---
+
+#### `animation.get_montage_slots`
+
+Get montage slot and section information.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the montage asset |
+
+**Returns:** `slots` array with `name` and `num_segments`, `sections` array.
+
+---
+
+#### `animation.set_section_next`
+
+Set the next section for a montage section (legacy).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the montage asset |
+| `section_name` | string | **required** | Source section name |
+| `next_section_name` | string | **required** | Target next section name |
+
+---
+
+#### `animation.set_section_time`
+
+Set the start time of a montage section (legacy).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the montage asset |
+| `section_name` | string | **required** | Section name |
+| `new_time` | number | **required** | New start time in seconds |
+
+---
+
+### Notify Editing
+
+#### `animation.set_notify_time`
 
 Set the trigger time of an animation notify.
 
@@ -485,7 +979,7 @@ Set the trigger time of an animation notify.
 
 ---
 
-### `animation.set_notify_duration`
+#### `animation.set_notify_duration`
 
 Set the duration of a state animation notify.
 
@@ -497,7 +991,9 @@ Set the duration of a state animation notify.
 
 ---
 
-### `animation.set_bone_track_keys`
+### Bone Track Editing
+
+#### `animation.set_bone_track_keys`
 
 Set position, rotation, and scale keys on a bone track.
 
@@ -511,7 +1007,7 @@ Set position, rotation, and scale keys on a bone track.
 
 ---
 
-### `animation.add_bone_track`
+#### `animation.add_bone_track`
 
 Add a bone track to an animation sequence.
 
@@ -522,7 +1018,7 @@ Add a bone track to an animation sequence.
 
 ---
 
-### `animation.remove_bone_track`
+#### `animation.remove_bone_track`
 
 Remove a bone track from an animation sequence.
 
@@ -534,7 +1030,21 @@ Remove a bone track from an animation sequence.
 
 ---
 
-### `animation.add_virtual_bone`
+### Skeleton Operations
+
+#### `animation.get_skeleton_info`
+
+Get skeleton bone hierarchy, virtual bones, and sockets.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the skeleton asset |
+
+**Returns:** `bone_count`, `bones` array (name, parent, depth), `virtual_bones`, `sockets`.
+
+---
+
+#### `animation.add_virtual_bone`
 
 Add a virtual bone to a skeleton.
 
@@ -543,10 +1053,13 @@ Add a virtual bone to a skeleton.
 | `asset_path` | string | **required** | Package path of the skeleton asset |
 | `source_bone` | string | **required** | Source bone name |
 | `target_bone` | string | **required** | Target bone name |
+| `name` | string | optional | Custom name for the virtual bone |
+
+**Returns:** Virtual bone name.
 
 ---
 
-### `animation.remove_virtual_bones`
+#### `animation.remove_virtual_bones`
 
 Remove virtual bones from a skeleton.
 
@@ -555,25 +1068,141 @@ Remove virtual bones from a skeleton.
 | `asset_path` | string | **required** | Package path of the skeleton asset |
 | `bone_names` | array | **required** | Array of virtual bone names to remove |
 
+**Returns:** Removed bone names list.
+
 ---
 
-### `animation.get_skeleton_info`
+#### `animation.get_socket_info`
 
-Get skeleton bone hierarchy and virtual bones.
+Get socket details from a skeleton.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `asset_path` | string | **required** | Package path of the skeleton asset |
+| `socket_name` | string | optional | Filter to a specific socket by name |
+
+**Returns:** `sockets` array with `name`, `bone`, `position`, `rotation`, `scale`.
 
 ---
 
-### `animation.get_skeletal_mesh_info`
+#### `animation.add_socket`
+
+Add a socket to a skeleton.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the skeleton asset |
+| `socket_name` | string | **required** | Name for the new socket |
+| `parent_bone` | string | **required** | Parent bone name |
+| `position` | object | optional | Socket position `{ "x", "y", "z" }` |
+| `rotation` | object | optional | Socket rotation `{ "pitch", "yaw", "roll" }` |
+| `scale` | object | optional | Socket scale `{ "x", "y", "z" }` |
+
+**Returns:** Socket info (name, bone, position, rotation, scale).
+
+---
+
+### Skeleton Mesh Info
+
+#### `animation.get_skeletal_mesh_info`
 
 Get skeletal mesh info including morph targets, sockets, LODs, and materials.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `asset_path` | string | **required** | Package path of the skeletal mesh asset |
+
+---
+
+### Batch & Modifiers
+
+#### `animation.batch_get_animation_info`
+
+Get basic info for multiple animation assets in a single call.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_paths` | array | **required** | Array of animation sequence package paths |
+
+**Returns:** `results` array (each with `path`, `length`, `frames`, `rate`), `failed` array.
+
+---
+
+#### `animation.run_animation_modifier`
+
+Apply an animation modifier class to an animation sequence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the animation sequence |
+| `modifier_class` | string | **required** | Class name of the animation modifier to apply |
+
+**Returns:** Modifier applied info.
+
+---
+
+### PoseSearch
+
+#### `animation.get_pose_search_schema`
+
+Get PoseSearch schema configuration, channels, and skeleton reference.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the PoseSearch schema asset |
+
+**Returns:** Schema config, `channels` array, `skeleton` reference.
+
+---
+
+#### `animation.get_pose_search_database`
+
+Get PoseSearch database sequences and schema reference.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the PoseSearch database asset |
+
+**Returns:** `sequences` array, `schema` reference.
+
+---
+
+#### `animation.add_database_sequence`
+
+Add an animation sequence to a PoseSearch database.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the PoseSearch database asset |
+| `anim_path` | string | **required** | Package path of the animation sequence to add |
+| `enabled` | bool | optional | Whether the sequence is enabled. Default: `true` |
+
+**Returns:** Added sequence info.
+
+---
+
+#### `animation.remove_database_sequence`
+
+Remove a sequence from a PoseSearch database by index.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the PoseSearch database asset |
+| `sequence_index` | number | **required** | Index of the sequence to remove |
+
+**Returns:** Removed sequence info.
+
+---
+
+#### `animation.get_database_stats`
+
+Get PoseSearch database statistics.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `asset_path` | string | **required** | Package path of the PoseSearch database asset |
+
+**Returns:** `pose_count`, `search_mode`, cost biases.
 
 ---
 

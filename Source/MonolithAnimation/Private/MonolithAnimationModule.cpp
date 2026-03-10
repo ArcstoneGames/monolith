@@ -1,6 +1,7 @@
 #include "MonolithAnimationModule.h"
 #include "MonolithJsonUtils.h"
 #include "MonolithAnimationActions.h"
+#include "MonolithPoseSearchActions.h"
 #include "MonolithToolRegistry.h"
 
 #define LOCTEXT_NAMESPACE "FMonolithAnimationModule"
@@ -8,7 +9,8 @@
 void FMonolithAnimationModule::StartupModule()
 {
 	FMonolithAnimationActions::RegisterActions(FMonolithToolRegistry::Get());
-	UE_LOG(LogMonolith, Verbose, TEXT("Monolith — Animation module loaded (23 actions)"));
+	FMonolithPoseSearchActions::RegisterActions(FMonolithToolRegistry::Get());
+	UE_LOG(LogMonolith, Verbose, TEXT("Monolith — Animation module loaded (63 actions)"));
 }
 
 void FMonolithAnimationModule::ShutdownModule()

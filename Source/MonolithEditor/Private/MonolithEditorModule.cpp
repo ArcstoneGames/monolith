@@ -25,7 +25,7 @@ void FMonolithEditorModule::StartupModule()
 		FOnGetDetailCustomizationInstance::CreateStatic(&FMonolithSettingsCustomization::MakeInstance)
 	);
 
-	UE_LOG(LogMonolith, Log, TEXT("Monolith — Editor module loaded (11 actions)"));
+	UE_LOG(LogMonolith, Log, TEXT("Monolith — Editor module loaded (13 actions)"));
 }
 
 void FMonolithEditorModule::ShutdownModule()

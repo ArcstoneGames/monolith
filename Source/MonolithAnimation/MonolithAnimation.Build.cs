@@ -22,7 +22,10 @@ public class MonolithAnimation : ModuleRules
 			"BlueprintGraph",
 			"AnimationBlueprintLibrary",
 			"Json",
-			"JsonUtilities"
+			"JsonUtilities",
+			"PoseSearch",
+			"EditorScriptingUtilities",
+			"AnimationModifiers"
 		});
 	}
 }

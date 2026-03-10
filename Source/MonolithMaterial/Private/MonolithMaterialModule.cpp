@@ -11,7 +11,7 @@ void FMonolithMaterialModule::StartupModule()
 	if (!GetDefault<UMonolithSettings>()->bEnableMaterial) return;
 
 	FMonolithMaterialActions::RegisterActions(FMonolithToolRegistry::Get());
-	UE_LOG(LogMonolith, Log, TEXT("Monolith — Material module loaded (14 actions)"));
+	UE_LOG(LogMonolith, Log, TEXT("Monolith — Material module loaded (25 actions)"));
 }
 
 void FMonolithMaterialModule::ShutdownModule()

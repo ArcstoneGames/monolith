@@ -5,13 +5,13 @@ description: Use when working with Unreal Engine Blueprints via Monolith MCP —
 
 # Unreal Blueprint Workflows
 
-You have access to **Monolith** with 6 Blueprint introspection actions via `blueprint.query()`.
+You have access to **Monolith** with 6 Blueprint introspection actions via `blueprint_query()`.
 
 ## Discovery
 
 Always discover available actions first:
 ```
-monolith.discover({ namespace: "blueprint" })
+monolith_discover({ namespace: "blueprint" })
 ```
 
 ## Key Parameter Names
@@ -45,24 +45,24 @@ All asset paths follow UE content browser format (no .uasset extension):
 
 ### Understand a Blueprint's structure
 ```
-blueprint.query({ action: "list_graphs", params: { asset_path: "/Game/Blueprints/BP_Enemy" } })
-blueprint.query({ action: "get_variables", params: { asset_path: "/Game/Blueprints/BP_Enemy" } })
+blueprint_query({ action: "list_graphs", params: { asset_path: "/Game/Blueprints/BP_Enemy" } })
+blueprint_query({ action: "get_variables", params: { asset_path: "/Game/Blueprints/BP_Enemy" } })
 ```
 
 ### Trace logic flow
 ```
-blueprint.query({ action: "get_execution_flow", params: { asset_path: "/Game/Blueprints/BP_Enemy", graph_name: "EventGraph" } })
+blueprint_query({ action: "get_execution_flow", params: { asset_path: "/Game/Blueprints/BP_Enemy", graph_name: "EventGraph" } })
 ```
 
 ### Find where a function is called
 ```
-blueprint.query({ action: "search_nodes", params: { asset_path: "/Game/Blueprints/BP_Enemy", query: "TakeDamage" } })
+blueprint_query({ action: "search_nodes", params: { asset_path: "/Game/Blueprints/BP_Enemy", query: "TakeDamage" } })
 ```
 
 ### Find Blueprints across the project
 Use the project index to locate BPs before inspecting them:
 ```
-project.query({ action: "search", params: { query: "BP_Enemy", type: "Blueprint" } })
+project_query({ action: "search", params: { query: "BP_Enemy", type: "Blueprint" } })
 ```
 
 ## Tips
@@ -73,4 +73,4 @@ project.query({ action: "search", params: { query: "BP_Enemy", type: "Blueprint"
 - **Pin connections** in `get_graph_data` show both execution (white) and data (colored) wires
 - **Execution flow** traces only follow white exec pins — data flow is shown in graph data
 - **Variables** include replication flags (`Replicated`, `RepNotify`) and `EditAnywhere`/`BlueprintReadOnly` specifiers — `get_variables` now returns real default values
-- For C++ parent class analysis, combine with `source.query("get_class_hierarchy", ...)`
+- For C++ parent class analysis, combine with `source_query("get_class_hierarchy", ...)`

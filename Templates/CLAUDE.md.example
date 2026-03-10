@@ -6,24 +6,24 @@ This project uses the **Monolith** plugin for Unreal Engine MCP integration.
 
 Monolith exposes ~14 namespace tools instead of 119 individual tools:
 
-- `monolith.discover(namespace?)` — List available actions (call this first)
-- `monolith.status()` — Health check, index status, version
-- `monolith.reindex()` — Trigger full project re-index
-- `blueprint.query(action, params)` — Blueprint graph inspection (5 actions)
-- `material.query(action, params)` — Material editing and creation (14 actions)
-- `animation.query(action, params)` — Animation asset workflows (23 actions)
-- `niagara.query(action, params)` — Niagara particle systems (39 actions)
-- `editor.query(action, params)` — Build, logs, compile output, crash context (13 actions)
-- `config.query(action, params)` — Config/INI resolution (6 actions)
-- `source.query(action, params)` — Engine source lookup (10 actions)
-- `project.query(action, params)` — Deep project index search (5 actions)
+- `monolith_discover(namespace?)` — List available actions (call this first)
+- `monolith_status()` — Health check, index status, version
+- `monolith_reindex()` — Trigger full project re-index
+- `blueprint_query(action, params)` — Blueprint graph inspection (5 actions)
+- `material_query(action, params)` — Material editing and creation (14 actions)
+- `animation_query(action, params)` — Animation asset workflows (23 actions)
+- `niagara_query(action, params)` — Niagara particle systems (39 actions)
+- `editor_query(action, params)` — Build, logs, compile output, crash context (13 actions)
+- `config_query(action, params)` — Config/INI resolution (6 actions)
+- `source_query(action, params)` — Engine source lookup (10 actions)
+- `project_query(action, params)` — Deep project index search (5 actions)
 
 ## Workflow
 
-1. Use `monolith.discover("namespace")` to see available actions before calling
-2. Use `project.query("search", {"query": "..."})` to find assets across the project
+1. Use `monolith_discover("namespace")` to see available actions before calling
+2. Use `project_query("search", {"query": "..."})` to find assets across the project
 3. Use domain-specific tools to inspect and modify assets
-4. Use `editor.query("get_build_errors")` after builds to diagnose issues
+4. Use `editor_query("get_build_errors")` after builds to diagnose issues
 
 ## Asset Path Conventions
 
@@ -35,7 +35,7 @@ All asset paths use `/Game/Path/To/Asset` format (no `.uasset` extension):
 ## Rules
 
 - Always discover available actions before guessing action names
-- The project index is pre-built — use `project.query` for broad searches
-- Engine source lookups via `source.query` work offline against the local index
-- Never guess `#include` paths or function signatures — use `source.query` to verify
-- After modifying C++, check build results with `editor.query("get_build_errors")`
+- The project index is pre-built — use `project_query` for broad searches
+- Engine source lookups via `source_query` work offline against the local index
+- Never guess `#include` paths or function signatures — use `source_query` to verify
+- After modifying C++, check build results with `editor_query("get_build_errors")`

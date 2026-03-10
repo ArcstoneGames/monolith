@@ -1,6 +1,6 @@
 # Monolith — Testing Reference
 
-Last updated: 2026-03-09
+Last updated: 2026-03-10
 
 ---
 
@@ -46,7 +46,7 @@ def test_action(namespace, action, params=None):
         tool_name = f"monolith_{action}"
         args = params or {}
     else:
-        tool_name = f"{namespace}.query"
+        tool_name = f"{namespace}_query"
         args = {"action": action}
         if params:
             args["params"] = params
@@ -83,9 +83,9 @@ def test_action(namespace, action, params=None):
 
 | Action | Status | Notes |
 |--------|--------|-------|
-| `discover` | PASS | Returned all 9 namespaces, 122 actions. Now includes per-action param schemas |
+| `discover` | PASS | Returned all 9 namespaces, 177 actions. Now includes per-action param schemas |
 | `discover(namespace)` | PASS | Tested all 8 namespaces, correct action counts |
-| `status` | PASS | Returns version 0.5.0, port 9316, 122 actions, engine 5.7, project Leviathan |
+| `status` | PASS | Returns version 0.5.0, port 9316, 177 actions, engine 5.7, project Leviathan |
 | `update(check)` | PASS | Detected v0.5.0 from GitHub, showed update dialog with release notes |
 | `update(install)` | PASS | Downloaded zip, staged, swapped on exit. Retry loop handled Defender file locks. Windows tested. |
 | `reindex` | PASS | Triggers successfully |
@@ -108,29 +108,40 @@ def test_action(namespace, action, params=None):
 | `get_all_expressions` | PASS | 8.7K chars, 43 expressions with class, position, params |
 | `get_expression_details` | PASS | Full property dump with inputs, outputs, UE properties |
 | `get_full_connection_graph` | PASS | 10K chars, 60 connections. material_outputs empty on layer blends |
-| `disconnect_expression` | UNTESTED | Test input disconnect vs output disconnect |
-| `build_material_graph` | UNTESTED | Test full PBR setup from JSON spec |
-| `begin_transaction` | UNTESTED | Test undo after transaction |
-| `end_transaction` | UNTESTED | Test without begin (should error gracefully) |
+| `disconnect_expression` | PASS | BUG FIXED (2026-03-10): now disconnects material output pins (expr→material property), not just expr→expr. Tested on Metallic output |
+| `build_material_graph` | PASS | BUG FIXED (2026-03-10): `FindObject<UClass>` → `FindFirstObject<UClass>` with U-prefix fallback. Short class names work ("Constant", "Constant3Vector"). Tested: 2 nodes + 2 outputs, clear_existing=false |
+| `begin_transaction` | PASS | Returns transaction name + status "begun" |
+| `end_transaction` | PASS | Returns status "ended". Closes transaction cleanly |
 | `export_material_graph` | PASS | 44K default, 13K with include_properties=false (71% reduction) |
-| `import_material_graph` | UNTESTED | Test both "overwrite" and "merge" modes |
+| `import_material_graph` | PASS | Both modes tested: "overwrite" (4 nodes, 3 connections round-trip from export) and "merge" (adds 1 node without clearing existing) |
 | `validate_material` | PASS | Fixed: added MP_MaterialAttributes + 6 properties, MaterialAttributeLayers BFS seed. 0 false positives (was 43). Layer-blend materials still have known limitation (implicit layer system connections) |
 | `render_preview` | PASS | Saves PNG to Saved/Monolith/previews/, 68KB at 256x256 |
 | `get_thumbnail` | PASS | save_to_file=true returns path (164 chars vs 91K base64). Both modes work |
-| `create_custom_hlsl_node` | UNTESTED | Test with inputs, outputs, and HLSL code |
+| `create_custom_hlsl_node` | PASS | Tested with 2 inputs (Time, Speed), output_type Float1, HLSL code, position. Returns expression_name, input_count, output info |
 | `get_layer_info` | PASS | Correctly rejects non-layer materials with clear error |
+| `create_material` | PASS | Created /Game/Test/M_MonolithTest with Opaque/DefaultLit/Surface defaults |
+| `create_material_instance` | PASS | Created /Game/Test/MI_MonolithTest from test material parent |
+| `set_material_property` | PASS | Changed blend_mode to Masked. API corrected: uses UMaterialEditingLibrary::SetMaterialUsage |
+| `delete_expression` | PASS | Deleted custom HLSL expression by name |
+| `get_material_parameters` | PASS | Returns scalar/vector/texture/static_switch arrays with values. Works on both UMaterial and UMaterialInstanceConstant |
+| `set_instance_parameter` | PASS | Set scalar parameter on MIC. Supports scalar, vector, texture, static switch types |
+| `recompile_material` | PASS | Forced recompile via UMaterialEditingLibrary::RecompileMaterial |
+| `duplicate_material` | PASS | Duplicated M_MonolithTest to M_MonolithTest_Copy via UEditorAssetLibrary::DuplicateAsset |
+| `get_compilation_stats` | PASS | Returns sampler count, texture estimates, UV scalars, blend mode, expression count. API corrected for UE 5.7 FMaterialResource |
+| `set_expression_property` | PASS | Set DefaultValue on scalar param, verified via get_expression_details |
+| `connect_expressions` | PASS | Wired Constant to Metallic output. Supports expr-to-expr and expr-to-material-property |
 
 ### MonolithAnimation (namespace: "animation")
 
 | Action | Status | Notes |
 |--------|--------|-------|
-| `add_montage_section` | UNTESTED | |
-| `delete_montage_section` | UNTESTED | Test boundary: delete last section |
-| `set_section_next` | UNTESTED | Test circular linking |
-| `set_section_time` | UNTESTED | |
-| `add_blendspace_sample` | UNTESTED | |
-| `edit_blendspace_sample` | UNTESTED | Tests delete+re-add workaround |
-| `delete_blendspace_sample` | UNTESTED | Test boundary: delete only sample |
+| `add_montage_section` | PASS | Created "TestSection_Monolith" at index 1, time 0.5. Cleanup verified |
+| `delete_montage_section` | PASS | Deletes by index. BUG FIXED: now guards against deleting last section |
+| `set_section_next` | PASS | Linked TestSection_Monolith → Default successfully |
+| `set_section_time` | PASS | Moved section time to 0.3 (float precision expected) |
+| `add_blendspace_sample` | PASS | Added sample at (99,99) index 8. BUG FIXED: skeleton mismatch now returns descriptive error |
+| `edit_blendspace_sample` | PASS | Moved sample from (99,99) to (88,88) |
+| `delete_blendspace_sample` | PASS | Cleanup works. Invalid index returns descriptive error |
 | `get_state_machines` | PASS | 5KB. Clean names (no \n). from_type/to_type present on transitions |
 | `get_state_info` | PASS | 288B. Validates required params — clear error on empty machine_name |
 | `get_transitions` | PASS | 21KB. All from/to resolved (no "?"). from_type/to_type distinguishes state vs conduit. Full rule graphs |
@@ -138,15 +149,59 @@ def test_action(namespace, action, params=None):
 | `get_linked_layers` | PASS | 295B. Found self-layer correctly |
 | `get_graphs` | PASS | 7KB. 66 graphs, clean names, node/anim_node/SM counts |
 | `get_nodes` | PASS | 21KB unfiltered, 8KB with graph_name, 450B with class filter. Both filters work |
-| `set_notify_time` | UNTESTED | |
-| `set_notify_duration` | UNTESTED | |
-| `set_bone_track_keys` | UNTESTED | Test JSON array format [[x,y,z],...] |
-| `add_bone_track` | UNTESTED | |
-| `remove_bone_track` | UNTESTED | Fixed 2026-03-07: now uses RemoveBoneCurve per bone + child traversal |
-| `add_virtual_bone` | UNTESTED | |
-| `remove_virtual_bones` | UNTESTED | Test specific names vs remove all |
+| `set_notify_time` | PASS | BUG FIXED: UAnimSequence→UAnimSequenceBase, montages now accepted. Happy path confirmed on A_UE4_FP_Sprint (PlaySound notify) |
+| `set_notify_duration` | PASS | BUG FIXED: same UAnimSequenceBase fix. Error message now includes (total: N) |
+| `set_bone_track_keys` | PASS | 2 keys written (position/rotation/scale arrays). JSON format [[x,y,z],...] works |
+| `add_bone_track` | PASS | Added "root" track successfully |
+| `remove_bone_track` | PASS | Removed track, removed_count=1. Non-existent bone returns removed_count=0 gracefully |
+| `add_virtual_bone` | PASS | Created "VB hand_r_hand_l". BUG FIXED: now validates source/target bones exist (previously created bogus VB that crashed editor) |
+| `remove_virtual_bones` | PASS | Removed VB cleanly, verified 12→13→12. BUG FIXED: now returns error for non-existent bone names |
 | `get_skeleton_info` | PASS | 27KB. 262 bones + 12 virtual bones with parent chains |
 | `get_skeletal_mesh_info` | PASS | 8KB. Materials, 181 morph targets, sockets, LODs |
+
+### MonolithAnimation — New Actions (Waves 1-7)
+
+| Action | Status | Notes |
+|--------|--------|-------|
+| `get_sequence_info` | PASS | Duration, frames, sample rate, root motion, additive, compression. Tested on A_UE4_FP_Idle_Loop |
+| `get_sequence_notifies` | PASS | Returns all notifies with name, time, duration, class, track. Found 4 PlaySound on Sprint |
+| `get_bone_track_keys` | PASS | Returns position/rotation/scale key arrays. Requires bone to have track data |
+| `get_sequence_curves` | PASS | Lists float/transform curves with key counts. Found 9 curves on Idle_Loop |
+| `get_montage_info` | PASS | Sections, slots, blend in/out, rate scale. Tested on Pistol_Quick_Draw |
+| `get_blend_space_info` | PASS | Samples + axis config (min/max/name/grid). 8 samples on BS_FP_Walk_Loop |
+| `get_skeleton_sockets` | PASS | Socket name, bone, location/rotation/scale. Found FPCamera on Manny |
+| `get_abp_info` | PASS | Skeleton, parent class, 2 state machines, 4 graphs, 10 variables |
+| `add_notify` | PASS | Added PlaySound at t=0.01s. Validates time range. Full CRUD cycle verified |
+| `add_notify_state` | PASS | Creates state notify with duration |
+| `remove_notify` | PASS | Removes by index, returns remaining count |
+| `set_notify_track` | PASS | Moves notify to different track |
+| `list_curves` | PASS | 1 curve (Mask_Grip) on A_UE4_FP_Curves. Full CRUD cycle verified |
+| `add_curve` | PASS | Added TestCurve_Monolith (float) via IAnimationDataController |
+| `remove_curve` | PASS | Removed test curve cleanly |
+| `set_curve_keys` | PASS | Set 3 keys. Note: param is keys_json (string), not keys (array) |
+| `get_curve_keys` | PASS | Returns time/value/interp_mode for each key. Non-existent curve returns clear error |
+| `add_socket` | PASS | Created TestSocket_Monolith on hand_r. Full CRUD cycle verified |
+| `remove_socket` | PASS | Removed test socket. Non-existent returns clear error |
+| `set_socket_transform` | PASS | Updated location and rotation |
+| `get_skeleton_curves` | PASS | 15 curves on Manny skeleton (CameraPitch, IK_X, AdsWeight, Gait, etc.) |
+| `set_blend_space_axis` | PASS | Changed X axis min/max, verified, restored |
+| `set_root_motion_settings` | PASS | Toggled root motion on/off, verified via get_sequence_info |
+| `create_sequence` | PASS | Created /Game/Test/A_MonolithTest_Seq with skeleton. Bad skeleton returns clear error |
+| `duplicate_sequence` | PASS | Duplicated idle loop to /Game/Test/ |
+| `create_montage` | PASS | Created with Default section + DefaultSlot |
+| `set_montage_blend` | PASS | Set blend_in=0.5, blend_out=0.3, verified persistence |
+| `add_montage_slot` | PASS | Added UpperBody slot. Duplicate name returns clear error |
+| `set_montage_slot` | PASS | Renamed slot by index |
+| `apply_anim_modifier` | PASS | Applied AnimationModifier base class. Fake class returns clear error |
+| `list_anim_modifiers` | PASS | Found BP_CopyCurves_C on A_UE4_FP_Idle_Loop |
+| `get_composite_info` | PASS | Returns clean error on non-composite. No composites in project to test success path |
+| `add_composite_segment` | UNTESTED | No AnimComposite assets in project |
+| `remove_composite_segment` | UNTESTED | No AnimComposite assets in project |
+| `get_pose_search_schema` | PASS | Tested on PSS_Idle: sample_rate 30, 2 channels, schema_cardinality 34 |
+| `get_pose_search_database` | PASS | Tested on PSD_Dense_Stand_Idles: 2 sequences, schema ref, enabled/sampling data |
+| `add_database_sequence` | UNTESTED | Would need safe test database |
+| `remove_database_sequence` | UNTESTED | Would need safe test database |
+| `get_database_stats` | PASS | 368 poses, PCAKDTree mode, is_valid=true |
 
 ### MonolithNiagara (namespace: "niagara")
 
@@ -308,6 +363,10 @@ def test_action(namespace, action, params=None):
 | 2026-03-09 | tumourlove + Claude | Indexer + Niagara + Animation fixes | PASS | **Phase 1 (Indexer):** Auto-index deferred to OnFilesLoaded (was 193/9560), sanity check <500 skips last_full_index, bIsIndexing reset in Deinitialize, DB WAL→DELETE. **Phase 2 (Niagara):** trace_parameter_binding OR fallback, get_di_functions reversed pattern, batch_execute 3 op name aliases, all actions accept asset_path (system_path compat), duplicate_emitter/set_curve_value param aliases, 2 NEW actions (list_emitters, list_renderers). Total: 39→41. **Phase 3 (Animation):** State machine \n stripping, get_state_info param validation, exact SM matching, get_nodes graph_name filter. |
 | 2026-03-09 | tumourlove + Claude | Round 4: Final read action verification | PASS | 35/36 read actions PASS, 1 FAIL (validate_material on layer-blend materials). All 6 targeted fixes verified: (1) get_module_inputs real types (NiagaraBool, enums), (2) get_ordered_modules usage filter + shorthands + error on invalid, (3) get_renderer_bindings clean JSON, (4) get_all_parameters scope/emitter filters, (5) get_transitions from/to resolved with from_type/to_type, (6) validate_material custom output seeding (partial — still fails on layer blends). Also verified: CDO defaults, param schemas, node_class_filter, include_properties, save_to_file, graph_name filter, User. prefix both forms. |
 | 2026-03-09 | tumourlove + Claude | Round 5: Final polish verification | PASS | **36/36 read actions PASS.** 3 final fixes verified: (1) `validate_material` — added MP_MaterialAttributes + 6 properties to AllMaterialProperties, MaterialAttributeLayers BFS seed → 0 false positive islands (was 43). (2) `get_execution_flow` — two-pass FindEntryNode prioritizes events over comments → "BeginPlay" and "Tick" correctly match events. (3) `get_graph_summary` — returns all 14 graphs when graph_name empty. All changes baked via UBT build. |
+| 2026-03-10 | tumourlove + Claude | Material write actions + critical updater fix | PASS | **All 14 material actions PASS (7 write actions newly verified).** Bugs fixed: (1) `build_material_graph` class lookup — `FindObject<UClass>(nullptr)` → `FindFirstObject<UClass>(NativeFirst)` with U-prefix fallback. Short names like "Constant" now work. (2) `disconnect_expression` — added material output pin disconnection (was only checking expr→expr, missing expr→material property). (3) **CRITICAL: Updater hot-swap deletes Saved/** — swap script + C++ template now preserve `Saved/` directory (contains EngineSource.db 1.8GB, ProjectIndex.db). Fixed on Windows + Mac/Linux. UBT build clean (3.84s). |
+| 2026-03-10 | tumourlove + Claude | Wave 2 material: 11 new actions | PASS | **11 NEW material actions implemented and verified (14→25 total, 122→133 plugin total).** New actions: `create_material`, `create_material_instance`, `set_material_property`, `delete_expression`, `get_material_parameters`, `set_instance_parameter`, `recompile_material`, `duplicate_material`, `get_compilation_stats`, `set_expression_property`, `connect_expressions`. Full CRUD coverage for materials and material instances. All tested against /Game/Test/ assets. |
+| 2026-03-10 | tumourlove + Claude | Animation write actions | PASS | **14/14 animation write actions verified.** 5 bugs found and fixed: (1) CRASH: `add_virtual_bone` no bone validation → added FReferenceSkeleton check. (2) `set_notify_time`/`set_notify_duration` rejected montages → UAnimSequence→UAnimSequenceBase. (3) `remove_virtual_bones` false success → validates names, returns not_found list. (4) `delete_montage_section` allowed deleting last section → added guard. (5) `add_blendspace_sample` generic error on skeleton mismatch → descriptive error. All fixes built clean (3.90s). Happy path verified for montage sections, blendspace samples, bone tracks, virtual bones. Notify happy path tested on A_UE4_FP_Sprint (PlaySound notify). |
+| 2026-03-10 | tumourlove + Claude | Animation Waves 1-7 implementation + testing | PASS | **39 new animation actions implemented across 7 waves.** Total: 23→62 animation + 5 PoseSearch = 67 actions. Build errors fixed: BlendParameters private (use getter), GetTargetSkeleton (use TargetSkeleton), UMirrorDataTable forward-decl, GetBoneAnimationTracks deprecated, OpenBracket FText. All waves tested: Wave 1 (8 read, 8/8), Wave 2 (4 notify CRUD, 4/4), Wave 3 (5 curve CRUD, 8/8 with boundaries), Wave 4 (6 skeleton+BS, 15/15), Wave 5 (6 creation+montage, 11/11), Wave 6 (5 PoseSearch, 6/6 tested), Wave 7 (5 modifiers+composites, 5/5 tested). 2 composite write actions untested (no composite assets), 2 PoseSearch write actions untested (safety). |
 
 ---
 
@@ -325,7 +384,7 @@ Before any release, verify:
 - [ ] `material.get_all_expressions` works on a test Material
 - [ ] `editor.get_recent_logs` returns log entries
 - [ ] `config.resolve_setting` returns a known setting value
-- [ ] First-tool-call works on fresh session — `tools/list` returns all actions on first call, `source.query` works without retry
+- [ ] First-tool-call works on fresh session — `tools/list` returns all actions on first call, `source_query` works without retry
 - [ ] MonolithSource registers all 10 actions — verify all callable: read_source, find_references, find_callers, find_callees, search_source, get_class_hierarchy, get_module_info, get_symbol_context, read_file, trigger_reindex
 - [ ] Module enable toggle disables action registration when set to false
 - [ ] `editor.live_compile` triggers Live Coding compile
@@ -348,4 +407,33 @@ Before any release, verify:
 - [ ] Material `get_thumbnail` with `save_to_file=true` writes PNG to Saved/Monolith/thumbnails/
 - [ ] Niagara `get_compiled_gpu_hlsl` auto-compiles system if HLSL not cached
 - [ ] Niagara param actions handle `User.` prefix transparently (get_parameter_value, trace_parameter_binding, remove_user_parameter, set_parameter_default)
-- [ ] `monolith.discover()` returns per-action param schemas for all 122 actions
+- [ ] `monolith_discover()` returns per-action param schemas for all actions (currently 177)
+- [ ] Material `build_material_graph` creates nodes with short class names (e.g., "Constant", "VectorParameter")
+- [ ] Material `disconnect_expression` with `disconnect_outputs=true` disconnects material output pins (not just expr→expr)
+- [ ] Hot-swap updater preserves `Saved/` directory (EngineSource.db, ProjectIndex.db, previews)
+- [ ] Material `import_material_graph` works in both "overwrite" and "merge" modes
+- [ ] Material `create_custom_hlsl_node` creates node with inputs, output_type, and HLSL code
+- [ ] Material `create_material` creates asset at specified path with correct defaults (Opaque/DefaultLit/Surface)
+- [ ] Material `create_material_instance` creates MIC with parent and parameter overrides
+- [ ] Material `set_material_property` changes blend mode (e.g., Opaque to Masked)
+- [ ] Material `get_material_parameters` lists all param types (scalar, vector, texture, static switch) on UMaterial and MIC
+- [ ] Material `duplicate_material` copies material to new asset path
+- [ ] Animation `add_virtual_bone` rejects non-existent source/target bones with descriptive error
+- [ ] Animation `delete_montage_section` rejects deletion of last remaining section
+- [ ] Animation `set_notify_time` and `set_notify_duration` accept AnimMontage assets (not just AnimSequence)
+- [ ] Animation `add_blendspace_sample` returns skeleton mismatch error when animations use different skeleton
+- [ ] Animation `remove_virtual_bones` returns error for non-existent bone names (not false success)
+- [ ] Animation `get_sequence_info` returns duration, frames, sample rate, root motion settings
+- [ ] Animation `get_sequence_notifies` lists all notifies with class, time, track info
+- [ ] Animation `get_montage_info` returns sections, slots, blend settings
+- [ ] Animation `get_blend_space_info` returns samples and axis configuration
+- [ ] Animation notify CRUD cycle (add_notify → get_sequence_notifies → remove_notify) completes cleanly
+- [ ] Animation curve CRUD cycle (add_curve → set_curve_keys → get_curve_keys → remove_curve) completes cleanly
+- [ ] Animation socket CRUD cycle (add_socket → set_socket_transform → remove_socket) completes cleanly
+- [ ] Animation `create_sequence` creates asset with correct skeleton reference
+- [ ] Animation `create_montage` creates asset with Default section and default slot
+- [ ] Animation `set_blend_space_axis` modifies axis min/max and persists
+- [ ] Animation `set_root_motion_settings` toggles root motion on/off
+- [ ] PoseSearch `get_pose_search_schema` returns channels and skeleton info
+- [ ] PoseSearch `get_pose_search_database` returns sequence list with enabled/sampling data
+- [ ] PoseSearch `get_database_stats` returns pose count, search mode, validity

@@ -44,7 +44,7 @@ Monolith has 9 modules, each owning a specific domain:
 | **MonolithCore** | `monolith` | 4 | HTTP server, tool registry, discovery, settings, auto-updater |
 | **MonolithBlueprint** | `blueprint` | 5 | Blueprint graph reading — topology, variables, execution flow |
 | **MonolithMaterial** | `material` | 14 | Material inspection, graph editing, import/export, validation |
-| **MonolithAnimation** | `animation` | 23 | Montages, blend spaces, ABP state machines, bone tracks |
+| **MonolithAnimation** | `animation` | 67 | Montages, blend spaces, ABP state machines, bone tracks, PoseSearch |
 | **MonolithNiagara** | `niagara` | 39 | Particle systems, modules, parameters, renderers, HLSL |
 | **MonolithEditor** | `editor` | 11 | Build triggers, log capture, crash context |
 | **MonolithConfig** | `config` | 6 | INI resolution, explain, diff, search |
@@ -237,7 +237,7 @@ curl -X POST http://localhost:9316/mcp \
 ```bash
 curl -X POST http://localhost:9316/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"blueprint.query","arguments":{"action":"list_graphs","asset_path":"/Game/MyBlueprint.MyBlueprint"}}}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"blueprint_query","arguments":{"action":"list_graphs","asset_path":"/Game/MyBlueprint.MyBlueprint"}}}'
 ```
 
 **Check server status:**
@@ -294,7 +294,7 @@ Then use Claude Code or any MCP-compatible client to interact with the tools.
 
 ## Architecture Notes
 
-- **Discovery/dispatch pattern** — Each domain exposes one `{namespace}.query(action, params)` MCP tool. The registry dispatches to the correct handler. This keeps AI context lean (~14 tools instead of ~117).
+- **Discovery/dispatch pattern** — Each domain exposes one `{namespace}_query(action, params)` MCP tool. The registry dispatches to the correct handler. This keeps AI context lean (~14 tools instead of ~177).
 - **Thread safety** — `FMonolithToolRegistry` releases its lock before executing handlers. DB access uses `FCriticalSection`.
 - **Stateless server** — No session tracking. Every request is independent.
 - **MCP protocol version** — 2025-03-26, Streamable HTTP transport.

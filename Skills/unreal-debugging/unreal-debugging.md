@@ -5,12 +5,12 @@ description: Use when debugging Unreal Engine issues via Monolith MCP — build 
 
 # Unreal Debugging Workflows
 
-You have access to **Monolith** with 13 editor diagnostic actions via `editor.query()`.
+You have access to **Monolith** with 13 editor diagnostic actions via `editor_query()`.
 
 ## Discovery
 
 ```
-monolith.discover({ namespace: "editor" })
+monolith_discover({ namespace: "editor" })
 ```
 
 ## Asset Path Conventions
@@ -47,32 +47,32 @@ All asset paths follow UE content browser format (no .uasset extension):
 
 ### After modifying C++ code
 ```
-editor.query({ action: "trigger_build", params: {} })
+editor_query({ action: "trigger_build", params: {} })
 // Wait ~10 seconds for Live Coding
-editor.query({ action: "get_build_status", params: {} })
-editor.query({ action: "get_build_errors", params: {} })
+editor_query({ action: "get_build_status", params: {} })
+editor_query({ action: "get_build_errors", params: {} })
 ```
 
 ### Get structured compile results
 ```
-editor.query({ action: "get_compile_output", params: {} })
+editor_query({ action: "get_compile_output", params: {} })
 ```
 
 ### Investigate a crash
 ```
-editor.query({ action: "get_crash_context", params: {} })
-editor.query({ action: "search_logs", params: { pattern: "Fatal", limit: 20 } })
+editor_query({ action: "get_crash_context", params: {} })
+editor_query({ action: "search_logs", params: { pattern: "Fatal", limit: 20 } })
 ```
 
 ### Find specific log output
 ```
-editor.query({ action: "search_logs", params: { pattern: "MyActor", category: "LogTemp", verbosity: "Warning" } })
+editor_query({ action: "search_logs", params: { pattern: "MyActor", category: "LogTemp", verbosity: "Warning" } })
 ```
 
 ### Check overall log health
 ```
-editor.query({ action: "get_log_stats", params: {} })
-editor.query({ action: "get_log_categories", params: {} })
+editor_query({ action: "get_log_stats", params: {} })
+editor_query({ action: "get_log_categories", params: {} })
 ```
 
 ## Common UE Error Patterns
@@ -85,8 +85,8 @@ editor.query({ action: "get_log_categories", params: {} })
 ### Include path errors
 Use source lookup to find the correct header:
 ```
-source.query({ action: "search", params: { query: "FMyStruct", type: "class" } })
-source.query({ action: "get_include_path", params: { symbol: "FMyStruct" } })
+source_query({ action: "search", params: { query: "FMyStruct", type: "class" } })
+source_query({ action: "get_include_path", params: { symbol: "FMyStruct" } })
 ```
 
 ### Live Coding limitations
@@ -103,4 +103,4 @@ source.query({ action: "get_include_path", params: { symbol: "FMyStruct" } })
 - Log buffer holds 10,000 entries and 5 build histories
 - Use `search_logs` with category filters to reduce noise
 - `get_build_summary` shows trends across recent builds — useful for spotting regressions
-- Combine with `source.query` to look up engine internals when errors reference engine code
+- Combine with `source_query` to look up engine internals when errors reference engine code

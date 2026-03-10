@@ -11,7 +11,7 @@ void FMonolithBlueprintModule::StartupModule()
 	if (!GetDefault<UMonolithSettings>()->bEnableBlueprint) return;
 
 	FMonolithBlueprintActions::RegisterActions();
-	UE_LOG(LogMonolith, Log, TEXT("Monolith — Blueprint module loaded (5 actions)"));
+	UE_LOG(LogMonolith, Log, TEXT("Monolith — Blueprint module loaded (6 actions)"));
 }
 
 void FMonolithBlueprintModule::ShutdownModule()

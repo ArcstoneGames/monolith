@@ -1,6 +1,6 @@
 # Monolith — Technical Specification
 
-**Version:** 0.5.0 (Beta)
+**Version:** 0.6.0 (Beta)
 **Wiki:** https://github.com/tumourlove/monolith/wiki
 **Engine:** Unreal Engine 5.7+
 **Platform:** Windows, macOS, Linux
@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~219 individual tools down to ~14 namespace endpoint dispatchers, cutting AI assistant context consumption by ~95%.
+Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~219 individual tools down to ~14 namespace endpoint dispatchers (177 total actions), cutting AI assistant context consumption by ~95%.
 
 ### What It Replaces
 
@@ -20,7 +20,7 @@ Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate M
 |------------------------|---------|-------------|
 | unreal-blueprint-mcp + BlueprintReader | 6 | MonolithBlueprint |
 | unreal-material-mcp + MaterialMCPReader | 46 | MonolithMaterial |
-| unreal-animation-mcp + AnimationMCPReader | 62 | MonolithAnimation |
+| unreal-animation-mcp + AnimationMCPReader | 62 | MonolithAnimation (67 actions) |
 | unreal-niagara-mcp + NiagaraMCPBridge | 70 | MonolithNiagara |
 | unreal-editor-mcp | 11 | MonolithEditor |
 | unreal-config-mcp | 6 | MonolithConfig |
@@ -36,8 +36,8 @@ Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate M
 Monolith.uplugin
   MonolithCore          — HTTP server, tool registry, discovery, settings, auto-updater
   MonolithBlueprint     — Blueprint graph reading (6 actions)
-  MonolithMaterial      — Material inspection + graph editing (14 actions)
-  MonolithAnimation     — Animation sequences, montages, ABPs (23 actions)
+  MonolithMaterial      — Material inspection + graph editing + CRUD (25 actions)
+  MonolithAnimation     — Animation sequences, montages, ABPs, curves, compression, PoseSearch (67 actions)
   MonolithNiagara       — Niagara particle systems (41 actions)
   MonolithEditor        — Build triggers, live compile, log capture, compile output, crash context (13 actions)
   MonolithConfig        — Config/INI resolution and search (6 actions)
@@ -47,7 +47,7 @@ Monolith.uplugin
 
 ### Discovery/Dispatch Pattern
 
-All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}.query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone.
+All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone.
 
 ### MCP Protocol
 
@@ -136,27 +136,43 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 
 | Class | Responsibility |
 |-------|---------------|
-| `FMonolithMaterialModule` | Registers 14 material actions |
+| `FMonolithMaterialModule` | Registers 25 material actions |
 | `FMonolithMaterialActions` | Static handlers + helpers for loading materials and serializing expressions |
 
-#### Actions (14 — namespace: "material")
+#### Actions (25 — namespace: "material")
 
+**Read Actions (14)**
 | Action | Description |
 |--------|-------------|
 | `get_all_expressions` | Get all expression nodes in a base material |
 | `get_expression_details` | Full property reflection, inputs, outputs for a single expression |
 | `get_full_connection_graph` | Complete connection graph (all wires) of a material |
-| `disconnect_expression` | Disconnect inputs or outputs on a named expression |
-| `build_material_graph` | Build entire graph from JSON spec in single undo transaction (4 phases: standard nodes, Custom HLSL, wires, output properties) |
-| `begin_transaction` | Begin named undo transaction for batching edits |
-| `end_transaction` | End current undo transaction |
 | `export_material_graph` | Export complete graph to JSON (round-trippable with build_material_graph) |
-| `import_material_graph` | Import graph from JSON. Mode: "overwrite" (clear+rebuild) or "merge" (offset +500 X) |
 | `validate_material` | BFS reachability check — detects islands, broken textures, missing functions, duplicate params, unused params, high expression count (>200). Optional auto-fix |
 | `render_preview` | Save preview PNG to Saved/Monolith/previews/ |
-| `get_thumbnail` | Return thumbnail as base64 PNG inline |
-| `create_custom_hlsl_node` | Create Custom HLSL expression with inputs, outputs, and code |
+| `get_thumbnail` | Return thumbnail as base64 PNG or save to file |
 | `get_layer_info` | Material Layer / Material Layer Blend info |
+| `get_material_parameters` | List all parameter types (scalar, vector, texture, static switch) with values. Works on UMaterial and UMaterialInstanceConstant |
+| `get_compilation_stats` | Sampler count, texture estimates, UV scalars, blend mode, expression count |
+
+**Write Actions (11)**
+| Action | Description |
+|--------|-------------|
+| `create_material` | Create new UMaterial at path with configurable defaults (blend mode, shading model, material domain) |
+| `create_material_instance` | Create UMaterialInstanceConstant from parent material with optional parameter overrides |
+| `set_material_property` | Set material properties (blend_mode, shading_model, two_sided, etc.) via UMaterialEditingLibrary |
+| `build_material_graph` | Build entire graph from JSON spec in single undo transaction (4 phases: standard nodes, Custom HLSL, wires, output properties) |
+| `disconnect_expression` | Disconnect inputs or outputs on a named expression (supports expr→expr and expr→material property) |
+| `delete_expression` | Delete expression node by name from material graph |
+| `create_custom_hlsl_node` | Create Custom HLSL expression with inputs, outputs, and code |
+| `set_expression_property` | Set properties on expression nodes (e.g., DefaultValue on scalar param) |
+| `connect_expressions` | Wire expression outputs to expression inputs or material property inputs |
+| `set_instance_parameter` | Set scalar/vector/texture/static switch parameters on material instances |
+| `duplicate_material` | Duplicate material asset to new path |
+| `recompile_material` | Force material recompile |
+| `import_material_graph` | Import graph from JSON. Mode: "overwrite" (clear+rebuild) or "merge" (offset +500 X) |
+| `begin_transaction` | Begin named undo transaction for batching edits |
+| `end_transaction` | End current undo transaction |
 
 ---
 
@@ -168,36 +184,90 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 
 | Class | Responsibility |
 |-------|---------------|
-| `FMonolithAnimationModule` | Registers 23 animation actions |
-| `FMonolithAnimationActions` | Static handlers organized in 7 groups |
+| `FMonolithAnimationModule` | Registers 67 animation actions (62 animation + 5 PoseSearch) |
+| `FMonolithAnimationActions` | Static handlers organized in 15 groups |
 
-#### Actions (23 — namespace: "animation")
+#### Actions (67 — namespace: "animation")
 
-**Montage Sections (4)**
+**Curve Operations (7)**
 | Action | Description |
 |--------|-------------|
-| `add_montage_section` | Add a section to an animation montage |
-| `delete_montage_section` | Delete a section by index |
-| `set_section_next` | Set the next section for a montage section |
-| `set_section_time` | Set start time of a montage section |
+| `get_curves` | Get all curves in an animation sequence |
+| `add_curve` | Add a curve to an animation sequence |
+| `remove_curve` | Remove a curve from an animation sequence |
+| `set_curve_keys` | Set keys on a curve |
+| `get_curve_keys` | Get all keys from a curve |
+| `rename_curve` | Rename a curve |
+| `get_curve_data` | Get all curves with their keys and metadata |
 
-**BlendSpace Samples (3)**
+**Bone Track Inspection (3)**
 | Action | Description |
 |--------|-------------|
+| `get_bone_tracks` | Get all bone tracks with key counts |
+| `get_bone_track_data` | Get position/rotation/scale keys for a bone track |
+| `get_animation_statistics` | Get animation statistics (compressed size, curves, bone tracks, etc.) |
+
+**Sync Markers (3)**
+| Action | Description |
+|--------|-------------|
+| `get_sync_markers` | Get all sync markers |
+| `add_sync_marker` | Add a sync marker at a time |
+| `remove_sync_marker` | Remove a sync marker by name |
+
+**Root Motion (2)**
+| Action | Description |
+|--------|-------------|
+| `get_root_motion_info` | Get root motion settings and totals |
+| `extract_root_motion` | Extract root motion over a time range |
+
+**Animation Compression (2)**
+| Action | Description |
+|--------|-------------|
+| `get_compression_settings` | Get compression codec info |
+| `apply_compression` | Apply compression with optional codec class |
+
+**BlendSpace Operations (5)**
+| Action | Description |
+|--------|-------------|
+| `get_blendspace_info` | Get blend space axis info, dimensions, sample count |
 | `add_blendspace_sample` | Add a sample to a blend space |
+| `remove_blendspace_sample` | Remove a sample by index |
+| `set_blendspace_axis` | Set axis properties (min, max, name, grid divisions) |
+| `get_blendspace_samples` | Get all samples with positions and animations |
+
+**BlendSpace Legacy (2)**
+| Action | Description |
+|--------|-------------|
 | `edit_blendspace_sample` | Edit sample position and optionally its animation (uses delete+re-add workaround) |
-| `delete_blendspace_sample` | Delete a sample by index |
+| `delete_blendspace_sample` | Delete a sample by index (legacy alias for remove_blendspace_sample) |
 
 **ABP Graph Reading (7) — read-only**
 | Action | Description |
 |--------|-------------|
+| `get_anim_blueprint_info` | Get ABP target skeleton, parent class, variables |
 | `get_state_machines` | Get all state machines with full topology |
 | `get_state_info` | Detailed info about a state in a state machine |
 | `get_transitions` | All transitions (supports empty machine_name for ALL state machines) |
+| `get_anim_graph_nodes` | Animation nodes with optional graph_name filter |
 | `get_blend_nodes` | Blend nodes in an ABP graph |
 | `get_linked_layers` | Linked animation layers |
 | `get_graphs` | All graphs in an ABP |
 | `get_nodes` | Animation nodes with optional class and graph_name filters |
+
+**Montage Operations (5)**
+| Action | Description |
+|--------|-------------|
+| `get_montage_info` | Get montage sections, slots, blend settings |
+| `add_montage_section` | Add a section to an animation montage |
+| `delete_montage_section` | Delete a section by name |
+| `set_montage_section_link` | Set next section link for a montage section |
+| `get_montage_slots` | Get montage slot and section info |
+
+**Montage Legacy (2)**
+| Action | Description |
+|--------|-------------|
+| `set_section_next` | Set the next section for a montage section (legacy) |
+| `set_section_time` | Set start time of a montage section (legacy) |
 
 **Notify Editing (2)**
 | Action | Description |
@@ -205,24 +275,41 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | `set_notify_time` | Set trigger time of an animation notify |
 | `set_notify_duration` | Set duration of a state animation notify |
 
-**Bone Tracks (3)**
+**Bone Track Editing (3)**
 | Action | Description |
 |--------|-------------|
 | `set_bone_track_keys` | Set position/rotation/scale keys (JSON arrays) |
 | `add_bone_track` | Add a bone track to an animation sequence |
 | `remove_bone_track` | Remove a bone track (uses `RemoveBoneCurve(FName)` per bone + child traversal) |
 
-**Skeleton (2)**
+**Skeleton Operations (5)**
 | Action | Description |
 |--------|-------------|
+| `get_skeleton_info` | Skeleton bone hierarchy, virtual bones, and sockets |
 | `add_virtual_bone` | Add a virtual bone to a skeleton |
 | `remove_virtual_bones` | Remove virtual bones (specific names or all) |
+| `get_socket_info` | Get socket details (position, rotation, scale, parent bone) |
+| `add_socket` | Add a socket to a skeleton |
 
-**Skeleton Info (2)**
+**Skeleton Info (1)**
 | Action | Description |
 |--------|-------------|
-| `get_skeleton_info` | Skeleton bone hierarchy and virtual bones |
 | `get_skeletal_mesh_info` | Mesh info: morph targets, sockets, LODs, materials |
+
+**Batch & Modifiers (2)**
+| Action | Description |
+|--------|-------------|
+| `batch_get_animation_info` | Get basic info for multiple animations in one call |
+| `run_animation_modifier` | Apply an animation modifier class to an animation |
+
+**PoseSearch (5)**
+| Action | Description |
+|--------|-------------|
+| `get_pose_search_schema` | Get PoseSearch schema config and channels |
+| `get_pose_search_database` | Get PoseSearch database sequences and schema reference |
+| `add_database_sequence` | Add an animation sequence to a PoseSearch database |
+| `remove_database_sequence` | Remove a sequence from a PoseSearch database by index |
+| `get_database_stats` | Get PoseSearch database statistics (pose count, search mode, costs) |
 
 ---
 
@@ -510,15 +597,15 @@ All marked with "UE 5.7 FIX" comments:
 
 | Skill | Trigger Words | Entry Point | Actions |
 |-------|--------------|-------------|---------|
-| unreal-animation | animation, montage, ABP, blend space, notify | `animation.query()` | 23 |
-| unreal-blueprints | Blueprint, BP, event graph, node, variable | `blueprint.query()` | 6 |
-| unreal-build | build, compile, Live Coding, hot reload, rebuild | `editor.query()` | 13 |
-| unreal-cpp | C++, header, include, UCLASS, Build.cs, linker error | `source.query()` + `config.query()` | 10+6 |
-| unreal-debugging | build error, crash, log, debug, stack trace | `editor.query()` | 13 |
-| unreal-materials | material, shader, PBR, texture, material graph | `material.query()` | 14 |
-| unreal-niagara | Niagara, particle, VFX, emitter | `niagara.query()` | 41 |
+| unreal-animation | animation, montage, ABP, blend space, notify, curves, compression, PoseSearch | `animation_query()` | 67 |
+| unreal-blueprints | Blueprint, BP, event graph, node, variable | `blueprint_query()` | 6 |
+| unreal-build | build, compile, Live Coding, hot reload, rebuild | `editor_query()` | 13 |
+| unreal-cpp | C++, header, include, UCLASS, Build.cs, linker error | `source_query()` + `config_query()` | 10+6 |
+| unreal-debugging | build error, crash, log, debug, stack trace | `editor_query()` | 13 |
+| unreal-materials | material, shader, PBR, texture, material graph | `material_query()` | 25 |
+| unreal-niagara | Niagara, particle, VFX, emitter | `niagara_query()` | 41 |
 | unreal-performance | performance, optimization, FPS, frame time | Cross-domain | config + material + niagara |
-| unreal-project-search | find asset, search project, dependencies | `project.query()` | 5 |
+| unreal-project-search | find asset, search project, dependencies | `project_query()` | 5 |
 
 All skills follow a common structure: YAML frontmatter, Discovery section, Asset Path Conventions table, action tables, workflow examples, and rules.
 
@@ -670,13 +757,13 @@ See `TODO.md` for the full list. Key architectural constraints:
 |--------|-----------|---------|
 | MonolithCore | monolith | 4 |
 | MonolithBlueprint | blueprint | 6 |
-| MonolithMaterial | material | 14 |
-| MonolithAnimation | animation | 23 |
+| MonolithMaterial | material | 25 |
+| MonolithAnimation | animation | 67 |
 | MonolithNiagara | niagara | 41 |
 | MonolithEditor | editor | 13 |
 | MonolithConfig | config | 6 |
 | MonolithIndex | project | 5 |
 | MonolithSource | source | 10 |
-| **Total** | | **122** |
+| **Total** | | **177** |
 
-**Note:** All skill files now correctly reflect the C++ action counts (122 total). The original Python server had higher counts (~231 tools) due to fragmented action design.
+**Note:** All skill files now correctly reflect the C++ action counts (177 total). The original Python server had higher counts (~231 tools) due to fragmented action design.

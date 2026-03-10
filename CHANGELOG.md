@@ -4,6 +4,79 @@ All notable changes to Monolith will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] - 2026-03-10
+
+Animation Wave 2: 44 new actions across animation and PoseSearch, bringing the module from 23 to 67 actions and the plugin total to 177.
+
+### Added
+
+- **Animation — Curve Operations (7):** `get_curves`, `add_curve`, `remove_curve`, `set_curve_keys`, `get_curve_keys`, `rename_curve`, `get_curve_data`
+- **Animation — Bone Track Inspection (3):** `get_bone_tracks`, `get_bone_track_data`, `get_animation_statistics`
+- **Animation — Sync Markers (3):** `get_sync_markers`, `add_sync_marker`, `remove_sync_marker`
+- **Animation — Root Motion (2):** `get_root_motion_info`, `extract_root_motion`
+- **Animation — Compression (2):** `get_compression_settings`, `apply_compression`
+- **Animation — BlendSpace Operations (5):** `get_blendspace_info`, `add_blendspace_sample`, `remove_blendspace_sample`, `set_blendspace_axis`, `get_blendspace_samples`
+- **Animation — AnimBP Inspection (5):** `get_anim_blueprint_info`, `get_state_machines`, `get_state_info`, `get_transitions`, `get_anim_graph_nodes`
+- **Animation — Montage Operations (5):** `get_montage_info`, `add_montage_section`, `delete_montage_section`, `set_montage_section_link`, `get_montage_slots`
+- **Animation — Skeleton Operations (5):** `get_skeleton_info`, `add_virtual_bone`, `remove_virtual_bones`, `get_socket_info`, `add_socket`
+- **Animation — Batch & Modifiers (2):** `batch_get_animation_info`, `run_animation_modifier`
+- **Animation — PoseSearch (5):** `get_pose_search_schema`, `get_pose_search_database`, `add_database_sequence`, `remove_database_sequence`, `get_database_stats`
+
+### Fixed
+
+- **Animation** — `get_transitions` cast fix: uses `UAnimStateNodeBase` with conduit support, adds `from_type`/`to_type`
+- **Animation** — State machine names stripped of `\n` suffix
+- **Animation** — `get_state_info` now validates required params (`machine_name`, `state_name`)
+- **Animation** — State machine matching changed from fuzzy `Contains()` to exact match
+- **Animation** — `get_nodes` now accepts optional `graph_name` filter
+
+### Changed
+
+- **Animation** — Action count 23 → 67 (62 animation + 5 PoseSearch)
+- **Total** — Action count 133 → 177
+
+## [0.6.1] - 2026-03-10
+
+MCP tool discovery fix — tools now register natively in Claude Code's ToolSearch.
+
+### Fixed
+
+- **MCP** — Tool names changed from dot notation (`material.query`) to underscore (`material_query`). Dots in tool names broke Claude Code's `mcp__server__tool` name mapping, causing silent registration failure. Legacy `.query` names still accepted for backwards compatibility via curl.
+- **MCP** — Protocol version negotiation: server now echoes back the client's requested version (`2024-11-05` or `2025-03-26`) instead of always returning `2025-03-26`.
+
+### Changed
+
+- **Docs** — All documentation, skills, wiki, templates, and CLAUDE.md updated to use underscore tool naming.
+
+## [0.6.0] - 2026-03-10
+
+Material Wave 2: Full material CRUD coverage with 11 new write actions. Critical updater fix.
+
+### Added
+
+- **Material** — `create_material` action: create UMaterial at path with configurable defaults (Opaque/DefaultLit/Surface)
+- **Material** — `create_material_instance` action: create UMaterialInstanceConstant from parent with parameter overrides
+- **Material** — `set_material_property` action: set blend_mode, shading_model, two_sided, etc. via UMaterialEditingLibrary
+- **Material** — `delete_expression` action: delete expression node by name from material graph
+- **Material** — `get_material_parameters` action: list scalar/vector/texture/static_switch params with values (works on UMaterial and MIC)
+- **Material** — `set_instance_parameter` action: set parameters on material instances (scalar, vector, texture, static switch)
+- **Material** — `recompile_material` action: force material recompile
+- **Material** — `duplicate_material` action: duplicate material to new asset path
+- **Material** — `get_compilation_stats` action: sampler count, texture estimates, UV scalars, blend mode, expression count
+- **Material** — `set_expression_property` action: set properties on expression nodes (e.g., DefaultValue)
+- **Material** — `connect_expressions` action: wire expression outputs to inputs or material property inputs
+
+### Fixed
+
+- **Material** — `build_material_graph` class lookup: `FindObject<UClass>` → `FindFirstObject<UClass>` with U-prefix fallback. Short names like "Constant" now resolve correctly
+- **Material** — `disconnect_expression` now disconnects material output pins (was only checking expr→expr, missing expr→material property)
+- **CRITICAL: Auto-Updater** — Hot-swap script was deleting `Saved/` directory (containing EngineSource.db 1.8GB and ProjectIndex.db). Fixed: swap script and C++ template now preserve `Saved/` alongside `.git`
+
+### Changed
+
+- **Material** — Action count 14 → 25
+- **Total** — Action count 122 → 133
+
 ## [0.5.2] - 2026-03-09
 
 Wave 2: Blueprint expansion, Material export controls, Niagara HLSL auto-compile, and discover param schemas.
@@ -14,7 +87,7 @@ Wave 2: Blueprint expansion, Material export controls, Niagara HLSL auto-compile
 - **Blueprint** — `get_graph_data` now accepts optional `node_class_filter` param
 - **Material** — `export_material_graph` now accepts `include_properties` (bool) and `include_positions` (bool) params
 - **Material** — `get_thumbnail` now accepts `save_to_file` (bool) param
-- **All** — Per-action param schemas in `monolith.discover()` output — all 122 actions now self-document their params
+- **All** — Per-action param schemas in `monolith_discover()` output — all 122 actions now self-document their params
 
 ### Fixed
 

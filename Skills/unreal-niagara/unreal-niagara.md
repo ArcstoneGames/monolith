@@ -5,12 +5,12 @@ description: Use when creating, editing, or inspecting Niagara particle systems 
 
 # Unreal Niagara VFX Workflows
 
-You have access to **Monolith** with 41 Niagara actions via `niagara.query()`.
+You have access to **Monolith** with 41 Niagara actions via `niagara_query()`.
 
 ## Discovery
 
 ```
-monolith.discover({ namespace: "niagara" })
+monolith_discover({ namespace: "niagara" })
 ```
 
 ## Asset Path Conventions
@@ -108,20 +108,20 @@ All asset paths follow UE content browser format (no .uasset extension):
 
 ### Inspect a system
 ```
-niagara.query({ action: "list_emitters", params: { asset_path: "/Game/VFX/NS_Sparks" } })
-niagara.query({ action: "get_ordered_modules", params: { asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain" } })
-niagara.query({ action: "get_module_inputs", params: { asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain", module_node: "<GUID from get_ordered_modules>" } })
+niagara_query({ action: "list_emitters", params: { asset_path: "/Game/VFX/NS_Sparks" } })
+niagara_query({ action: "get_ordered_modules", params: { asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain" } })
+niagara_query({ action: "get_module_inputs", params: { asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain", module_node: "<GUID from get_ordered_modules>" } })
 ```
 
 ### Create a system and add an emitter
 ```
-niagara.query({ action: "create_system", params: { asset_path: "/Game/VFX/NS_Sparks" } })
-niagara.query({ action: "add_emitter", params: { asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain" } })
+niagara_query({ action: "create_system", params: { asset_path: "/Game/VFX/NS_Sparks" } })
+niagara_query({ action: "add_emitter", params: { asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain" } })
 ```
 
 ### Set a module input value
 ```
-niagara.query({ action: "set_module_input_value", params: {
+niagara_query({ action: "set_module_input_value", params: {
   asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain",
   module_node: "<GUID>", input: "Lifetime", value: 2.0
 }})
@@ -129,8 +129,8 @@ niagara.query({ action: "set_module_input_value", params: {
 
 ### Add a renderer with material
 ```
-niagara.query({ action: "add_renderer", params: { asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain", type: "SpriteRenderer" } })
-niagara.query({ action: "set_renderer_material", params: {
+niagara_query({ action: "add_renderer", params: { asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain", type: "SpriteRenderer" } })
+niagara_query({ action: "set_renderer_material", params: {
   asset_path: "/Game/VFX/NS_Sparks", emitter: "Fountain",
   renderer: "SpriteRenderer", material: "/Game/Materials/M_Particle"
 }})
@@ -138,7 +138,7 @@ niagara.query({ action: "set_renderer_material", params: {
 
 ## Rules
 
-- Use `monolith.discover("niagara")` to see per-action param schemas — there are 41 actions
+- Use `monolith_discover("niagara")` to see per-action param schemas — there are 41 actions
 - The primary asset param is `asset_path`, NOT `system` or `asset`
 - Module actions require `module_node` (a GUID) — get it from `get_ordered_modules`
 - Module stages: `Emitter Spawn`, `Emitter Update`, `Particle Spawn`, `Particle Update`, `Render`
