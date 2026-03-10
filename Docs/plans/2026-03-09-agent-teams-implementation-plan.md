@@ -4,7 +4,7 @@
 
 **Goal:** Build a multi-agent team system for Unreal Engine development, powered by Claude Code Agent Teams + Monolith MCP plugin, enabling a team lead to decompose UE goals into specialist tasks executed in parallel.
 
-**Architecture:** New `MonolithTeams` C++ module (10 MCP actions including blackboard store, validation gates, compile-and-wait, asset dependency queries) bundled with Monolith but **disabled by default**. Agent definitions, orchestrator skill, quality gate hooks, and CLAUDE.md template shipped in `Templates/AgentTeams/` for opt-in setup. All layered on Claude Code's experimental Agent Teams feature and Monolith v0.5.0.
+**Architecture:** New `MonolithTeams` C++ module (10 MCP actions including blackboard store, validation gates, compile-and-wait, asset dependency queries) bundled with Monolith but **disabled by default**. Agent definitions, orchestrator skill, quality gate hooks, and CLAUDE.md template shipped in `Templates/AgentTeams/` for opt-in setup. All layered on Claude Code's experimental Agent Teams feature and Monolith v0.7.0.
 
 **Tech Stack:** UE 5.7 C++ (MonolithCore plugin pattern), SQLite (via MonolithIndex), Claude Code Agent Teams, MCP protocol, Bash hooks, Markdown agent definitions with YAML frontmatter.
 
@@ -968,7 +968,7 @@ The setup script is gone. Instead, `AGENT-TEAMS-SETUP.md` is a comprehensive gui
 ## Before You Start
 
 Confirm with the user:
-1. They have **Monolith v0.5.0+** installed (check Monolith.uplugin VersionName)
+1. They have **Monolith v0.7.0+** installed (check Monolith.uplugin VersionName)
 2. They're using **Claude Code** (or another MCP client that supports Agent Teams)
 3. They understand Agent Teams is **experimental** — it may change or break between versions
 
@@ -1080,9 +1080,9 @@ This project uses the Monolith plugin (MCP server on port 9316) with 10 namespac
 | Namespace | Actions | Key Actions |
 |-----------|---------|-------------|
 | `monolith` | 4 | `monolith_discover`, `monolith_status` |
-| `blueprint` | 5 | `get_graph`, `get_variables`, `search_nodes` |
-| `material` | 14 | `build_material_graph`, `validate_material`, `get_graph` |
-| `animation` | 23 | `get_montage`, `get_blend_space`, `get_abp_graph` |
+| `blueprint` | 6 | `get_graph`, `get_variables`, `search_nodes` |
+| `material` | 25 | `build_material_graph`, `validate_material`, `get_graph` |
+| `animation` | 67 | `get_montage`, `get_blend_space`, `get_abp_graph` |
 | `niagara` | 41 | `create_system_from_spec`, `batch_execute`, `get_system` |
 | `editor` | 13 | `compile`, `get_build_errors`, `get_log` |
 | `config` | 6 | `get_config`, `search_config`, `explain_config` |
@@ -1163,7 +1163,7 @@ To start a team session:
 
 Short human-readable doc explaining:
 - What Agent Teams is (experimental multi-agent coordination for UE development)
-- Prerequisites (Monolith v0.5.0+, Claude Code, experimental flag)
+- Prerequisites (Monolith v0.7.0+, Claude Code, experimental flag)
 - How to set up: *"Tell your AI: Read `Plugins/Monolith/Templates/AgentTeams/AGENT-TEAMS-SETUP.md`"*
 - What gets installed (agents, hooks, skills, settings, CLAUDE.md sections)
 - Quick start after setup

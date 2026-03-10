@@ -3,7 +3,7 @@
 **Version:** 1.0
 **Date:** 2026-03-09
 **Engine:** Unreal Engine 5.7
-**Monolith:** v0.5.0+
+**Monolith:** v0.7.0+
 **Claude Code:** v2.1.32+ with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
 
 ---
@@ -13,7 +13,7 @@
 Agent Teams for Unreal Engine is a coordinated multi-agent system built on three layers:
 
 1. **Claude Code Agent Teams** (experimental, already exists) — team lead + teammates with shared task list and mailboxes
-2. **Monolith MCP Plugin** (already exists, v0.5.0) — 121 actions across 9 domains providing full editor access
+2. **Monolith MCP Plugin** (already exists, v0.7.0) — 177 actions across 9 domains providing full editor access
 3. **New deliverables** (this phase) — team lead skill, specialist agent definitions, quality gate hooks, shared blackboard convention, and a new `MonolithTeams` C++ module
 
 A user describes a high-level UE goal. The Team Lead decomposes it into a dependency-aware task DAG, dynamically spawns 2-6 specialist agents (C++, Blueprint, Material, Animation, Niagara), coordinates their work through Monolith's MCP tools, validates results, and reports back.
@@ -59,7 +59,7 @@ User
 | Layer | Provides | Already Exists? |
 |-------|----------|----------------|
 | Claude Code Agent Teams | Team lead, teammates, shared task list, mailboxes, TeammateIdle/TaskCompleted hooks | Yes (experimental) |
-| Monolith MCP | 121 actions: blueprint, material, animation, niagara, editor, config, project, source | Yes (v0.5.0) |
+| Monolith MCP | 177 actions: blueprint, material, animation, niagara, editor, config, project, source | Yes (v0.7.0) |
 | `.claude/agents/*.md` | Custom agent definitions with tool restrictions, skills, model selection | Yes (Claude Code feature) |
 | Team Lead Skill | Orchestration logic, task decomposition templates, dependency rules | **BUILD** |
 | Quality Gate Hooks | TaskCompleted validation scripts per agent type | **BUILD** |
@@ -283,7 +283,7 @@ This approach:
 - No bash script dependency — works on any OS, any MCP client
 
 The CLAUDE.md sections cover:
-- Monolith MCP tool reference (10 namespaces, 131 actions)
+- Monolith MCP tool reference (10 namespaces, 177 actions)
 - Agent team coordination rules (compile gate, blackboard protocol, one-agent-per-asset, handoff manifests)
 - UE naming conventions (BP_, M_, MI_, MF_, AM_, ABP_, NS_, SM_, SK_, T_, WBP_)
 - Build rules (Live Coding default, full rebuild criteria)
