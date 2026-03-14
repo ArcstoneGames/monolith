@@ -45,7 +45,7 @@ bool FMonolithSourceDatabase::Open(const FString& DbPath)
 		return false;
 	}
 
-	// Force DELETE journal mode — WAL breaks ReadOnly on Windows and can linger from the Python indexer
+	// Force DELETE journal mode — WAL breaks ReadOnly on Windows
 	Database->Execute(TEXT("PRAGMA journal_mode=DELETE;"));
 
 	UE_LOG(LogMonolithSource, Log, TEXT("Engine source DB opened: %s"), *DbPath);

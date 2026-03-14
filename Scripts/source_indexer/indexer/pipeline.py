@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -44,6 +45,7 @@ class IndexingPipeline:
         self._symbol_spans: dict[str, tuple[int, int]] = {}
         self._class_name_to_id: dict[str, int] = {}
         self._class_spans: dict[str, tuple[int, int]] = {}
+        self._new_file_ids: set[int] = set()
         self._diag: dict[str, int] = {
             "forward_decls": 0,
             "definitions": 0,
@@ -58,6 +60,33 @@ class IndexingPipeline:
     @property
     def diagnostics(self) -> dict[str, int]:
         return dict(self._diag)
+
+    def load_existing_symbols(self) -> int:
+        """Load all existing symbols from DB into in-memory maps.
+
+        Call this before incremental indexing so that cross-references
+        (e.g. project -> engine) can resolve against the full symbol table.
+        Returns the number of symbols loaded.
+        """
+        t0 = time.monotonic()
+        rows = self._conn.execute(
+            "SELECT id, name, qualified_name, kind, line_start, line_end "
+            "FROM symbols"
+        ).fetchall()
+
+        count = 0
+        for row in rows:
+            sym_id, name, qname, kind, ls, le = row
+            self._update_symbol_map(name, sym_id, ls, le)
+            if qname != name:
+                self._update_symbol_map(qname, sym_id, ls, le)
+            if kind in ("class", "struct"):
+                self._update_class_map(name, sym_id, ls, le)
+            count += 1
+
+        elapsed = time.monotonic() - t0
+        print(f"  Loaded {count:,} existing symbols into memory ({elapsed:.1f}s)", flush=True)
+        return count
 
     def index_directory(
         self,
@@ -152,7 +181,7 @@ class IndexingPipeline:
                 on_progress(mod_name, i + 1, total_modules, total_files, total_symbols)
 
         if on_progress:
-            on_progress("Finalizing (inheritance + references)...", total_modules, total_modules, total_files, total_symbols)
+            on_progress("Finalizing...", total_modules, total_modules, total_files, total_symbols)
         self._finalize()
 
         return {
@@ -161,21 +190,81 @@ class IndexingPipeline:
             "errors": total_errors,
         }
 
-    def _finalize(self) -> None:
+    def _finalize(self, file_ids: set[int] | None = None) -> None:
+        """Resolve inheritance and extract references.
+
+        Args:
+            file_ids: If provided, only extract references from these files.
+                      If None, uses self._new_file_ids (files added this session).
+                      Falls back to all C++ files if no tracking data available.
+        """
+        target_ids = file_ids or self._new_file_ids
+
+        # Phase 1: Inheritance
+        t0 = time.monotonic()
         self._resolve_inheritance()
         self._conn.commit()
+        print(f"  Inheritance resolved ({time.monotonic() - t0:.1f}s)", flush=True)
+
+        # Phase 2: Reference extraction (only new files when available)
+        if target_ids:
+            self._conn.execute("CREATE TEMP TABLE IF NOT EXISTS _new_files (id INTEGER PRIMARY KEY)")
+            self._conn.execute("DELETE FROM _new_files")
+            self._conn.executemany(
+                "INSERT INTO _new_files (id) VALUES (?)",
+                [(fid,) for fid in target_ids],
+            )
+            rows = self._conn.execute(
+                "SELECT f.id, f.path FROM files f "
+                "JOIN _new_files nf ON nf.id = f.id "
+                "WHERE f.file_type IN ('header', 'source', 'inline')"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT id, path FROM files WHERE file_type IN ('header', 'source', 'inline')"
+            ).fetchall()
+
+        total = len(rows)
+        if total == 0:
+            print("  No files to extract references from", flush=True)
+            return
+
+        print(f"  Extracting references from {total:,} files...", flush=True)
 
         ref_builder = ReferenceBuilder(self._conn, self._symbol_name_to_id)
-        rows = self._conn.execute(
-            "SELECT id, path FROM files WHERE file_type IN ('header', 'source', 'inline')"
-        ).fetchall()
-        for row in rows:
+        refs_total = 0
+        errors = 0
+        t0 = time.monotonic()
+        last_report = t0
+
+        for i, row in enumerate(rows):
             fpath = Path(row[1])
             try:
-                ref_builder.extract_references(fpath, row[0])
+                refs = ref_builder.extract_references(fpath, row[0])
+                refs_total += refs
             except Exception:
                 logger.warning("Error extracting refs from %s", fpath, exc_info=True)
+                errors += 1
+
+            now = time.monotonic()
+            if now - last_report >= 5.0 or (i + 1) % 1000 == 0:
+                elapsed = now - t0
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                eta = (total - i - 1) / rate if rate > 0 else 0
+                print(
+                    f"    [{i+1:,}/{total:,}] {refs_total:,} refs, "
+                    f"{rate:.0f} files/s, ETA {eta:.0f}s",
+                    flush=True,
+                )
+                last_report = now
+
         self._conn.commit()
+        elapsed = time.monotonic() - t0
+        print(
+            f"  References done: {refs_total:,} refs from {total:,} files "
+            f"({elapsed:.1f}s, {errors} errors)",
+            flush=True,
+        )
 
     def _index_cpp_file(self, path: Path, mod_id: int) -> int:
         result = self._cpp_parser.parse_file(path)
@@ -188,6 +277,7 @@ class IndexingPipeline:
             file_type=file_type, line_count=len(result.source_lines),
             last_modified=path.stat().st_mtime,
         )
+        self._new_file_ids.add(file_id)
 
         for inc_path in result.includes:
             line_num = 0
@@ -257,6 +347,7 @@ class IndexingPipeline:
             file_type=file_type, line_count=len(source_lines),
             last_modified=path.stat().st_mtime,
         )
+        self._new_file_ids.add(file_id)
 
         for inc_path in result.includes:
             line_num = 0
@@ -327,7 +418,11 @@ class IndexingPipeline:
 
     def _resolve_inheritance(self) -> None:
         keys_to_process = [k for k in self._symbol_name_to_id if k.startswith("_bases_")]
-        for key in keys_to_process:
+        total = len(keys_to_process)
+        if total > 0:
+            print(f"  Resolving inheritance for {total:,} classes...", flush=True)
+
+        for i, key in enumerate(keys_to_process):
             child_name = key[len("_bases_"):]
             base_classes = self._symbol_name_to_id[key]
             child_id = self._class_name_to_id.get(child_name)

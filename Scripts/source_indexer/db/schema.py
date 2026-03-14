@@ -117,12 +117,20 @@ END;
 def init_db(conn: sqlite3.Connection) -> None:
     """Create all tables, indexes, FTS virtual tables, and triggers.
 
-    Sets schema_version=1 in meta table.
+    Sets schema_version=1 in meta table. Safe to call on an existing DB
+    (all CREATE statements use IF NOT EXISTS).
     """
-    conn.executescript(_DDL)
-    conn.executescript(_TRIGGERS)
-    conn.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-        (str(SCHEMA_VERSION),),
-    )
-    conn.commit()
+    try:
+        conn.executescript(_DDL)
+        conn.executescript(_TRIGGERS)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "readonly" in str(e).lower():
+            # DB exists but is locked by another process — schema is already there
+            pass
+        else:
+            raise

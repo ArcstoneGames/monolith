@@ -105,15 +105,23 @@ void UMonolithSourceSubsystem::TriggerReindex()
 			if (ReturnCode == 0)
 			{
 				UE_LOG(LogMonolithSource, Log, TEXT("Engine source indexing complete: %s"), *StdOut);
-				// Reopen the DB
-				if (Database.IsValid())
-				{
-					Database->Open(DbPath);
-				}
 			}
 			else
 			{
-				UE_LOG(LogMonolithSource, Error, TEXT("Engine source indexing failed (code %d): %s\n%s"), ReturnCode, *StdOut, *StdErr);
+				UE_LOG(LogMonolithSource, Warning, TEXT("Engine source indexing exited with code %d (may be expected if DB was built externally): %s"), ReturnCode, *StdErr);
+			}
+
+			// Always reopen the DB — it may have been built/updated externally (e.g. index_project.py)
+			if (Database.IsValid())
+			{
+				IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+				if (PlatformFile.FileExists(*DbPath))
+				{
+					if (Database->Open(DbPath))
+					{
+						UE_LOG(LogMonolithSource, Log, TEXT("Engine source DB reopened: %s"), *DbPath);
+					}
+				}
 			}
 		});
 	});
