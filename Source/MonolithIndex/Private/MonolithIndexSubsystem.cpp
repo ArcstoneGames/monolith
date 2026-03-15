@@ -311,6 +311,25 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 			}
 			Filter.PackagePaths.Add(FName(*CleanPath));
 		}
+		// Add user-configured additional content paths
+		{
+			const UMonolithSettings* Settings = GetDefault<UMonolithSettings>();
+			if (Settings)
+			{
+				for (const FString& CustomPath : Settings->AdditionalContentPaths)
+				{
+					if (!CustomPath.IsEmpty())
+					{
+						FString CleanPath = CustomPath;
+						if (CleanPath.EndsWith(TEXT("/")))
+						{
+							CleanPath.LeftChopInline(1);
+						}
+						Filter.PackagePaths.AddUnique(FName(*CleanPath));
+					}
+				}
+			}
+		}
 		Filter.bRecursivePaths = true;
 		AssetRegistry.GetAssets(Filter, AllAssets);
 
@@ -381,6 +400,16 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 					IndexedAsset.ModuleName = PluginInfo.PluginName;
 					break;
 				}
+			}
+		}
+
+		// If not matched to a marketplace plugin, check additional content paths
+		if (IndexedAsset.ModuleName.IsEmpty() && !IndexedAsset.PackagePath.StartsWith(TEXT("/Game/")))
+		{
+			int32 SecondSlash = IndexedAsset.PackagePath.Find(TEXT("/"), ESearchCase::CaseSensitive, ESearchDir::FromStart, 1);
+			if (SecondSlash > 1)
+			{
+				IndexedAsset.ModuleName = IndexedAsset.PackagePath.Mid(1, SecondSlash - 1);
 			}
 		}
 
@@ -557,6 +586,25 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 			CleanPath.LeftChopInline(1);
 		}
 		IndexedPaths.Add(FName(*CleanPath));
+	}
+	// Add user-configured additional content paths
+	{
+		const UMonolithSettings* Settings = GetDefault<UMonolithSettings>();
+		if (Settings)
+		{
+			for (const FString& CustomPath : Settings->AdditionalContentPaths)
+			{
+				if (!CustomPath.IsEmpty())
+				{
+					FString CleanPath = CustomPath;
+					if (CleanPath.EndsWith(TEXT("/")))
+					{
+						CleanPath.LeftChopInline(1);
+					}
+					IndexedPaths.AddUnique(FName(*CleanPath));
+				}
+			}
+		}
 	}
 
 	// Run dependency indexer on game thread (Asset Registry requires it)
