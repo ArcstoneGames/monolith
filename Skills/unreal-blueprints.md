@@ -5,7 +5,7 @@ description: Use when working with Unreal Engine Blueprints via Monolith MCP —
 
 # Unreal Blueprint Workflows
 
-You have access to **Monolith** with 52 Blueprint actions via `blueprint_query()`.
+You have access to **Monolith** with 55 Blueprint actions via `blueprint_query()`.
 
 ## Discovery
 
@@ -116,11 +116,14 @@ monolith_discover({ namespace: "blueprint" })
 | `duplicate_blueprint` | `asset_path`, `new_path` | Duplicate Blueprint to new path |
 | `get_dependencies` | `asset_path`, `direction`? | Asset dependencies (depends_on/referenced_by/both) |
 
-### Batch Operations (1)
+### Batch Operations (4)
 
 | Action | Key Params | Purpose |
 |--------|-----------|---------|
-| `batch_execute` | `asset_path`, `operations`, `compile_on_complete`?, `stop_on_error`? | Run multiple BP operations in one round-trip. `operations`: array of `{op, ...params}`. Returns per-op results. Supports all 26 write actions. THE highest-leverage action |
+| `batch_execute` | `asset_path`, `operations`, `compile_on_complete`?, `stop_on_error`? | Run multiple BP operations in one round-trip. `operations`: array of `{op, ...params}`. Returns per-op results. Supports all write actions |
+| `add_nodes_bulk` | `asset_path`, `nodes` (array with `temp_id`), `auto_layout`? | Place multiple nodes in one call. Returns `temp_id` → `node_id` mapping for use in connect_pins_bulk |
+| `connect_pins_bulk` | `asset_path`, `connections` (array) | Wire multiple pin connections in one call. Per-connection success/failure |
+| `set_pin_defaults_bulk` | `asset_path`, `defaults` (array) | Set multiple pin defaults in one call |
 
 **`add_variable` type aliases:** `"integer"` → int, `"vector"` → Vector, `"color"` → LinearColor, `"rotator"` → Rotator, `"transform"` → Transform. Unknown types return error with valid type list.
 

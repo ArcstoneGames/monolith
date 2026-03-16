@@ -5,7 +5,7 @@ description: Use when creating, editing, or inspecting Unreal Engine materials v
 
 # Unreal Material Workflows
 
-You have access to **Monolith** with 36 material actions via `material_query()`.
+You have access to **Monolith** with 41 material actions via `material_query()`.
 
 ## Discovery
 
@@ -27,9 +27,9 @@ All asset paths follow UE content browser format (no .uasset extension):
 
 - `asset_path` — the material asset path (NOT `asset`)
 
-## Action Reference (36 actions)
+## Action Reference (41 actions)
 
-### Read Actions (13)
+### Read Actions (15)
 | Action | Key Params | Purpose |
 |--------|-----------|---------|
 | `get_all_expressions` | `asset_path` | List all expression nodes in a material |
@@ -41,6 +41,8 @@ All asset paths follow UE content browser format (no .uasset extension):
 | `get_compilation_stats` | `asset_path` | Instruction counts (vertex + pixel shader), sampler usage, blend mode, compile status |
 | `get_layer_info` | `asset_path` | Inspect material layer/blend stack |
 | `list_expression_classes` | `filter`?, `category`? | List all available expression classes with pin counts. Cached after first call |
+| `get_expression_pin_info` | `class_name` | Query pin names/types for an expression class without creating an instance in a material |
+| `list_material_instances` | `parent_path`, `recursive`? | Find all instances of a parent material. Recursive walks instance-of-instance trees |
 | `export_material_graph` | `asset_path`, `include_properties`?, `include_positions`? | Serialize graph as JSON. Pass `include_properties: false` to reduce ~70% |
 | `get_thumbnail` | `asset_path`, `save_to_file`? | Get thumbnail. Use `save_to_file: true` — inline base64 wastes context |
 | `validate_material` | `asset_path`, `fix_issues`? | Check for broken connections, unused nodes, errors |
@@ -55,13 +57,16 @@ All asset paths follow UE content browser format (no .uasset extension):
 | `clear_instance_parameter` | `asset_path`, `parameter_name`, `parameter_type`? | Remove a single override (reverts to parent). Use type `"all"` to clear everything |
 | `save_material` | `asset_path`, `only_if_dirty`? | Save material to disk. One-liner |
 
-### Write Actions (18)
+### Write Actions (21)
 | Action | Key Params | Purpose |
 |--------|-----------|---------|
 | `auto_layout` | `asset_path` | Topological-sort layout on all expressions. Works on UMaterial and UMaterialFunction |
 | `create_material` | `asset_path`, `blend_mode`?, `shading_model`?, `two_sided`? | Create a new empty material with properties |
 | `build_material_graph` | `asset_path`, `graph_spec`, `clear_existing`? | Build entire graph from JSON spec (fastest path). Emits blend mode validation warnings |
 | `create_custom_hlsl_node` | `asset_path`, `code`, `inputs`?, `additional_outputs`? | Add a Custom HLSL expression |
+| `update_custom_hlsl_node` | `asset_path`, `expression_name`, `code`?, `inputs`?, `additional_outputs`? | Edit existing Custom HLSL node without rebuild |
+| `replace_expression` | `asset_path`, `expression_name`, `new_class`, `preserve_connections`? | Swap node type in-place. Reconnects by pin name match, index fallback with warnings |
+| `rename_expression` | `asset_path`, `expression_name`, `new_desc` | Set user-visible label (Desc property) on an expression |
 | `duplicate_expression` | `asset_path`, `expression_name`, `offset_x`?, `offset_y`? | Duplicate a node with position offset. Connections NOT duplicated |
 | `move_expression` | `asset_path`, `expression_name` OR `expressions` (array), `pos_x`, `pos_y`, `relative`? | Reposition expressions. Batch mode with array. `relative: true` for offsets |
 | `set_material_property` | `asset_path`, `blend_mode`?, `shading_model`?, `two_sided`?, etc. | Set material-level properties. Accepts both short (`"Additive"`) and prefixed (`"BLEND_Additive"`) enum forms |

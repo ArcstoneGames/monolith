@@ -17,4 +17,9 @@ public:
 
 	// Wave 3 — Discovery & Resolution
 	static FMonolithActionResult HandleResolveNode(const TSharedPtr<FJsonObject>& Params);
+
+	// Wave 4 — Bulk Node Operations
+	static FMonolithActionResult HandleAddNodesBulk(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult HandleConnectPinsBulk(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult HandleSetPinDefaultsBulk(const TSharedPtr<FJsonObject>& Params);
 };

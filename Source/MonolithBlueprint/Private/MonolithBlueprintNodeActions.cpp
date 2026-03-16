@@ -117,6 +117,36 @@ void FMonolithBlueprintNodeActions::RegisterActions(FMonolithToolRegistry& Regis
 			.Optional(TEXT("compile_on_complete"), TEXT("boolean"), TEXT("Compile the Blueprint after all operations complete (default: false)"))
 			.Optional(TEXT("stop_on_error"),       TEXT("boolean"), TEXT("Stop processing on first failed operation (default: false)"))
 			.Build());
+
+	// ---- Wave 4 ----
+
+	Registry.RegisterAction(TEXT("blueprint"), TEXT("add_nodes_bulk"),
+		TEXT("Place multiple nodes in one transaction. Returns a temp_id -> node_id mapping so callers can immediately reference created nodes in connect_pins_bulk. Each entry: { temp_id, node_type, function_name?, target_class?, variable_name?, position? }."),
+		FMonolithActionHandler::CreateStatic(&HandleAddNodesBulk),
+		FParamSchemaBuilder()
+			.Required(TEXT("asset_path"),  TEXT("string"),  TEXT("Blueprint asset path"))
+			.Required(TEXT("nodes"),       TEXT("array"),   TEXT("Array of node descriptors: { temp_id, node_type, function_name?, target_class?, variable_name?, position? }"))
+			.Optional(TEXT("graph_name"),  TEXT("string"),  TEXT("Graph name (defaults to EventGraph)"))
+			.Optional(TEXT("auto_layout"), TEXT("boolean"), TEXT("Auto-position nodes in a 5-column grid (200px horizontal, 100px vertical spacing). Ignored if position is set per node. Default: false."))
+			.Build());
+
+	Registry.RegisterAction(TEXT("blueprint"), TEXT("connect_pins_bulk"),
+		TEXT("Wire multiple pin connections in one transaction. Each entry: { source_node, source_pin, target_node, target_pin }. Returns per-connection success/error."),
+		FMonolithActionHandler::CreateStatic(&HandleConnectPinsBulk),
+		FParamSchemaBuilder()
+			.Required(TEXT("asset_path"),   TEXT("string"), TEXT("Blueprint asset path"))
+			.Required(TEXT("connections"),  TEXT("array"),  TEXT("Array of connection descriptors: { source_node, source_pin, target_node, target_pin }"))
+			.Optional(TEXT("graph_name"),   TEXT("string"), TEXT("Graph name (searches all graphs if omitted)"))
+			.Build());
+
+	Registry.RegisterAction(TEXT("blueprint"), TEXT("set_pin_defaults_bulk"),
+		TEXT("Set multiple pin default values in one transaction. Each entry: { node_id, pin_name, value }. Returns per-entry success/error."),
+		FMonolithActionHandler::CreateStatic(&HandleSetPinDefaultsBulk),
+		FParamSchemaBuilder()
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+			.Required(TEXT("defaults"),   TEXT("array"),  TEXT("Array of pin default descriptors: { node_id, pin_name, value }"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph name (searches all graphs if omitted)"))
+			.Build());
 }
 
 // ============================================================
@@ -1144,4 +1174,316 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleResolveNode(const TSh
 	TempGraph->MarkAsGarbage();
 
 	return FMonolithActionResult::Success(Root);
+}
+
+// ============================================================
+//  add_nodes_bulk
+// ============================================================
+
+FMonolithActionResult FMonolithBlueprintNodeActions::HandleAddNodesBulk(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	UBlueprint* BP = MonolithBlueprintInternal::LoadBlueprintFromParams(Params, AssetPath);
+	if (!BP)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath));
+	}
+
+	// Parse nodes array — handle both EJson::Array (normal) and EJson::String (Claude Code quirk)
+	TArray<TSharedPtr<FJsonValue>> NodesArr;
+	TSharedPtr<FJsonValue> NodesField = Params->TryGetField(TEXT("nodes"));
+	if (!NodesField.IsValid())
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required field: nodes"));
+	}
+	if (NodesField->Type == EJson::Array)
+	{
+		NodesArr = NodesField->AsArray();
+	}
+	else if (NodesField->Type == EJson::String)
+	{
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(NodesField->AsString());
+		if (!FJsonSerializer::Deserialize(Reader, NodesArr))
+		{
+			return FMonolithActionResult::Error(TEXT("Failed to parse nodes string as JSON array"));
+		}
+	}
+	else
+	{
+		return FMonolithActionResult::Error(TEXT("'nodes' must be an array"));
+	}
+
+	bool bAutoLayout = false;
+	Params->TryGetBoolField(TEXT("auto_layout"), bAutoLayout);
+
+	FString SharedGraphName = Params->GetStringField(TEXT("graph_name"));
+
+	GEditor->BeginTransaction(NSLOCTEXT("Monolith", "BPAddNodesBulk", "BP Add Nodes Bulk"));
+
+	TArray<TSharedPtr<FJsonValue>> CreatedArr;
+	int32 Count = 0;
+
+	for (int32 i = 0; i < NodesArr.Num(); ++i)
+	{
+		TSharedPtr<FJsonObject> Entry = NodesArr[i]->AsObject();
+		if (!Entry.IsValid())
+		{
+			// Skip invalid entries silently — can't report without a temp_id
+			continue;
+		}
+
+		FString TempId = Entry->GetStringField(TEXT("temp_id"));
+
+		// Build sub-params: inject asset_path and graph_name, then copy all entry fields
+		TSharedRef<FJsonObject> SubParams = MakeShared<FJsonObject>();
+		SubParams->SetStringField(TEXT("asset_path"), AssetPath);
+		if (!SharedGraphName.IsEmpty())
+		{
+			SubParams->SetStringField(TEXT("graph_name"), SharedGraphName);
+		}
+		for (const auto& Pair : Entry->Values)
+		{
+			SubParams->SetField(Pair.Key, Pair.Value);
+		}
+
+		// Apply auto_layout position if the entry doesn't already specify one and auto_layout is on
+		if (bAutoLayout && !Entry->HasField(TEXT("position")))
+		{
+			int32 Col = i % 5;
+			int32 Row = i / 5;
+			TArray<TSharedPtr<FJsonValue>> PosArr;
+			PosArr.Add(MakeShared<FJsonValueNumber>(Col * 200));
+			PosArr.Add(MakeShared<FJsonValueNumber>(Row * 100));
+			SubParams->SetArrayField(TEXT("position"), PosArr);
+		}
+
+		FMonolithActionResult Result = HandleAddNode(SubParams);
+
+		TSharedRef<FJsonObject> Out = MakeShared<FJsonObject>();
+		Out->SetStringField(TEXT("temp_id"), TempId);
+		Out->SetBoolField(TEXT("success"), Result.bSuccess);
+
+		if (Result.bSuccess && Result.Result.IsValid())
+		{
+			// SerializeNode uses "id" (not "node_id") — matches get_graph_data format
+			FString NodeId = Result.Result->GetStringField(TEXT("id"));
+			FString NodeClass = Result.Result->GetStringField(TEXT("class"));
+			FString NodeTitle = Result.Result->GetStringField(TEXT("title"));
+
+			Out->SetStringField(TEXT("node_id"), NodeId);
+			Out->SetStringField(TEXT("class"),   NodeClass);
+			Out->SetStringField(TEXT("title"),   NodeTitle);
+			Count++;
+		}
+		else if (!Result.bSuccess)
+		{
+			Out->SetStringField(TEXT("error"), Result.ErrorMessage);
+		}
+
+		CreatedArr.Add(MakeShared<FJsonValueObject>(Out));
+	}
+
+	GEditor->EndTransaction();
+
+	TSharedRef<FJsonObject> Final = MakeShared<FJsonObject>();
+	Final->SetArrayField(TEXT("nodes_created"), CreatedArr);
+	Final->SetNumberField(TEXT("count"), Count);
+
+	return FMonolithActionResult::Success(Final);
+}
+
+// ============================================================
+//  connect_pins_bulk
+// ============================================================
+
+FMonolithActionResult FMonolithBlueprintNodeActions::HandleConnectPinsBulk(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	UBlueprint* BP = MonolithBlueprintInternal::LoadBlueprintFromParams(Params, AssetPath);
+	if (!BP)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath));
+	}
+
+	// Parse connections array — handle both EJson::Array and EJson::String (Claude Code quirk)
+	TArray<TSharedPtr<FJsonValue>> ConnArr;
+	TSharedPtr<FJsonValue> ConnField = Params->TryGetField(TEXT("connections"));
+	if (!ConnField.IsValid())
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required field: connections"));
+	}
+	if (ConnField->Type == EJson::Array)
+	{
+		ConnArr = ConnField->AsArray();
+	}
+	else if (ConnField->Type == EJson::String)
+	{
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ConnField->AsString());
+		if (!FJsonSerializer::Deserialize(Reader, ConnArr))
+		{
+			return FMonolithActionResult::Error(TEXT("Failed to parse connections string as JSON array"));
+		}
+	}
+	else
+	{
+		return FMonolithActionResult::Error(TEXT("'connections' must be an array"));
+	}
+
+	FString SharedGraphName = Params->GetStringField(TEXT("graph_name"));
+
+	GEditor->BeginTransaction(NSLOCTEXT("Monolith", "BPConnectPinsBulk", "BP Connect Pins Bulk"));
+
+	TArray<TSharedPtr<FJsonValue>> Results;
+	int32 Connected = 0, Failed = 0;
+
+	for (int32 i = 0; i < ConnArr.Num(); ++i)
+	{
+		TSharedPtr<FJsonObject> Entry = ConnArr[i]->AsObject();
+
+		TSharedRef<FJsonObject> RO = MakeShared<FJsonObject>();
+		RO->SetNumberField(TEXT("index"), i);
+
+		if (!Entry.IsValid())
+		{
+			RO->SetBoolField(TEXT("success"), false);
+			RO->SetStringField(TEXT("error"), TEXT("Connection entry is not a valid JSON object"));
+			Results.Add(MakeShared<FJsonValueObject>(RO));
+			Failed++;
+			continue;
+		}
+
+		// Build sub-params
+		TSharedRef<FJsonObject> SubParams = MakeShared<FJsonObject>();
+		SubParams->SetStringField(TEXT("asset_path"), AssetPath);
+		if (!SharedGraphName.IsEmpty())
+		{
+			SubParams->SetStringField(TEXT("graph_name"), SharedGraphName);
+		}
+		for (const auto& Pair : Entry->Values)
+		{
+			SubParams->SetField(Pair.Key, Pair.Value);
+		}
+
+		FMonolithActionResult Result = HandleConnectPins(SubParams);
+
+		RO->SetBoolField(TEXT("success"), Result.bSuccess);
+		if (!Result.bSuccess)
+		{
+			RO->SetStringField(TEXT("error"), Result.ErrorMessage);
+			Failed++;
+		}
+		else
+		{
+			Connected++;
+		}
+
+		Results.Add(MakeShared<FJsonValueObject>(RO));
+	}
+
+	GEditor->EndTransaction();
+
+	TSharedRef<FJsonObject> Final = MakeShared<FJsonObject>();
+	Final->SetNumberField(TEXT("connected"), Connected);
+	Final->SetNumberField(TEXT("failed"),    Failed);
+	Final->SetArrayField(TEXT("results"),    Results);
+
+	return FMonolithActionResult::Success(Final);
+}
+
+// ============================================================
+//  set_pin_defaults_bulk
+// ============================================================
+
+FMonolithActionResult FMonolithBlueprintNodeActions::HandleSetPinDefaultsBulk(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	UBlueprint* BP = MonolithBlueprintInternal::LoadBlueprintFromParams(Params, AssetPath);
+	if (!BP)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath));
+	}
+
+	// Parse defaults array — handle both EJson::Array and EJson::String (Claude Code quirk)
+	TArray<TSharedPtr<FJsonValue>> DefaultsArr;
+	TSharedPtr<FJsonValue> DefaultsField = Params->TryGetField(TEXT("defaults"));
+	if (!DefaultsField.IsValid())
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required field: defaults"));
+	}
+	if (DefaultsField->Type == EJson::Array)
+	{
+		DefaultsArr = DefaultsField->AsArray();
+	}
+	else if (DefaultsField->Type == EJson::String)
+	{
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(DefaultsField->AsString());
+		if (!FJsonSerializer::Deserialize(Reader, DefaultsArr))
+		{
+			return FMonolithActionResult::Error(TEXT("Failed to parse defaults string as JSON array"));
+		}
+	}
+	else
+	{
+		return FMonolithActionResult::Error(TEXT("'defaults' must be an array"));
+	}
+
+	FString SharedGraphName = Params->GetStringField(TEXT("graph_name"));
+
+	GEditor->BeginTransaction(NSLOCTEXT("Monolith", "BPSetPinDefaultsBulk", "BP Set Pin Defaults Bulk"));
+
+	TArray<TSharedPtr<FJsonValue>> Results;
+	int32 Set = 0, Failed = 0;
+
+	for (int32 i = 0; i < DefaultsArr.Num(); ++i)
+	{
+		TSharedPtr<FJsonObject> Entry = DefaultsArr[i]->AsObject();
+
+		TSharedRef<FJsonObject> RO = MakeShared<FJsonObject>();
+		RO->SetNumberField(TEXT("index"), i);
+
+		if (!Entry.IsValid())
+		{
+			RO->SetBoolField(TEXT("success"), false);
+			RO->SetStringField(TEXT("error"), TEXT("Default entry is not a valid JSON object"));
+			Results.Add(MakeShared<FJsonValueObject>(RO));
+			Failed++;
+			continue;
+		}
+
+		// Build sub-params
+		TSharedRef<FJsonObject> SubParams = MakeShared<FJsonObject>();
+		SubParams->SetStringField(TEXT("asset_path"), AssetPath);
+		if (!SharedGraphName.IsEmpty())
+		{
+			SubParams->SetStringField(TEXT("graph_name"), SharedGraphName);
+		}
+		for (const auto& Pair : Entry->Values)
+		{
+			SubParams->SetField(Pair.Key, Pair.Value);
+		}
+
+		FMonolithActionResult Result = HandleSetPinDefault(SubParams);
+
+		RO->SetBoolField(TEXT("success"), Result.bSuccess);
+		if (!Result.bSuccess)
+		{
+			RO->SetStringField(TEXT("error"), Result.ErrorMessage);
+			Failed++;
+		}
+		else
+		{
+			Set++;
+		}
+
+		Results.Add(MakeShared<FJsonValueObject>(RO));
+	}
+
+	GEditor->EndTransaction();
+
+	TSharedRef<FJsonObject> Final = MakeShared<FJsonObject>();
+	Final->SetNumberField(TEXT("set"),     Set);
+	Final->SetNumberField(TEXT("failed"),  Failed);
+	Final->SetArrayField(TEXT("results"),  Results);
+
+	return FMonolithActionResult::Success(Final);
 }

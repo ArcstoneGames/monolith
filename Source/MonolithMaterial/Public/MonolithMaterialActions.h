@@ -64,6 +64,13 @@ public:
 	static FMonolithActionResult ClearInstanceParameter(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult SaveMaterial(const TSharedPtr<FJsonObject>& Params);
 
+	// --- Wave 5: Graph editing power ---
+	static FMonolithActionResult UpdateCustomHlslNode(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult ReplaceExpression(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult GetExpressionPinInfo(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult RenameExpression(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult ListMaterialInstances(const TSharedPtr<FJsonObject>& Params);
+
 private:
 	/** Load a UMaterial from an asset path. Returns nullptr on failure. */
 	static UMaterial* LoadBaseMaterial(const FString& AssetPath);
