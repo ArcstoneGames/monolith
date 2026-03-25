@@ -5,7 +5,7 @@ description: Use when creating, editing, or inspecting Unreal Engine materials v
 
 # Unreal Material Workflows
 
-You have access to **Monolith** with 48 material actions via `material_query()`.
+You have access to **Monolith** with 57 material actions via `material_query()`.
 
 ## Discovery
 
@@ -27,9 +27,9 @@ All asset paths follow UE content browser format (no .uasset extension):
 
 - `asset_path` — the material asset path (NOT `asset`)
 
-## Action Reference (48 actions)
+## Action Reference (57 actions)
 
-### Read Actions (16)
+### Read Actions (18)
 | Action | Key Params | Purpose |
 |--------|-----------|---------|
 | `get_all_expressions` | `asset_path` | List all expression nodes in a material |
@@ -45,6 +45,8 @@ All asset paths follow UE content browser format (no .uasset extension):
 | `list_material_instances` | `parent_path`, `recursive`? | Find all instances of a parent material. Recursive walks instance-of-instance trees |
 | `get_function_info` | `asset_path` | Read material function inputs, outputs, description, expression list |
 | `export_material_graph` | `asset_path`, `include_properties`?, `include_positions`? | Serialize graph as JSON. Pass `include_properties: false` to reduce ~70% |
+| `export_function_graph` | `asset_path`, `include_properties`?, `include_positions`? | Full material function graph export — nodes, connections, properties, inputs, outputs, switch details |
+| `get_function_instance_info` | `asset_path` | Read MFI parent chain, all 11 parameter override types, inputs/outputs |
 | `get_thumbnail` | `asset_path`, `save_to_file`? | Get thumbnail. Use `save_to_file: true` — inline base64 wastes context |
 | `validate_material` | `asset_path`, `fix_issues`? | Check for broken connections, unused nodes, errors |
 | `render_preview` | `asset_path` | Trigger material compilation and preview |
@@ -58,11 +60,18 @@ All asset paths follow UE content browser format (no .uasset extension):
 | `clear_instance_parameter` | `asset_path`, `parameter_name`, `parameter_type`? | Remove a single override (reverts to parent). Use type `"all"` to clear everything |
 | `save_material` | `asset_path`, `only_if_dirty`? | Save material to disk. One-liner |
 
-### Function Actions (2)
+### Function Actions (9)
 | Action | Key Params | Purpose |
 |--------|-----------|---------|
-| `create_material_function` | `asset_path`, `description`?, `expose_to_library`? | Create a new material function asset |
+| `create_material_function` | `asset_path`, `type`?, `description`?, `expose_to_library`? | Create material function, layer, or layer blend (`type`: MaterialFunction/MaterialLayer/MaterialLayerBlend) |
 | `build_function_graph` | `asset_path`, `graph_spec` (with `inputs`, `outputs`, `nodes`, `connections`) | Build function graph with typed I/O. Same node spec as build_material_graph |
+| `set_function_metadata` | `asset_path`, `description`?, `expose_to_library`?, `library_categories`? | Update function description, categories, library exposure |
+| `delete_function_expression` | `asset_path`, `expression_name` | Remove expression(s) from function. Comma-separated names for batch. Rejects MFI paths |
+| `update_material_function` | `asset_path` | Recompile function and cascade to all referencing materials/instances |
+| `create_function_instance` | `asset_path`, `parent`, `scalar_overrides`?, `vector_overrides`?, `texture_overrides`?, `static_switch_overrides`? | Create MFI with parent + optional param overrides |
+| `set_function_instance_parameter` | `asset_path`, `parameter_name`, `scalar_value`?/`vector_value`?/`texture_value`?/`switch_value`? | Set param override on MFI |
+| `layout_function_expressions` | `asset_path` | Auto-arrange function graph layout. Rejects MFI paths |
+| `rename_function_parameter_group` | `asset_path`, `old_group`, `new_group` | Rename param group across all parameters |
 
 ### Write Actions (21)
 | Action | Key Params | Purpose |
@@ -266,4 +275,4 @@ When building materials for VFX, the material agent runs FIRST. The Niagara agen
 - Use `get_all_expressions` + `get_full_connection_graph` for inspection. Only use `export_material_graph` for round-tripping. Pass `include_properties: false` to reduce payload by ~70%
 - Use `render_preview` or `get_thumbnail` with `save_to_file: true` — inline base64 wastes context window
 - Blend mode warnings from `connect_expressions` / `build_material_graph` are informational — the connection is made, but the output pin is inactive unless the material's blend mode matches
-- There are exactly 48 material actions — use `monolith_discover("material")` to see them all
+- There are exactly 57 material actions — use `monolith_discover("material")` to see them all
