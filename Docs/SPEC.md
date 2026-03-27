@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 13 MCP tools (443 total actions across 10 domains), cutting AI assistant context consumption by ~95%.
+Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 14 MCP tools (489 total actions across 11 domains), cutting AI assistant context consumption by ~95%.
 
 ### What It Replaces
 
@@ -44,6 +44,7 @@ Monolith.uplugin
   MonolithIndex         — SQLite FTS5 deep project indexer, 14 internal indexers (7 MCP actions)
   MonolithSource        — Engine source + API lookup (11 actions)
   MonolithUI            — Widget blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility (42 actions)
+  MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, level blockout (46 actions)
 ```
 
 ### Discovery/Dispatch Pattern
@@ -64,7 +65,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | Module | Loading Phase | Type |
 |--------|--------------|------|
 | MonolithCore | PostEngineInit | Editor |
-| All others (9) | Default | Editor |
+| All others (10) | Default | Editor |
 
 ### Plugin Dependencies
 
@@ -76,6 +77,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 - IKRig
 - ControlRig
 - RigVM
+- GeometryScripting (optional — enables Tier 5 mesh operations)
 
 ---
 
@@ -812,6 +814,88 @@ All marked with "UE 5.7 FIX" comments:
 | `audit_accessibility` | `asset_path` | Audit a Widget Blueprint for common accessibility issues (missing tooltips, low contrast, small text) |
 | `set_colorblind_mode` | `asset_path`, `mode` | Apply a colorblind-safe palette mode (deuteranopia, protanopia, tritanopia) |
 | `set_text_scale` | `asset_path`, `scale` | Apply a global text scale factor to all text widgets in the blueprint |
+
+---
+
+### 3.11 MonolithMesh
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore, MonolithIndex, SQLiteCore, UnrealEd, EditorSubsystem, MeshDescription, StaticMeshDescription, MeshConversion, PhysicsCore, NavigationSystem, RenderCore, EditorScriptingUtilities, Json, JsonUtilities, Slate, SlateCore. Optional: GeometryScriptingCore, GeometryFramework (Tier 5 mesh ops)
+
+#### Classes
+
+| Class | Responsibility |
+|-------|---------------|
+| `FMonolithMeshModule` | Registers 46 mesh actions across 4 action classes |
+| `FMonolithMeshInspectionActions` | Mesh asset inspection: geometry stats, LODs, UVs, materials, collision, quality analysis, catalog (12 actions) |
+| `FMonolithMeshSceneActions` | Scene actor manipulation: spawn, move, duplicate, delete, group, batch execute (8 actions) |
+| `FMonolithMeshSpatialActions` | Spatial queries: raycasts, sweeps, overlaps, nearest, line of sight, navmesh, scene bounds/stats (11 actions) |
+| `FMonolithMeshBlockoutActions` | Level blockout: volumes, primitives, grids, asset matching, replacement, layout import/export, prop scatter (15 actions) |
+| `FMonolithMeshCatalog` | Mesh catalog database for search_meshes_by_size and get_mesh_catalog_stats |
+| `FMonolithMeshUtils` | Shared helpers for mesh loading, bounds calculation, actor queries |
+
+#### Actions (46 — namespace: "mesh")
+
+**Inspection (12)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `get_mesh_info` | `asset_path` | Full mesh info: vertex/triangle counts, bounds, LODs, materials, collision |
+| `get_mesh_bounds` | `asset_path` | Bounding box dimensions and center |
+| `get_mesh_materials` | `asset_path` | Material slot names and assigned materials |
+| `get_mesh_lods` | `asset_path` | LOD details: vertex/triangle counts, screen sizes |
+| `get_mesh_collision` | `asset_path` | Collision geometry: type, complexity, body count |
+| `get_mesh_uvs` | `asset_path` | UV channel info: channel count, bounds per channel |
+| `analyze_skeletal_mesh` | `asset_path` | Skeletal mesh analysis: bones, sockets, morph targets, physics bodies |
+| `analyze_mesh_quality` | `asset_path` | Quality metrics: degenerate triangles, UV distortion, overdraw estimate |
+| `compare_meshes` | `asset_path_a`, `asset_path_b` | Side-by-side comparison of two meshes |
+| `get_vertex_data` | `asset_path`, `lod`, `section` | Raw vertex data for a mesh section |
+| `search_meshes_by_size` | `min_size`, `max_size`, `limit` | Search indexed meshes by bounding box size range |
+| `get_mesh_catalog_stats` | none | Mesh catalog database statistics |
+
+**Scene Manipulation (8)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `get_actor_info` | `actor_name` | Full actor details: class, transform, components, tags |
+| `spawn_actor` | `class_name`, `location`, `rotation`, `label` | Spawn an actor in the current level |
+| `move_actor` | `actor_name`, `location`, `rotation`, `scale` | Set actor transform |
+| `duplicate_actor` | `actor_name`, `offset` | Duplicate an actor with optional offset |
+| `delete_actors` | `actor_names` | Delete one or more actors by name |
+| `group_actors` | `actor_names`, `group_name` | Group actors under a folder |
+| `set_actor_properties` | `actor_name`, `properties` | Set properties on an actor via reflection |
+| `batch_execute` | `operations` | Execute multiple scene operations in a single transaction |
+
+**Spatial Queries (11)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `query_raycast` | `start`, `end`, `channel` | Single-hit raycast with collision response |
+| `query_multi_raycast` | `start`, `end`, `channel` | Multi-hit raycast returning all intersections |
+| `query_radial_sweep` | `center`, `radius`, `channel` | Radial sphere sweep around a point |
+| `query_overlap` | `location`, `extent`, `channel` | Box overlap test at location |
+| `query_nearest` | `location`, `radius`, `class_filter` | Find nearest actor of a given class within radius |
+| `query_line_of_sight` | `from`, `to`, `ignore_actors` | Line-of-sight check between two points |
+| `get_actors_in_volume` | `volume_name` | Get all actors inside a named volume |
+| `get_scene_bounds` | none | Get the total bounds of all actors in the level |
+| `get_scene_statistics` | none | Scene stats: actor count, triangle count, draw calls, texture memory |
+| `get_spatial_relationships` | `actor_name`, `radius` | Get nearby actors and their spatial relationships |
+| `query_navmesh` | `start`, `end` | Query navigation mesh for path between two points |
+
+**Level Blockout (15)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `get_blockout_volumes` | none | List all blockout volumes in the level |
+| `get_blockout_volume_info` | `volume_name` | Detailed info about a blockout volume |
+| `setup_blockout_volume` | `location`, `extent`, `name`, `tags` | Create a blockout volume for level design |
+| `create_blockout_primitive` | `type`, `location`, `scale`, `material` | Create a blockout primitive (box, cylinder, sphere, etc.) |
+| `create_blockout_primitives_batch` | `primitives` | Batch-create multiple blockout primitives |
+| `create_blockout_grid` | `origin`, `cell_size`, `rows`, `columns` | Create a grid of blockout primitives |
+| `match_asset_to_blockout` | `blockout_actor`, `asset_path` | Match a production asset to replace a blockout primitive |
+| `match_all_in_volume` | `volume_name`, `asset_mapping` | Match all blockout primitives in a volume to production assets |
+| `apply_replacement` | `blockout_actor`, `asset_path` | Replace a blockout actor with a production mesh |
+| `set_actor_tags` | `actor_name`, `tags` | Set tags on an actor for blockout categorization |
+| `clear_blockout` | `volume_name` | Remove all blockout primitives in a volume |
+| `export_blockout_layout` | `volume_name`, `save_path` | Export blockout layout to JSON |
+| `import_blockout_layout` | `file_path` | Import a blockout layout from JSON |
+| `scan_volume` | `volume_name` | Scan a volume and report contents |
+| `scatter_props` | `volume_name`, `asset_paths`, `density`, `seed` | Scatter props randomly within a volume |
 
 ---
 

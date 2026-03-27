@@ -1,6 +1,27 @@
 # Monolith — TODO
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
+
+---
+
+### MonolithMesh Module — 46 Actions, Phases 0-4 Complete (2026-03-27)
+
+- [x] **Phase 0 — Module scaffold:** MonolithMesh module, Build.cs, uplugin entry, MeshCatalogIndexer
+- [x] **Phase 1 — Mesh Inspection (12):** `get_mesh_info`, `get_mesh_bounds`, `get_mesh_materials`, `get_mesh_lods`, `get_mesh_collision`, `get_mesh_uvs`, `analyze_skeletal_mesh`, `analyze_mesh_quality`, `compare_meshes`, `get_vertex_data`, `search_meshes_by_size`, `get_mesh_catalog_stats`
+- [x] **Phase 2 — Scene Manipulation (8):** `get_actor_info`, `spawn_actor`, `move_actor`, `duplicate_actor`, `delete_actors`, `group_actors`, `set_actor_properties`, `batch_execute`
+- [x] **Phase 3 — Spatial Queries (11):** `query_raycast`, `query_multi_raycast`, `query_radial_sweep`, `query_overlap`, `query_nearest`, `query_line_of_sight`, `get_actors_in_volume`, `get_scene_bounds`, `get_scene_statistics`, `get_spatial_relationships`, `query_navmesh`
+- [x] **Phase 4 — Level Blockout (15):** `get_blockout_volumes`, `get_blockout_volume_info`, `setup_blockout_volume`, `create_blockout_primitive`, `create_blockout_primitives_batch`, `create_blockout_grid`, `match_asset_to_blockout`, `match_all_in_volume`, `apply_replacement`, `set_actor_tags`, `clear_blockout`, `export_blockout_layout`, `import_blockout_layout`, `scan_volume`, `scatter_props`
+
+#### MonolithMesh — Remaining Work (Phases 5-12)
+
+- [ ] **Phase 5 — Mesh modification (GeometryScript):** Decimate, merge meshes, generate LODs, auto-UV, bake normals. Requires GeometryScripting plugin (optional dep already wired).
+- [ ] **Phase 6 — Instanced mesh support:** Foliage/HISM manipulation, instance transforms, bulk operations.
+- [ ] **Phase 7 — Procedural mesh generation:** Create meshes from vertex data, spline meshes, landscape queries.
+- [ ] **Phase 8 — Level streaming integration:** Streaming level queries, sub-level actor management.
+- [ ] **Phase 9 — Physics body operations:** Physics asset inspection/modification, constraint setup.
+- [ ] **Phase 10 — Lightmap/UV2 tooling:** Lightmap UV generation, density analysis, overlap detection.
+- [ ] **Phase 11 — Mesh merge/proxy:** HLOD proxy generation, mesh merge for draw call reduction.
+- [ ] **Phase 12 — Skill file + agent integration:** `unreal-mesh` skill, agent preloading, wiki Tool-Reference update.
 
 ---
 
@@ -135,7 +156,7 @@ Priority features identified for future waves:
 ## Completed
 
 - [x] Core infrastructure (HTTP server, registry, settings, JSON utils, asset utils)
-- [x] All 10 domain modules compiling clean on UE 5.7
+- [x] All 11 domain modules compiling clean on UE 5.7
 - [x] SQLite FTS5 project indexer with 14 indexers (Blueprint, Material, Generic, Dependency, Animation, Niagara, DataTable, Level, GameplayTag, Config, Cpp, UserDefinedEnum, UserDefinedStruct, InputAction)
 - [x] Python tree-sitter engine source indexer
 - [x] Auto-updater via GitHub Releases
@@ -270,3 +291,4 @@ Priority features identified for future waves:
 - [x] **Blueprint module upgrade: 6 → 46 actions** — IMPLEMENTED (2026-03-13). Added 40 new write actions across 5 categories: Variable CRUD (7), Component CRUD (6), Graph Management (9), Node & Pin Operations (6), Compile & Create (5). Also expanded Read Actions to 13 (added get_components, get_component_details, get_functions, get_event_dispatchers, get_parent_class, get_interfaces, get_construction_script). Total plugin actions: 177 → 217.
 - [x] **Offline CLI (`monolith_offline.py`)** — IMPLEMENTED (2026-03-13). Pure Python (stdlib only) CLI that queries `EngineSource.db` and `ProjectIndex.db` directly without the editor running. 14 actions across 2 namespaces: `source` (9 actions, mirrors `source_query`) and `project` (5 actions, mirrors `project_query`). Read-only, zero footprint, zero dependencies. Fallback for when MCP/editor is unavailable. Location: `Saved/monolith_offline.py`.
 - [x] **NEW: MonolithUI module** — IMPLEMENTED (2026-03-22). New module at `Source/MonolithUI/`. 42 actions in `ui` namespace (`ui_query` tool). 8 action classes: FMonolithUIActions (7), FMonolithUISlotActions (3), FMonolithUITemplateActions (8), FMonolithUIStylingActions (6), FMonolithUIAnimationActions (5), FMonolithUIBindingActions (4), FMonolithUISettingsActions (5), FMonolithUIAccessibilityActions (4).
+- [x] **NEW: MonolithMesh module** — IMPLEMENTED (2026-03-27). New module at `Source/MonolithMesh/`. 46 actions in `mesh` namespace (`mesh_query` tool). 4 action classes: FMonolithMeshInspectionActions (12), FMonolithMeshSceneActions (8), FMonolithMeshSpatialActions (11), FMonolithMeshBlockoutActions (15). MeshCatalogIndexer added to MonolithIndex.

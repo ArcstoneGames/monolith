@@ -1,6 +1,6 @@
 # Optional Module Architecture Specification
 
-**Status:** Approved Design | **Date:** 2026-03-26 | **Plugin:** Monolith v0.10.0+ | **Engine:** UE 5.7
+**Status:** Approved Design | **Date:** 2026-03-27 | **Plugin:** Monolith v0.10.0+ | **Engine:** UE 5.7
 
 ---
 
@@ -17,6 +17,8 @@ Monolith is an editor plugin distributed both as source (GitHub) and as precompi
 - **Binary users (releases):** Each optional integration ships as a **separate satellite `.uplugin`** (e.g., `MonolithGBA.uplugin`). It has a hard dependency on both `Monolith` and the target plugin. If the target plugin isn't enabled, UE silently skips loading the satellite. No error dialogs, no missing DLLs.
 
 The module source code is identical in both modes. The only difference is packaging: one `.uplugin` with conditional compilation vs. separate `.uplugin` files with hard deps.
+
+> **Platform note:** This specification targets Windows (Win64). Future Mac/Linux support would require updates to filesystem detection paths and packaging scripts.
 
 ---
 
@@ -286,6 +288,7 @@ MonolithComboGraph/                 # Another satellite
     "CanContainContent": false,
     "Installed": true,
     "EnabledByDefault": true,
+    "SupportedTargetPlatforms": ["Win64"],
     "Plugins": [
         {
             "Name": "Monolith",
@@ -309,6 +312,10 @@ MonolithComboGraph/                 # Another satellite
 **Hard dependencies are fine here.** The `.uplugin` declares both `Monolith` and `GBAPlugin` as required. If GBAPlugin isn't installed/enabled, UE won't attempt to load this plugin at all. The DLL never gets touched, so the missing GBAPlugin DLLs are irrelevant.
 
 `"EnabledByDefault": true` means users don't have to manually enable it in their project settings. If both parent plugins are present, the satellite activates automatically.
+
+`"Installed": true` prevents UE from auto-disabling the plugin when the `.uproject` doesn't explicitly list it. Without this, a freshly-extracted satellite can be silently skipped on first launch because UE treats unlisted non-installed plugins as disabled by default.
+
+`"SupportedTargetPlatforms": ["Win64"]` explicitly limits the satellite to Windows, matching Monolith's current platform support.
 
 ### 4.3 Build.cs in Binary Mode (No Conditional Logic)
 
@@ -414,6 +421,8 @@ The exact implementation depends on whether satellites live in the same git repo
 
 The `RegistryLock` (FCriticalSection) protects concurrent access. Satellite modules can register/unregister at any point during editor lifetime.
 
+> **Thread safety note:** In `ExecuteAction`, the lock is released before the handler delegate is invoked (the handler is copied out first). Between `Lock.Unlock()` and `HandlerCopy.Execute()`, it is theoretically possible for `UnregisterNamespace` to be called on that namespace. This is safe in practice because action handlers use `CreateStatic` delegates (no `this` pointer capture, no dangling reference). The static function address remains valid for the lifetime of the DLL. For editor-only code with no hot-unload of modules mid-request, this race window is acceptable.
+
 ### 5.2 Separate Namespaces Per Optional Module
 
 Each optional integration gets its own MCP tool namespace:
@@ -450,13 +459,18 @@ Currently, `monolith_discover` only reports namespaces that have registered acti
         "material": { "actions": 57, "status": "loaded" },
         "gba": { "actions": 0, "status": "not_installed",
                  "hint": "Install GBAPlugin (Fab) and enable MonolithGBA" },
-        "combograph": { "actions": 0, "status": "not_installed",
-                        "hint": "Install ComboGraph (Fab) and enable MonolithComboGraph" }
+        "combograph": { "actions": 12, "status": "disabled",
+                        "hint": "Enable in Project Settings > Plugins > Monolith > Modules > Optional" }
     }
 }
 ```
 
-Implementation: `MonolithCore` maintains a static list of known optional namespaces with their install hints. During discover, it checks whether each namespace has registered actions. If not, it reports the hint. This list is hardcoded in `MonolithCore` -- it's metadata, not a dependency.
+Implementation: `MonolithCore` maintains a static list of known optional namespaces with their install hints. During discover, it checks whether each namespace has registered actions. If not, it distinguishes two states:
+
+- **`"not_installed"`** -- the optional module's target plugin is not present on disk (satellite didn't load, or `WITH_FOO=0` in source mode).
+- **`"disabled"`** -- the module loaded but the user toggled it off in `UMonolithSettings`. The module's `StartupModule` returned early without registering actions. This is distinct from `"not_installed"` because re-enabling requires only a settings change and editor restart, not a plugin install.
+
+The known-modules list is hardcoded in `MonolithCore` -- it's metadata, not a dependency.
 
 ---
 
@@ -509,16 +523,18 @@ If a caller somehow invokes `gba_query` when the namespace isn't registered, `Ex
 
 ```cpp
 FMonolithActionResult::Error(
-    FString::Printf(TEXT("Unknown namespace: %s"), *Namespace),
-    -32601  // ErrMethodNotFound per JSON-RPC 2.0
+    FString::Printf(TEXT("Unknown action: %s.%s"), *Namespace, *Action),
+    FMonolithJsonUtils::ErrMethodNotFound  // -32601 per JSON-RPC 2.0
 );
 ```
+
+Note: this error fires for any unregistered namespace+action combination. The registry does not distinguish "unknown namespace" from "unknown action within a known namespace" -- both produce the same `"Unknown action: namespace.action"` error. This is intentional; from the caller's perspective the distinction rarely matters, and it avoids leaking information about which namespaces exist but have no matching action.
 
 The MCP proxy translates this to a standard JSON-RPC error response. No crash, no undefined behavior.
 
 ### 7.3 Discover Reports Availability
 
-As described in section 5.4, `monolith_discover` tells the caller which optional modules are known but not installed, with actionable hints. This lets AI agents understand what capabilities are available vs. what could be added.
+As described in section 5.4, `monolith_discover` tells the caller which optional modules are known but not installed (or installed but disabled), with actionable hints. This lets AI agents understand what capabilities are available vs. what could be added.
 
 ---
 
@@ -586,6 +602,7 @@ Follow the template in section 3.1. Key checklist:
 - [ ] Define `WITH_FOO=1` or `WITH_FOO=0` (never undefined)
 - [ ] Add dependency modules only when detected
 - [ ] Use `PrivateDependencyModuleNames` for third-party modules (not Public)
+- [ ] Research the obfuscated directory name for your target plugin by examining a Fab install. The prefix derives from the marketplace slug and is stable across versions but unique per product. For example, GBA uses `"Gameplaya*"` but another plugin will have a completely different prefix.
 
 ### Step 3: Implement Actions with Guards
 
@@ -601,12 +618,13 @@ Follow the template in section 3.1. Key checklist:
 
 ### Step 5: Settings Toggle
 
-- [ ] Add `bool bEnableFoo = true;` to `UMonolithSettings` under `Modules` category
+- [ ] Add `bool bEnableFoo = true;` to `UMonolithSettings` under `Modules|Optional` category
 - [ ] Check `bEnableFoo` in `StartupModule()`
 
 ### Step 6: Discover Metadata
 
 - [ ] Add entry to the known-optional-modules list in `MonolithCore` with namespace name and install hint
+- [ ] Include both `"not_installed"` and `"disabled"` hint strings
 
 ### Step 7: Create Satellite Build.cs for Binary Releases
 
@@ -746,11 +764,23 @@ For source mode: the next build evaluates `Directory.Exists()` → false → `WI
 
 ### 12.2 LoadingPhase Ordering
 
-MonolithCore uses `PostEngineInit`. All domain modules (including satellites) use `Default`. In UE 5.7, loading phases execute in this order: `PreDefault` → `Default` → `PostDefault` → `PostEngineInit`.
+MonolithCore uses `PostEngineInit`. All domain modules (including satellites) use `Default`. UE processes loading phases in order: `PreDefault` → `Default` → `PostDefault` → `PostEngineInit`.
 
-This means **satellite modules load and register actions BEFORE MonolithCore starts the HTTP server.** This is correct and intentional — by the time the first MCP request arrives, all actions are registered.
+Critically, UE's loading phase ordering works **across all plugins**, not per-plugin. UE loads ALL `Default`-phase modules from ALL enabled plugins before advancing to `PostEngineInit` for ANY plugin. This means satellite modules in separate `.uplugin` files (e.g., `MonolithGBA.uplugin`) also get their `Default`-phase modules loaded before MonolithCore's `PostEngineInit` startup runs. The cross-plugin phase guarantee is what makes the satellite architecture work: by the time MonolithCore starts the HTTP server at `PostEngineInit`, every satellite module has already had its `StartupModule()` called and registered its actions.
 
-**Do NOT set satellite modules to PostEngineInit.** This would create a race where the HTTP server might handle requests before satellite actions are registered.
+**Do NOT set satellite modules to PostEngineInit.** This would create a race where the HTTP server might handle requests before satellite actions are registered. There is no guaranteed ordering between modules at the same loading phase across different plugins.
+
+### 12.3 Live Coding / Hot Reload
+
+Live Coding does not affect satellite modules as long as the registry singleton lives in MonolithCore and satellites only modify their own namespace. The singleton pointer returned by `FMonolithToolRegistry::Get()` remains stable because MonolithCore's DLL is not patched when a satellite's code changes.
+
+Full module reloads via Live Coding are not supported — restart the editor. Live Coding patches are in-memory only and do not update the on-disk DLL.
+
+### 12.4 Stub DLL Accumulation (Source Mode)
+
+In source mode, each optional module listed in `Monolith.uplugin` produces a DLL even when the third-party plugin is not installed (`WITH_FOO=0` → stub). The stub DLL is tiny (just the module boilerplate) and loads in microseconds.
+
+For a small number of satellites (up to ~8) this is trivial overhead. If the satellite count grows beyond that, consider a build-time flag (`MONOLITH_EXCLUDE_OPTIONAL_MODULES`) that removes optional module entries from `.uplugin` entirely, preventing UBT from compiling them. This is a future optimization, not a current concern.
 
 ---
 

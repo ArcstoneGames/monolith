@@ -113,6 +113,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category="Indexing|Post-Pass Indexers")
 	bool bIndexGameplayTags = true;
 
+	/** Enable mesh catalog indexing (bounds, size class, category for all StaticMesh assets) */
+	UPROPERTY(config, EditAnywhere, Category="Indexing|Post-Pass Indexers")
+	bool bIndexMeshCatalog = true;
+
 	/** Index content from enabled marketplace plugins (installed via Fab/Epic launcher) */
 	UPROPERTY(config, EditAnywhere, Category="Indexing")
 	bool bIndexMarketplacePlugins = true;
@@ -145,6 +149,27 @@ public:
 
 	UPROPERTY(config, EditAnywhere, Category="Modules")
 	bool bEnableUI = true;
+
+	UPROPERTY(config, EditAnywhere, Category="Modules", DisplayName="Enable Mesh Module")
+	bool bEnableMesh = true;
+
+	// --- Modules|Mesh ---
+
+	UPROPERTY(config, EditAnywhere, Category="Modules|Mesh", DisplayName="Handle Pool Timeout (seconds)",
+		Meta=(ClampMin="10.0", ClampMax="3600.0", EditCondition="bEnableMesh"))
+	float MeshHandleTimeoutSeconds = 300.0f;
+
+	UPROPERTY(config, EditAnywhere, Category="Modules|Mesh", DisplayName="Max Active Handles",
+		Meta=(ClampMin="1", ClampMax="256", EditCondition="bEnableMesh"))
+	int32 MaxActiveHandles = 32;
+
+	UPROPERTY(config, EditAnywhere, Category="Modules|Mesh", DisplayName="Default Size Match Tolerance %",
+		Meta=(ClampMin="1.0", ClampMax="100.0", EditCondition="bEnableMesh"))
+	float DefaultSizeMatchTolerance = 20.0f;
+
+	UPROPERTY(config, EditAnywhere, Category="Modules|Mesh", DisplayName="Surface Acoustics DataTable Path",
+		Meta=(EditCondition="bEnableMesh"))
+	FString SurfaceAcousticsTablePath = TEXT("/Game/Data/DT_SurfaceAcoustics");
 
 	// --- Logging ---
 

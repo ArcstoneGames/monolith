@@ -25,6 +25,7 @@
 #include "Indexers/UserDefinedStructIndexer.h"
 #include "Indexers/InputActionIndexer.h"
 #include "Indexers/DataAssetIndexer.h"
+#include "Indexers/MeshCatalogIndexer.h"
 
 void UMonolithIndexSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -160,6 +161,8 @@ void UMonolithIndexSubsystem::RegisterDefaultIndexers()
 		RegisterIndexer(MakeShared<FInputActionIndexer>());
 	if (Settings->bIndexDataAssets)
 		RegisterIndexer(MakeShared<FDataAssetIndexer>());
+	if (Settings->bIndexMeshCatalog)
+		RegisterIndexer(MakeShared<FMeshCatalogIndexer>());
 
 	UE_LOG(LogMonolithIndex, Log, TEXT("Registered %d indexers"), Indexers.Num());
 }
@@ -773,6 +776,28 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 		NiagaraEvent->Wait();
 		FPlatformProcess::ReturnSynchEventToPool(NiagaraEvent);
 		UE_LOG(LogMonolithIndex, Log, TEXT("Niagara indexer completed in %.2fs"), FPlatformTime::Seconds() - SentinelStart);
+	}
+
+	// Run mesh catalog indexer on game thread (requires asset loading)
+	Owner->IndexingStatusMessage = TEXT("Building mesh catalog...");
+	TSharedPtr<IMonolithIndexer>* MeshCatIndexer = Owner->ClassToIndexer.Find(TEXT("__MeshCatalog__"));
+	if (MeshCatIndexer && MeshCatIndexer->IsValid())
+	{
+		double SentinelStart = FPlatformTime::Seconds();
+		UE_LOG(LogMonolithIndex, Log, TEXT("Running mesh catalog indexer..."));
+		TSharedPtr<IMonolithIndexer> MeshCatIndexerCopy = *MeshCatIndexer;
+		FEvent* MeshCatEvent = FPlatformProcess::GetSynchEventFromPool(true);
+		AsyncTask(ENamedThreads::GameThread, [DB, MeshCatIndexerCopy, MeshCatEvent]()
+		{
+			DB->BeginTransaction();
+			FAssetData DummyData;
+			MeshCatIndexerCopy->IndexAsset(DummyData, nullptr, *DB, 0);
+			DB->CommitTransaction();
+			MeshCatEvent->Trigger();
+		});
+		MeshCatEvent->Wait();
+		FPlatformProcess::ReturnSynchEventToPool(MeshCatEvent);
+		UE_LOG(LogMonolithIndex, Log, TEXT("Mesh catalog indexer completed in %.2fs"), FPlatformTime::Seconds() - SentinelStart);
 	}
 
 	// Write index timestamp to meta (only if not cancelled and asset count looks valid)
