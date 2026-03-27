@@ -42,6 +42,7 @@ public class MonolithMesh : ModuleRules
 		{
 			PrivateDependencyModuleNames.Add("GeometryScriptingCore");
 			PrivateDependencyModuleNames.Add("GeometryFramework");
+			PrivateDependencyModuleNames.Add("GeometryCore");
 			PublicDefinitions.Add("WITH_GEOMETRYSCRIPT=1");
 		}
 		else
