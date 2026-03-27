@@ -7,6 +7,80 @@
 DEFINE_LOG_CATEGORY(LogMonolithSource);
 
 // ============================================================
+// Helper: execute a multi-statement SQL string statement-by-statement.
+// FSQLiteDatabase::Execute() only runs the first statement when given
+// a semicolon-separated multi-statement string, so we must split manually.
+//
+// Splits on ';' at BEGIN/END nesting depth 0, so trigger bodies like
+//   BEGIN INSERT INTO ...; END;
+// are kept intact as a single statement.
+// ============================================================
+static bool ExecuteMulti(FSQLiteDatabase& DB, const TCHAR* SQL)
+{
+	const FString Source(SQL);
+	const int32 Len = Source.Len();
+
+	int32 Depth = 0;   // BEGIN...END nesting depth
+	FString Current;
+
+	auto FlushStatement = [&]() -> bool
+	{
+		FString Stmt = Current.TrimStartAndEnd();
+		Current.Empty();
+		if (Stmt.IsEmpty())
+		{
+			return true;
+		}
+		return DB.Execute(*Stmt);
+	};
+
+	int32 i = 0;
+	while (i < Len)
+	{
+		const TCHAR Ch = Source[i];
+
+		// Detect SQL keywords (BEGIN / END) at word boundaries.
+		// String literals are not present in our DDL so we skip quote handling.
+		if (FChar::IsAlpha(Ch) || Ch == TEXT('_'))
+		{
+			const int32 WordStart = i;
+			while (i < Len && (FChar::IsAlnum(Source[i]) || Source[i] == TEXT('_')))
+			{
+				++i;
+			}
+			const FString Word = Source.Mid(WordStart, i - WordStart).ToUpper();
+			Current += Source.Mid(WordStart, i - WordStart);
+
+			if (Word == TEXT("BEGIN"))
+			{
+				++Depth;
+			}
+			else if (Word == TEXT("END") && Depth > 0)
+			{
+				--Depth;
+			}
+			continue;
+		}
+
+		if (Ch == TEXT(';') && Depth == 0)
+		{
+			++i;
+			if (!FlushStatement())
+			{
+				return false;
+			}
+			continue;
+		}
+
+		Current += Ch;
+		++i;
+	}
+
+	// Flush any trailing statement (no trailing semicolon)
+	return FlushStatement();
+}
+
+// ============================================================
 // Constructor / Destructor
 // ============================================================
 
@@ -705,17 +779,17 @@ bool FMonolithSourceDatabase::CreateTablesIfNeeded()
 		return false;
 	}
 
-	if (!Database->Execute(MonolithSourceSchema::DDL_Tables))
+	if (!ExecuteMulti(*Database, MonolithSourceSchema::DDL_Tables))
 	{
 		UE_LOG(LogMonolithSource, Error, TEXT("CreateTablesIfNeeded: DDL_Tables failed — %s"), *Database->GetLastError());
 		return false;
 	}
-	if (!Database->Execute(MonolithSourceSchema::DDL_FTS))
+	if (!ExecuteMulti(*Database, MonolithSourceSchema::DDL_FTS))
 	{
 		UE_LOG(LogMonolithSource, Error, TEXT("CreateTablesIfNeeded: DDL_FTS failed — %s"), *Database->GetLastError());
 		return false;
 	}
-	if (!Database->Execute(MonolithSourceSchema::DDL_Triggers))
+	if (!ExecuteMulti(*Database, MonolithSourceSchema::DDL_Triggers))
 	{
 		UE_LOG(LogMonolithSource, Error, TEXT("CreateTablesIfNeeded: DDL_Triggers failed — %s"), *Database->GetLastError());
 		return false;
@@ -741,7 +815,7 @@ bool FMonolithSourceDatabase::ResetDatabase()
 		return false;
 	}
 
-	if (!Database->Execute(MonolithSourceSchema::DDL_Drop))
+	if (!ExecuteMulti(*Database, MonolithSourceSchema::DDL_Drop))
 	{
 		UE_LOG(LogMonolithSource, Error, TEXT("ResetDatabase: drop failed — %s"), *Database->GetLastError());
 		return false;
@@ -750,17 +824,17 @@ bool FMonolithSourceDatabase::ResetDatabase()
 	UE_LOG(LogMonolithSource, Log, TEXT("ResetDatabase: all tables dropped, recreating schema"));
 
 	// Execute DDL inline (we're already holding DbLock, can't call CreateTablesIfNeeded)
-	if (!Database->Execute(MonolithSourceSchema::DDL_Tables))
+	if (!ExecuteMulti(*Database, MonolithSourceSchema::DDL_Tables))
 	{
 		UE_LOG(LogMonolithSource, Error, TEXT("ResetDatabase: DDL_Tables failed — %s"), *Database->GetLastError());
 		return false;
 	}
-	if (!Database->Execute(MonolithSourceSchema::DDL_FTS))
+	if (!ExecuteMulti(*Database, MonolithSourceSchema::DDL_FTS))
 	{
 		UE_LOG(LogMonolithSource, Error, TEXT("ResetDatabase: DDL_FTS failed — %s"), *Database->GetLastError());
 		return false;
 	}
-	if (!Database->Execute(MonolithSourceSchema::DDL_Triggers))
+	if (!ExecuteMulti(*Database, MonolithSourceSchema::DDL_Triggers))
 	{
 		UE_LOG(LogMonolithSource, Error, TEXT("ResetDatabase: DDL_Triggers failed — %s"), *Database->GetLastError());
 		return false;

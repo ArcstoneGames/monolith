@@ -5,7 +5,8 @@
  * Must produce the EXACT same schema as Scripts/source_indexer/db/schema.py.
  *
  * Each DDL_* constant may contain multiple semicolon-separated statements.
- * FSQLiteDatabase::Execute() wraps sqlite3_exec which handles multi-statement SQL.
+ * Use ExecuteMulti() in MonolithSourceDatabase.cpp — FSQLiteDatabase::Execute() only
+ * runs the first statement of a multi-statement string.
  * Constants are split into logical groups so callers can execute them independently.
  */
 namespace MonolithSourceSchema
