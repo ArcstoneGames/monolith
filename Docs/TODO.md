@@ -4,11 +4,20 @@ Last updated: 2026-03-28
 
 ---
 
-### MonolithMesh Module — 192 Actions, ALL 22 PHASES COMPLETE + Proc Geo Overhaul (2026-03-28)
+### MonolithMesh Module — 240 Actions, ALL 22 PHASES COMPLETE + Proc Geo Overhaul + Procedural Town Generator (2026-03-28)
 
 - [x] Phase 0-12 — Original 111 actions compiled and tested.
 - [x] Phase 13-22 — Expansion 76 actions compiled (lights, volumes, horror intel, tech art, sublevels, context props, proc geo, presets, encounters, polish).
 - [x] Proc Geo Overhaul — 5 new actions (list_cached_meshes, clear_cache, validate_cache, get_cache_stats, create_blueprint_prefab). Sweep-based thin walls, auto-collision, collision-aware prop placement, proc mesh caching, blueprint prefabs, door trim frames, floor-aware spawning, human-scale defaults. 187 → 192 actions.
+- [x] Procedural Town Generator — 45 new actions across 11 sub-projects (SP1-SP10). Grid-based buildings, floor plans, facades, roofs, city blocks, spatial registry, auto-volumes, terrain adaptation, architectural features, debug views, room furnishing. 195 → 240 mesh actions, 638 → 683 total.
+
+#### Procedural Town Generator — Follow-Up (2026-03-28)
+
+- [ ] **Integration test: full city block** — Generate a complete city block with `create_city_block({buildings: 4, genre: "horror", seed: 42})` and verify all SPs work together end-to-end (SP1 grid → SP2 floor plan → SP3 facade → SP4 roof → SP5 orchestrator → SP6 registry → SP7 volumes → SP10 furnishing)
+- [ ] **Performance profiling on 4-8 building blocks** — Profile generation time, mesh actor count, volume count, navmesh build time against the performance budget (target: <30s for 4 buildings, <50 mesh actors, <100 volumes)
+- [ ] **Additional building archetypes** — mansion, warehouse, church, school. Add to `Saved/Monolith/BuildingArchetypes/`
+- [ ] **Additional facade styles** — Art Deco, Industrial, Modern. Add to `Saved/Monolith/FacadeStyles/`
+- [ ] **SP11: Street network generation** — Connecting multiple blocks into a coherent street grid. Road hierarchy (main street, side street, alley), intersections, traffic flow patterns. Would enable full neighborhood-scale generation
 
 #### MonolithMesh — Release / Wiki TODO
 
@@ -22,7 +31,7 @@ Last updated: 2026-03-28
   - Step-by-step: "How to create a Fantasy Dungeon preset pack"
   - How to test presets via MCP before distributing
   - How to export/import/share preset packs
-- [ ] **SPEC.md MonolithMesh section** — Full 192-action reference with param schemas (currently only has Phase 1-4 section + proc geo overhaul additions)
+- [ ] **SPEC.md MonolithMesh section** — Full 240-action reference with param schemas (currently has Phase 1-4 section + proc geo overhaul + Procedural Town Generator SP1-SP10)
 - [ ] **MCP.md mesh_query docs** — Tool reference for mesh_query namespace
 - [ ] **README update** — Feature highlight for MonolithMesh in the plugin README
 

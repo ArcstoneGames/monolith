@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 14 MCP tools (635 total actions across 11 domains), cutting AI assistant context consumption by ~95%.
+Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 14 MCP tools (683 total actions across 11 domains), cutting AI assistant context consumption by ~95%.
 
 ### What It Replaces
 
@@ -44,7 +44,7 @@ Monolith.uplugin
   MonolithIndex         — SQLite FTS5 deep project indexer, 14 internal indexers (7 MCP actions)
   MonolithSource        — Engine source + API lookup (11 actions)
   MonolithUI            — Widget blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility (42 actions)
-  MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript ops, horror/accessibility, lighting, audio/acoustics, performance, decals, level design, tech art, context props, procedural geometry (sweep walls, auto-collision, proc mesh caching, blueprint prefabs), genre presets, encounter design, hospice reports (192 actions)
+  MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript ops, horror/accessibility, lighting, audio/acoustics, performance, decals, level design, tech art, context props, procedural geometry (sweep walls, auto-collision, proc mesh caching, blueprint prefabs), genre presets, encounter design, hospice reports, procedural town generator (240 actions)
 ```
 
 ### Discovery/Dispatch Pattern
@@ -874,7 +874,7 @@ The `bInstalled` filter on plugin content paths was replaced with explicit path 
 
 | Class | Responsibility |
 |-------|---------------|
-| `FMonolithMeshModule` | Registers 192 mesh actions across 22 action classes (+ GeometryScript ops conditional) |
+| `FMonolithMeshModule` | Registers 240 mesh actions across 30+ action classes (+ GeometryScript ops conditional) |
 | `FMonolithMeshInspectionActions` | Mesh asset inspection: geometry stats, LODs, UVs, materials, collision, quality analysis, catalog (12 actions) |
 | `FMonolithMeshSceneActions` | Scene actor manipulation: spawn, move, duplicate, delete, group, batch execute (8 actions) |
 | `FMonolithMeshSpatialActions` | Spatial queries: raycasts, sweeps, overlaps, nearest, line of sight, navmesh, scene bounds/stats (11 actions) |
@@ -882,10 +882,24 @@ The `bInstalled` filter on plugin content paths was replaced with explicit path 
 | `FMonolithMeshProceduralActions` | Procedural geometry: parametric furniture, structures, mazes, pipes, terrain, horror props, sweep-based walls, auto-collision, human-scale defaults, door/window trim frames (8 actions) |
 | `FMonolithMeshCacheActions` | Procedural mesh caching: hash-based manifest, list/clear/validate/stats (4 actions) |
 | `FMonolithMeshPrefabActions` | Blueprint prefabs: dialog-free HarvestBlueprintFromActors (1 action) |
+| `FMonolithMeshBuildingActions` | Grid-based building construction: grid → geometry + Building Descriptor (2 actions) |
+| `FMonolithMeshFloorPlanGenerator` | Automatic floor plan generation: treemap layout, archetype loading, corridor insertion (3 actions) |
+| `FMonolithMeshFacadeActions` | Facade & window generation: window placement, trim profiles, horror damage (3 actions) |
+| `FMonolithMeshRoofActions` | Roof generation: gable, hip, flat/parapet, shed, gambrel (1 action) |
+| `FMonolithMeshCityBlockActions` | City block layout: lot subdivision, street geometry, orchestration (4 actions) |
+| `FMonolithMeshSpatialRegistry` | Spatial registry: hierarchical JSON descriptor, adjacency graph, BFS pathfinding (10 actions) |
+| `FMonolithMeshAutoVolumeActions` | Auto-volume generation: NavMesh, blocking, audio, trigger volumes (3 actions) |
+| `FMonolithMeshTerrainActions` | Terrain adaptation: height sampling, foundations, retaining walls (5 actions) |
+| `FMonolithMeshArchFeatureActions` | Architectural features: balconies, porches, fire escapes, railings (5 actions) |
+| `FMonolithMeshDebugViewActions` | Daredevil debug view: section clip, floor plan capture, camera bookmarks (6 actions) |
+| `FMonolithMeshFurnishingActions` | Room furnishing: room-type furniture mapping, placement rules (3 actions) |
+| `FMonolithMeshBuildingTypes` | Shared structs: FBuildingGrid, FRoomDef, FDoorDef, FStairwellDef, FBuildingDescriptor |
 | `FMonolithMeshCatalog` | Mesh catalog database for search_meshes_by_size and get_mesh_catalog_stats |
 | `FMonolithMeshUtils` | Shared helpers for mesh loading, bounds calculation, actor queries |
 
-#### Actions (46 — namespace: "mesh")
+#### Actions (240 — namespace: "mesh")
+
+> **Note:** 195 original actions (Phases 1-22 + Proc Geo Overhaul) + 45 Procedural Town Generator actions (SP1-SP10).
 
 **Inspection (12)**
 | Action | Params | Description |
@@ -963,6 +977,120 @@ The `bInstalled` filter on plugin content paths was replaced with explicit path 
 | `create_blueprint_prefab` | `*actor_names`, `*save_path`, `center_pivot`? (default true), `keep_source_actors`? (default true) | Create a Blueprint from selected actors via HarvestBlueprintFromActors. Returns blueprint_path, asset_name, source_actor_count, component_count |
 
 > **Procedural Geometry Overhaul (2026-03-28):** The proc gen actions (`create_parametric_mesh`, `create_structure`, `create_horror_prop`, etc.) now feature sweep-based thin walls (`wall_mode: "sweep"` default), auto snap-to-floor (`snap_to_floor` param), auto-collision on all saved meshes (`collision: auto/box/convex/complex_as_simple/none`), human-scale defaults (stairs 90/28/18cm, doors 90cm, floor 3cm), door/window/vent trim frames (`add_trim` param), and vent openings via `create_structure`. Collision-aware prop placement uses `collision_mode: none/warn/reject/adjust` on scatter actions with SweepSingle box traces for floor finding. All proc gen actions support `use_cache` and `auto_save` params for the caching system.
+
+#### Procedural Town Generator (45 actions — 11 sub-projects)
+
+Procedural city block generation from a single MCP call. 11 sub-projects composing into a pipeline: grid-based buildings with connected rooms, roofs, facades, furniture, lighting, horror dressing, navmesh, and volumes, all adaptive to terrain. The critical interface is the **Building Descriptor** — a JSON contract that SP1 outputs and SP2-SP10 consume. All building specs are generated server-side (not sent over MCP wire).
+
+**Master plan:** `Docs/plans/2026-03-28-proc-town-generator-master-plan.md`
+
+**Building Descriptor Contract (Critical Interface)**
+
+SP1's `create_building_from_grid` returns a JSON descriptor consumed by all downstream SPs. Key fields:
+- `building_id`, `asset_path`, `actors[]` — building identity and spawned actors
+- `footprint_polygon` — 2D building outline for roof generation
+- `floors[]` — per-floor data: `rooms[]` (room_id, room_type, grid_cells, world_bounds), `doors[]` (connects, wall, width), `stairwells[]`
+- `exterior_faces[]` — wall segments for facade decoration (normal, width, height, is_exterior)
+- `grid_cell_size`, `wall_thickness`, `materials_assigned`, `tags_applied`
+
+**SP1: Grid-Based Building Construction (2 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `create_building_from_grid` | `grid`, `rooms`, `doors`, `floors`, `cell_size`?, `materials`? | Grid of room IDs → geometry + Building Descriptor. Auto-detects interior/exterior walls, generates floor/ceiling slabs, stairwell cutouts, trim frames, actor tags |
+| `create_grid_from_rooms` | `rooms`, `adjacency` | Room list + adjacency requirements → grid layout |
+
+**SP2: Automatic Floor Plan Generation (3 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `generate_floor_plan` | `archetype`, `width`, `depth`, `floors`?, `hospice_mode`? | Building archetype + footprint → grid + rooms + doors. Squarified treemap with corridor insertion. Hospice mode: 100cm doors, 180cm corridors, rest alcoves |
+| `list_building_archetypes` | none | List available archetype definitions (residential, clinic, police_station, apartment, etc.) |
+| `get_building_archetype` | `archetype` | Get archetype JSON: room types, sizes, adjacency requirements |
+
+**SP3: Facade & Window Generation (3 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `generate_facade` | `building_descriptor`, `style`?, `damage`? | Exterior walls → windows, doors, trim, cornices, storefronts. CGA-style vertical split (base/shaft/cap). Optional horror damage |
+| `list_facade_styles` | none | List available facade style presets (Victorian, Colonial, Brutalist, Abandoned) |
+| `apply_horror_damage` | `building_descriptor`, `decay` | Apply horror damage to facades: boarded windows, broken glass, rust stains |
+
+**SP4: Roof Generation (1 action)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `generate_roof` | `building_descriptor`, `roof_type`?, `overhang`? | Footprint polygon → roof geometry (gable, hip, flat/parapet, shed, gambrel). Separate MaterialID for roof surface |
+
+**SP5: City Block Layout (4 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `create_city_block` | `buildings`, `genre`?, `seed`?, `block_size`?, `decay`? | Top-level orchestrator. Subdivides block → generates buildings → facades → roofs → streets → horror decay. Graceful degradation if SPs unavailable |
+| `create_lot_layout` | `block_size`, `lot_count`?, `seed`? | Subdivide block into lots (OBB recursive), return lot positions and footprint shapes |
+| `create_street` | `block_bounds`, `lot_positions` | Generate street geometry: sidewalks, curbs, road surface |
+| `place_street_furniture` | `street_bounds`, `density`?, `seed`? | Place lamps, hydrants, benches, trash cans along streets |
+
+**SP6: Spatial Registry (10 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `register_building` | `building_descriptor` | Register a building in the spatial registry |
+| `register_room` | `building_id`, `room` | Register an individual room |
+| `register_street_furniture` | `block_id`, `actors` | Register street furniture actors |
+| `query_room_at` | `position` | Query what room is at a world position |
+| `query_adjacent_rooms` | `room_id` | Query rooms adjacent to a given room |
+| `query_rooms_by_filter` | `filter` | Query rooms by type, floor, building, or tags |
+| `query_building_exits` | `building_id` | Query all exit points from a building |
+| `path_between_rooms` | `from_room`, `to_room` | BFS pathfinding between two rooms through the adjacency graph |
+| `save_block_descriptor` | `block_id`, `save_path`? | Persist block descriptor to JSON |
+| `load_block_descriptor` | `file_path` | Load a persisted block descriptor |
+
+**SP7: Auto-Volume Generation (3 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `auto_volumes_for_building` | `building_descriptor` | Auto-spawn NavMeshBounds, BlockingVolume, AudioVolume (reverb by room size), TriggerVolume for a building |
+| `auto_volumes_for_block` | `block_id` | Auto-volumes for all buildings in a block + navmesh build |
+| `spawn_nav_link` | `location`, `left_point`, `right_point` | Spawn a NavLinkProxy between two points |
+
+**SP8a: Terrain + Foundations (5 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `sample_terrain_grid` | `origin`, `extent`, `resolution` | Sample NxM height grid via downward traces |
+| `analyze_building_site` | `footprint`, `terrain_grid` | Analyze site slope and recommend foundation strategy (Flat/CutAndFill/Stepped/Piers/WalkoutBasement) |
+| `create_foundation` | `building_descriptor`, `strategy`?, `hospice_mode`? | Generate foundation geometry. ADA-compliant ramps in hospice mode (1:12 slope, 76cm max rise, 150cm landings) |
+| `create_retaining_wall` | `path`, `height`, `material`? | Generate retaining wall geometry along a path |
+| `place_building_on_terrain` | `building_descriptor`, `terrain_grid` | Adapt a building to uneven terrain with auto-selected foundation |
+
+**SP8b: Architectural Features (5 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `create_balcony` | `building_descriptor`, `floor`, `face`, `width`?, `depth`? | Floor slab + railing extending from upper floor exterior |
+| `create_porch` | `building_descriptor`, `face`, `depth`?, `columns`? | Ground-level covered entry with columns |
+| `create_fire_escape` | `building_descriptor`, `face`, `floors`? | Zigzag exterior stairs between floor landings |
+| `create_ramp_connector` | `start`, `end`, `width`?, `slope`? | ADA-compliant ramp between two heights |
+| `create_railing` | `path`, `height`?, `style`? | Swept profile railing along edge path |
+
+**SP9: Daredevil Debug View (6 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `toggle_section_view` | `z_height`?, `enabled`? | MPC-based section clip — hide everything above a Z height |
+| `toggle_ceiling_visibility` | `visible`?, `floor`? | Toggle ceiling/roof visibility via actor tags (BuildingCeiling, BuildingRoof) |
+| `capture_floor_plan` | `building_descriptor`, `floor`?, `output_path`? | Orthographic top-down floor plan capture to PNG |
+| `highlight_room` | `room_id`, `color`?, `duration`? | Room highlighting with overlay materials |
+| `save_camera_bookmark` | `name`, `location`?, `rotation`? | Save current or specified camera viewpoint |
+| `load_camera_bookmark` | `name` | Restore a saved camera viewpoint |
+
+**SP10: Room Furnishing Pipeline (3 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `furnish_room` | `building_descriptor`, `room_id`, `preset`?, `disturbance`? | Place appropriate furniture per room type. Horror dressing via optional disturbance level (orderly/slightly_messy/ransacked/abandoned) |
+| `furnish_building` | `building_descriptor`, `decay`? | Furnish all rooms in a building, applying horror decay per room |
+| `list_furniture_presets` | `room_type`? | List available furniture preset configurations per room type |
+
+**Data Files (Procedural Town Generator)**
+| Directory | Sub-Project | Contents |
+|-----------|------------|----------|
+| `Saved/Monolith/BuildingArchetypes/` | SP2 | JSON room catalogs per building type (residential_house, clinic, police_station, apartment) |
+| `Saved/Monolith/FacadeStyles/` | SP3 | JSON facade presets (Victorian, Colonial, Brutalist, Abandoned) |
+| `Saved/Monolith/BlockPresets/` | SP5 | JSON block configuration presets |
+| `Saved/Monolith/SpatialRegistry/` | SP6 | Persisted block descriptors |
+| `Saved/Monolith/CameraBookmarks/` | SP9 | Saved camera positions |
+| `Saved/Monolith/FurniturePresets/` | SP10 | Room-type furniture configs per room type (kitchen, bedroom, bathroom, office, lobby, corridor) |
 
 ---
 
@@ -1258,12 +1386,12 @@ See `TODO.md` for the full list. Key architectural constraints:
 | MonolithMaterial | material | 57 |
 | MonolithAnimation | animation | 115 |
 | MonolithNiagara | niagara | 96 |
-| MonolithMesh | mesh | 192 |
+| MonolithMesh | mesh | 240 |
 | MonolithEditor | editor | 19 |
 | MonolithConfig | config | 6 |
 | MonolithIndex | project | 7 |
 | MonolithSource | source | 11 |
 | MonolithUI | ui | 42 |
-| **Total** | | **635** |
+| **Total** | | **683** |
 
-**Note:** MonolithMesh includes all 22 expansion phases (192 actions). The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 14 MCP tools with namespaced actions.
+**Note:** MonolithMesh includes all 22 expansion phases (195 original actions) plus 45 Procedural Town Generator actions (SP1-SP10). The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 14 MCP tools with namespaced actions.

@@ -1,7 +1,7 @@
 # Procedural Town Generator — Session Handover
 
 **Date:** 2026-03-28
-**Status:** SP1 COMPLETE. Ready for Phase 2 parallel execution.
+**Status:** SP1-SP10 COMPLETE. All 11 sub-projects done. 240 mesh actions, 683 total.
 
 ## What Was Done This Session
 
@@ -38,39 +38,38 @@
 - Latest: SP1 grid building system
 
 ### Action Counts
-- Mesh: 195 (193 + create_building_from_grid + create_grid_from_rooms)
-- Total: 638
+- Mesh: 240 (195 base + 45 town gen actions)
+- Total: 683
 
 ### Level State
 - Clean level with 200m floor + sky + PlayerStart
 - One test grid building near origin (3 rooms, 2 doors)
 
-## What To Do Next
+## Session 2 Work
 
-### Phase 2: Launch 3 parallel agents (SP2 + SP3 + SP6)
+### Phase 2: Parallel Execution (SP2 + SP3 + SP6)
+All three sub-projects implemented in parallel by dedicated agents:
 
-**SP2: Floor Plan Generator** (~36h)
-- Research: `2026-03-28-proc-building-algorithms-research.md`
-- Actions: `generate_floor_plan`, `list_building_archetypes`, `get_building_archetype`
-- Files: `MonolithMeshFloorPlanGenerator.h/.cpp`, `Saved/Monolith/BuildingArchetypes/*.json`
-- Algorithm: archetype JSON → squarified treemap → corridor insertion → grid + rooms + doors
-- Output feeds into `create_building_from_grid`
+- **SP2: Floor Plan Generator** -- `generate_floor_plan`, `list_building_archetypes`, `get_building_archetype`. Squarified treemap algorithm, archetype JSON system, corridor insertion. Feeds into `create_building_from_grid`.
+- **SP3: Facade & Window Generation** -- `generate_facade`, `list_facade_styles`, `apply_horror_damage`. Window placement algorithm, trim profiles, horror damage system. Consumes `exterior_faces` from Building Descriptor.
+- **SP6: Spatial Registry** -- 10 actions (register, query, save/load). Consumes Building Descriptor, provides room queries for all downstream SPs.
 
-**SP3: Facade & Window Generation** (~45h)
-- Research: `2026-03-28-facade-window-research.md`
-- Actions: `generate_facade`, `list_facade_styles`, `apply_horror_damage`
-- Files: `MonolithMeshFacadeActions.h/.cpp`, `Saved/Monolith/FacadeStyles/*.json`
-- Consumes `exterior_faces` from Building Descriptor
-- Window placement algorithm, trim profiles, horror damage system
+### Phase 3: Parallel Execution (SP4 + SP5 + SP7 + SP10)
+- **SP4: Roof Generation** -- Procedural roof meshes from building footprint
+- **SP5: Connected Room Interiors** -- Interior furnishing, room connectivity
+- **SP7: Daredevil View** -- Sonar/spatial awareness visualization
+- **SP10: Auto-Volumes** -- Automatic gameplay volume placement
 
-**SP6: Spatial Registry** (~36h)
-- Research: `2026-03-28-spatial-registry-research.md`
-- Actions: 10 actions (register, query, save/load)
-- Files: `MonolithMeshSpatialRegistry.h/.cpp`, `Saved/Monolith/SpatialRegistry/*.json`
-- Consumes Building Descriptor, provides room queries for all downstream SPs
+### Phase 4: Parallel Execution (SP8a + SP8b + SP9)
+- **SP8a: City Block Layout** -- Street grid, lot subdivision
+- **SP8b: Terrain Integration** -- Ground conformance, slope handling
+- **SP9: `create_city_block`** -- Top-level orchestrator that generates full playable city blocks
 
-### After Phase 2: Phase 3 (SP4 + SP5 + SP7 + SP10 in parallel)
-Then Phase 4 (SP8a + SP8b + SP9 in parallel)
+### Build Fixes
+Multiple build fix passes across all phases. 10 agents total contributed implementation work. All SPs compile independently and are testable standalone.
+
+## What Was Planned Next (Now Complete)
+All phases executed successfully. The procedural town generator is feature-complete with 45 new actions bringing mesh total to 240 and project total to 683.
 
 ## Key Files
 
