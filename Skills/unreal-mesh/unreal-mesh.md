@@ -1,11 +1,48 @@
 ---
 name: unreal-mesh
-description: Use when working with Unreal Engine meshes, scene spatial queries, level blockout, actor manipulation, 3D awareness, horror spatial analysis, accessibility validation, GeometryScript mesh operations, lighting analysis, audio/acoustics, performance budgeting, decal/detail placement, level design (lights, volumes, sublevels, prefabs), tech art (import, LOD, texel density, collision), context-aware prop placement (surface scatter, disturbance, physics sleep, collision-aware), procedural geometry (furniture, structures, mazes, pipes, terrain, sweep walls, auto-collision, proc mesh caching, blueprint prefabs), genre presets, encounter design, or hospice accessibility reports via Monolith MCP. Triggers on mesh, StaticMesh, SkeletalMesh, blockout, spatial, raycast, overlap, scene, actor, spawn, LOD, collision, UV, triangle, bounds, scan volume, scatter, navmesh, sightline, hiding, horror, tension, accessibility, wheelchair, lighting, dark, audio, acoustic, surface, footstep, reverb, performance, budget, draw call, decal, blood trail, light, volume, trigger, sublevel, prefab, spline, import, texel, instancing, HISM, material swap, parametric, structure, maze, pipe, terrain, fragment, preset, encounter, patrol, safe room, hospice report, prop kit, disturbance, cache, sweep wall, trim, blueprint prefab.
+description: Use when working with Unreal Engine meshes, scene spatial queries, level blockout, actor manipulation, 3D awareness, horror spatial analysis, accessibility validation, GeometryScript mesh operations, lighting analysis, audio/acoustics, performance budgeting, decal/detail placement, level design (lights, volumes, sublevels, prefabs), tech art (import, LOD, texel density, collision), context-aware prop placement (surface scatter, disturbance, physics sleep), procedural geometry (furniture, structures, mazes, pipes, terrain), genre presets, encounter design, or hospice accessibility reports via Monolith MCP. Triggers on mesh, StaticMesh, SkeletalMesh, blockout, spatial, raycast, overlap, scene, actor, spawn, LOD, collision, UV, triangle, bounds, scan volume, scatter, navmesh, sightline, hiding, horror, tension, accessibility, wheelchair, lighting, dark, audio, acoustic, surface, footstep, reverb, performance, budget, draw call, decal, blood trail, light, volume, trigger, sublevel, prefab, spline, import, texel, instancing, HISM, material swap, parametric, structure, maze, pipe, terrain, fragment, preset, encounter, patrol, safe room, hospice report, prop kit, disturbance.
 ---
 
 # Unreal Mesh & Spatial Workflows
 
-You have access to **Monolith** with **192 Mesh actions** (Phases 0-22 ALL COMPLETE + Proc Geo Overhaul) via `mesh_query()`.
+You have access to **Monolith** with **192 Mesh actions** (Phases 0-22 + Proc Geo Overhaul) via `mesh_query()`.
+
+### New in Overhaul (5 new actions + major feature upgrades):
+- `create_blueprint_prefab` — Dialog-free Blueprint prefab from world actors
+- `list_cached_meshes` / `clear_cache` / `validate_cache` / `get_cache_stats` — Proc mesh cache management
+- **Sweep thin walls** — `create_structure` now uses `wall_mode: "sweep"` (default) for proper architectural walls
+- **Auto-collision** — All `save_handle` calls auto-generate ConvexHulls collision (`collision` param)
+- **Floor snap** — All proc gen spawns auto-snap to floor (`snap_to_floor` param)
+- **Collision-aware scatter** — `collision_mode: "reject"/"adjust"` on all scatter actions
+- **Trim frames** — `add_trim: true` on `create_structure` for door/window/vent frames
+- **Proc mesh caching** — `use_cache`/`auto_save` on all proc gen actions, hash-based dedup
+
+## World Outliner Organization (MANDATORY)
+
+**Every actor spawned by Monolith MUST be placed in an Outliner folder.** Never leave actors loose at root level. Use the `folder` param, or the action should auto-assign one.
+
+| Action | Default Folder |
+|--------|---------------|
+| `create_parametric_mesh` | `/Procedural/{Type}` |
+| `create_structure` | `/Procedural/Structure` |
+| `create_horror_prop` | `/Procedural/Horror` |
+| `create_maze` | `/Procedural/Maze` |
+| `create_building_shell` | `/Procedural/Building` |
+| `create_pipe_network` | `/Procedural/Pipes` |
+| `create_terrain_patch` | `/Procedural/Terrain` |
+| `scatter_props` | `/Scatter/{VolumeName}` |
+| `scatter_on_surface` | `/Surface/{SurfaceActorName}` |
+| `scatter_on_walls` | `/Scatter/{VolumeName}/Walls` |
+| `scatter_on_ceiling` | `/Scatter/{VolumeName}/Ceiling` |
+| `place_light` | `/Lights` |
+| `spawn_actor` | `/Spawned` |
+| `place_blueprint_actor` | `/Prefabs` |
+| `place_prop_kit` | `/Props/Kits/{KitName}` |
+| `place_storytelling_scene` | `/Storytelling/{Pattern}` |
+| `place_along_path` | `/PathProps` |
+| `place_decals` | `/Decals` |
+
+When calling any spawn/place action, **always pass `folder`** if the action supports it. If orchestrating multiple related spawns, group them under a descriptive folder.
 
 ## Discovery
 
@@ -253,29 +290,14 @@ monolith_discover({ namespace: "mesh" })
 
 | Action | Key Params | Purpose |
 |--------|-----------|---------|
-| `create_parametric_mesh` | `type`, `params`, `use_cache`?, `auto_save`?, `collision`?, `snap_to_floor`? | 15 furniture types (chair→bathtub). Human-scale defaults (stairs 90/28/18cm, doors 90cm, floor 3cm) |
-| `create_horror_prop` | `type`, `params`, `seed`?, `use_cache`?, `collision`? | 7 horror types (barricade→vent_grate) |
-| `create_structure` | `type`, `params`, `wall_mode`?, `add_trim`?, `collision`? | Room/corridor/L/T-junction/vent with openings. Sweep-based thin walls (default), door/window/vent trim frames |
-| `create_building_shell` | `floors`, `footprint`, `collision`? | Multi-story from 2D polygon |
-| `create_maze` | `algorithm`, `grid_size`, `seed`?, `wall_mode`?, `collision`? | 3 algorithms + layout JSON |
-| `create_pipe_network` | `path_points`, `radius`?, `collision`? | Swept polygon with ball joints |
+| `create_parametric_mesh` | `type`, `params` | 15 furniture types (chair→bathtub) |
+| `create_horror_prop` | `type`, `params`, `seed`? | 7 horror types (barricade→vent_grate) |
+| `create_structure` | `type`, `params` | Room/corridor/L/T-junction with openings |
+| `create_building_shell` | `floors`, `footprint` | Multi-story from 2D polygon |
+| `create_maze` | `algorithm`, `grid_size`, `seed`? | 3 algorithms + layout JSON |
+| `create_pipe_network` | `path_points`, `radius`? | Swept polygon with ball joints |
 | `create_fragments` | `source_handle`, `count`?, `seed`? | Plane-slice mesh fragmentation |
-| `create_terrain_patch` | `size`, `noise`?, `collision`? | Perlin noise heightmap mesh |
-
-### Procedural Mesh Caching (4 actions) — Hash-based manifest system
-
-| Action | Key Params | Purpose |
-|--------|-----------|---------|
-| `list_cached_meshes` | `type_filter`?, `limit`? (default 100) | List cached entries: asset_path, action, type, dimensions, triangle_count, created_utc |
-| `clear_cache` | `type_filter`? | Clear all or type-filtered cached meshes. Returns cleared_count |
-| `validate_cache` | — | Remove stale entries where asset no longer exists. Returns removed_count |
-| `get_cache_stats` | — | Total entries + per-type breakdown |
-
-### Blueprint Prefabs (1 action) — Dialog-free actor-to-Blueprint
-
-| Action | Key Params | Purpose |
-|--------|-----------|---------|
-| `create_blueprint_prefab` | `*actor_names`, `*save_path`, `center_pivot`?, `keep_source_actors`? | Create Blueprint from placed actors via HarvestBlueprintFromActors |
+| `create_terrain_patch` | `size`, `noise`? | Perlin noise heightmap mesh |
 
 ### Genre Presets (8 actions) — Extensible preset system
 
@@ -381,16 +403,6 @@ place_storytelling_scene → place_along_path → scatter_props → analyze_prop
 get_scene_statistics → query_radial_sweep → get_spatial_relationships
 ```
 
-### Procedural Geometry with Caching
-```
-create_parametric_mesh (use_cache=true, auto_save=true) → list_cached_meshes → create_blueprint_prefab
-```
-
-### Cache Management
-```
-get_cache_stats → validate_cache → clear_cache (type_filter optional)
-```
-
 ## Gotchas
 
 - `spawn_actor` does NOT spawn `ABlockingVolume` — use the editor for volumes
@@ -401,9 +413,3 @@ get_cache_stats → validate_cache → clear_cache (type_filter optional)
 - `search_meshes_by_size` requires `monolith_reindex()` to have populated the mesh catalog first
 - All spatial queries work in editor WITHOUT a play session
 - `query_` prefix = active physics queries. `get_` prefix = reads stored data
-- Proc gen `wall_mode: "sweep"` is the default — "box" is legacy. Sweep walls are thinner and more realistic
-- `collision: "auto"` picks box for simple shapes, convex for complex. Override with explicit type if needed
-- `snap_to_floor` defaults true — disable for ceiling/wall-mounted geometry
-- `create_blueprint_prefab` replaces `create_prefab` for MCP workflows (dialog-free)
-- Cache manifest at `Saved/Monolith/ProceduralCache/manifest.json` — run `validate_cache` after deleting assets manually
-- `collision_mode: "adjust"` on scatter actions uses TryPushOutProp to resolve overlaps — may shift props from intended positions

@@ -17,6 +17,33 @@ You have access to **Monolith** with **192 Mesh actions** (Phases 0-22 + Proc Ge
 - **Trim frames** — `add_trim: true` on `create_structure` for door/window/vent frames
 - **Proc mesh caching** — `use_cache`/`auto_save` on all proc gen actions, hash-based dedup
 
+## World Outliner Organization (MANDATORY)
+
+**Every actor spawned by Monolith MUST be placed in an Outliner folder.** Never leave actors loose at root level. Use the `folder` param, or the action should auto-assign one.
+
+| Action | Default Folder |
+|--------|---------------|
+| `create_parametric_mesh` | `/Procedural/{Type}` |
+| `create_structure` | `/Procedural/Structure` |
+| `create_horror_prop` | `/Procedural/Horror` |
+| `create_maze` | `/Procedural/Maze` |
+| `create_building_shell` | `/Procedural/Building` |
+| `create_pipe_network` | `/Procedural/Pipes` |
+| `create_terrain_patch` | `/Procedural/Terrain` |
+| `scatter_props` | `/Scatter/{VolumeName}` |
+| `scatter_on_surface` | `/Surface/{SurfaceActorName}` |
+| `scatter_on_walls` | `/Scatter/{VolumeName}/Walls` |
+| `scatter_on_ceiling` | `/Scatter/{VolumeName}/Ceiling` |
+| `place_light` | `/Lights` |
+| `spawn_actor` | `/Spawned` |
+| `place_blueprint_actor` | `/Prefabs` |
+| `place_prop_kit` | `/Props/Kits/{KitName}` |
+| `place_storytelling_scene` | `/Storytelling/{Pattern}` |
+| `place_along_path` | `/PathProps` |
+| `place_decals` | `/Decals` |
+
+When calling any spawn/place action, **always pass `folder`** if the action supports it. If orchestrating multiple related spawns, group them under a descriptive folder.
+
 ## Discovery
 
 Always discover available actions first:
