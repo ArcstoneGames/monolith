@@ -16,6 +16,8 @@
 #include "MonolithMeshHorrorDesignActions.h"
 #include "MonolithMeshAdvancedLevelActions.h"
 #include "MonolithMeshContextPropActions.h"
+#include "MonolithMeshPresetActions.h"
+#include "MonolithMeshEncounterActions.h"
 #include "MonolithToolRegistry.h"
 #include "MonolithJsonUtils.h"
 #include "MonolithSettings.h"
@@ -54,6 +56,8 @@ void FMonolithMeshModule::StartupModule()
 	FMonolithMeshHorrorDesignActions::RegisterActions(FMonolithToolRegistry::Get());
 	FMonolithMeshAdvancedLevelActions::RegisterActions(FMonolithToolRegistry::Get());
 	FMonolithMeshContextPropActions::RegisterActions(FMonolithToolRegistry::Get());
+	FMonolithMeshPresetActions::RegisterActions(FMonolithToolRegistry::Get());
+	FMonolithMeshEncounterActions::RegisterActions(FMonolithToolRegistry::Get());
 
 #if WITH_GEOMETRYSCRIPT
 	HandlePool = NewObject<UMonolithMeshHandlePool>();
