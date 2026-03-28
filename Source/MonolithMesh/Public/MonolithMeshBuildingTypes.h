@@ -331,3 +331,71 @@ struct FBuildingDescriptor
 		return D;
 	}
 };
+
+/** Attachment context for architectural features -- derived from FExteriorFaceDef or explicit params.
+ *  When provided to create_balcony/create_porch/create_fire_escape/create_ramp_connector/create_railing,
+ *  auto-orients the feature to the wall normal and positions it relative to the building face. */
+struct FAttachmentContext
+{
+	FVector WallOrigin = FVector::ZeroVector;  // World-space origin of the target wall face (bottom-left corner)
+	FVector WallNormal = FVector::ZeroVector;  // Outward normal of the wall
+	float WallWidth = 0.0f;                    // Wall segment width (cm)
+	float WallHeight = 270.0f;                 // Wall segment height (cm)
+	float WallThickness = 15.0f;               // For boolean cut depth
+	float FloorHeight = 270.0f;                // Per-floor height (cm)
+	int32 FloorIndex = 0;                      // Which floor this attachment is on
+	FString BuildingId;                         // For wall-opening coordination
+	FString Wall;                               // "north", "south", "east", "west"
+
+	// Derived at parse time:
+	FVector WallRight = FVector::ZeroVector;    // Rightward direction along the wall face
+	FTransform WallToWorld = FTransform::Identity;
+
+	bool bValid = false;
+
+	void ComputeDerived()
+	{
+		WallRight = FVector::CrossProduct(FVector::UpVector, WallNormal).GetSafeNormal();
+		// Build transform: local X -> along wall (WallRight), local Y -> outward (WallNormal), local Z -> up
+		FMatrix M = FMatrix::Identity;
+		M.SetAxis(0, WallRight);
+		M.SetAxis(1, WallNormal);
+		M.SetAxis(2, FVector::UpVector);
+		M.SetOrigin(WallOrigin);
+		WallToWorld = FTransform(M);
+		bValid = !WallNormal.IsNearlyZero();
+	}
+};
+
+/** Wall opening request -- returned by features that need access through the building wall.
+ *  These are DATA only; the feature action does NOT cut the opening. An orchestrator or the user
+ *  passes these to create_building_from_grid or applies boolean cuts separately. */
+struct FWallOpeningRequest
+{
+	FString BuildingId;
+	FString Wall;                              // "north", "south", "east", "west"
+	int32 FloorIndex = 0;
+	float PositionAlongWall = 0.0f;            // Center of opening, in cm from wall left edge
+	float Width = 100.0f;                      // Opening width (cm)
+	float Height = 220.0f;                     // Opening height (cm)
+	float SillHeight = 0.0f;                   // Height above floor for windows
+	FString Type = TEXT("door");               // "door", "window", "french_door"
+	FString Purpose;                           // "porch_entry", "balcony_access", "fire_escape_egress", "ramp_entry"
+
+	TSharedPtr<FJsonObject> ToJson() const
+	{
+		auto J = MakeShared<FJsonObject>();
+		if (!BuildingId.IsEmpty())
+			J->SetStringField(TEXT("building_id"), BuildingId);
+		J->SetStringField(TEXT("wall"), Wall);
+		J->SetNumberField(TEXT("floor_index"), FloorIndex);
+		J->SetNumberField(TEXT("position_along_wall"), PositionAlongWall);
+		J->SetNumberField(TEXT("width"), Width);
+		J->SetNumberField(TEXT("height"), Height);
+		J->SetNumberField(TEXT("sill_height"), SillHeight);
+		J->SetStringField(TEXT("type"), Type);
+		if (!Purpose.IsEmpty())
+			J->SetStringField(TEXT("purpose"), Purpose);
+		return J;
+	}
+};

@@ -44,6 +44,13 @@ private:
 		int32 Priority = 5;
 		bool bAutoGenerate = false;   // For corridor type
 		bool bExteriorWall = false;   // Prefers exterior placement
+
+		// Per-floor assignment: "ground", "upper", "every", "any" (default)
+		FString Floor = TEXT("any");
+
+		// Aspect ratio constraints
+		float MinAspect = 1.0f;       // Minimum width/height ratio (e.g. 1.0 = square OK)
+		float MaxAspect = 3.0f;       // Maximum (prevents 1x20 rooms)
 	};
 
 	/** An adjacency constraint from an archetype */
@@ -52,6 +59,14 @@ private:
 		FString From;
 		FString To;
 		FString Strength;  // "required", "strong", "preferred", "weak"
+	};
+
+	/** Material hints for future material assignment */
+	struct FMaterialHints
+	{
+		FString Exterior;
+		FString Interior;
+		FString FloorMaterial;   // "Floor" conflicts with floor index
 	};
 
 	/** A complete loaded archetype */
@@ -64,6 +79,8 @@ private:
 		int32 FloorsMin = 1;
 		int32 FloorsMax = 1;
 		FString RoofType;
+		float FloorHeight = 270.0f;      // Default floor height in cm
+		FMaterialHints MaterialHints;
 	};
 
 	/** A resolved room instance (after rolling counts from archetype ranges) */
@@ -74,6 +91,9 @@ private:
 		float TargetArea;     // In grid cells
 		int32 Priority;
 		bool bExteriorWall;
+		FString Floor;        // "ground", "upper", "every", "any"
+		float MinAspect = 1.0f;
+		float MaxAspect = 3.0f;
 	};
 
 	/** A rectangle in grid space produced by treemap layout */
@@ -101,8 +121,18 @@ private:
 
 	// ---- Room resolution ----
 
-	/** Resolve archetype room definitions into concrete room instances using a seed */
-	static TArray<FRoomInstance> ResolveRoomInstances(const FBuildingArchetype& Archetype, int32 GridW, int32 GridH, FRandomStream& Rng);
+	/** Resolve archetype room definitions into concrete room instances using a seed.
+	 *  FloorIndex controls per-floor filtering: 0 = ground, 1+ = upper, -1 = all floors (legacy behavior). */
+	static TArray<FRoomInstance> ResolveRoomInstances(const FBuildingArchetype& Archetype, int32 GridW, int32 GridH, FRandomStream& Rng, int32 FloorIndex = -1);
+
+	/** Validate that the footprint can fit all required rooms. Returns empty string on success, error message on failure. */
+	static FString ValidateFootprintCapacity(const FBuildingArchetype& Archetype, int32 GridW, int32 GridH, int32 FloorIndex = -1);
+
+	/** Validate that multi-floor archetypes have stairwell entries. Returns empty string on success, error message on failure. */
+	static FString ValidateStairwellRequirement(const FBuildingArchetype& Archetype);
+
+	/** Post-layout aspect ratio correction: tries to reshape rooms that exceed their max_aspect */
+	static void CorrectAspectRatios(TArray<FGridRect>& Rects, const TArray<FRoomInstance>& Rooms, int32 GridW, int32 GridH);
 
 	// ---- Squarified treemap ----
 

@@ -1,6 +1,7 @@
 #if WITH_GEOMETRYSCRIPT
 
 #include "MonolithMeshArchFeatureActions.h"
+#include "MonolithMeshBuildingTypes.h"
 #include "MonolithMeshProceduralActions.h"
 #include "MonolithMeshHandlePool.h"
 #include "MonolithMeshUtils.h"
@@ -61,6 +62,107 @@ bool FMonolithMeshArchFeatureActions::GetBool(const TSharedPtr<FJsonObject>& P, 
 	return P->HasField(Key) ? P->GetBoolField(Key) : Default;
 }
 
+// ============================================================================
+// Attachment Context Helpers
+// ============================================================================
+
+FAttachmentContext FMonolithMeshArchFeatureActions::ParseBuildingContext(const TSharedPtr<FJsonObject>& Params)
+{
+	FAttachmentContext Ctx;
+
+	const TSharedPtr<FJsonObject>* CtxObj = nullptr;
+	if (!Params->TryGetObjectField(TEXT("building_context"), CtxObj) || !CtxObj || !(*CtxObj).IsValid())
+	{
+		return Ctx; // bValid = false, caller falls back to location+rotation
+	}
+
+	const TSharedPtr<FJsonObject>& BC = *CtxObj;
+
+	// Parse wall normal
+	const TArray<TSharedPtr<FJsonValue>>* NormalArr = nullptr;
+	if (BC->TryGetArrayField(TEXT("normal"), NormalArr) && NormalArr && NormalArr->Num() >= 3)
+	{
+		Ctx.WallNormal.X = (*NormalArr)[0]->AsNumber();
+		Ctx.WallNormal.Y = (*NormalArr)[1]->AsNumber();
+		Ctx.WallNormal.Z = (*NormalArr)[2]->AsNumber();
+		Ctx.WallNormal.Normalize();
+	}
+
+	// Parse world_origin
+	const TArray<TSharedPtr<FJsonValue>>* OriginArr = nullptr;
+	if (BC->TryGetArrayField(TEXT("world_origin"), OriginArr) && OriginArr && OriginArr->Num() >= 3)
+	{
+		Ctx.WallOrigin.X = (*OriginArr)[0]->AsNumber();
+		Ctx.WallOrigin.Y = (*OriginArr)[1]->AsNumber();
+		Ctx.WallOrigin.Z = (*OriginArr)[2]->AsNumber();
+	}
+
+	// Parse scalar fields
+	if (BC->HasField(TEXT("width")))
+		Ctx.WallWidth = static_cast<float>(BC->GetNumberField(TEXT("width")));
+	if (BC->HasField(TEXT("height")))
+		Ctx.WallHeight = static_cast<float>(BC->GetNumberField(TEXT("height")));
+	if (BC->HasField(TEXT("wall_thickness")))
+		Ctx.WallThickness = static_cast<float>(BC->GetNumberField(TEXT("wall_thickness")));
+	if (BC->HasField(TEXT("floor_height")))
+		Ctx.FloorHeight = static_cast<float>(BC->GetNumberField(TEXT("floor_height")));
+	if (BC->HasField(TEXT("floor_index")))
+		Ctx.FloorIndex = static_cast<int32>(BC->GetNumberField(TEXT("floor_index")));
+
+	// Parse string fields
+	FString WallStr;
+	if (BC->TryGetStringField(TEXT("wall"), WallStr))
+		Ctx.Wall = WallStr;
+
+	FString BldgId;
+	if (BC->TryGetStringField(TEXT("building_id"), BldgId))
+		Ctx.BuildingId = BldgId;
+
+	// Compute derived transform
+	Ctx.ComputeDerived();
+
+	return Ctx;
+}
+
+FRotator FMonolithMeshArchFeatureActions::ComputeWallRotation(const FVector& WallNormal)
+{
+	// Yaw rotation from wall normal: features are built facing +Y (local outward).
+	// We need the yaw that rotates +Y to align with WallNormal (in the XY plane).
+	float YawRad = FMath::Atan2(WallNormal.Y, WallNormal.X);
+	// +Y in UE is the 90-degree direction, so subtract 90 degrees to align local +Y with the normal
+	float YawDeg = FMath::RadiansToDegrees(YawRad) - 90.0f;
+	return FRotator(0.0f, YawDeg, 0.0f);
+}
+
+FVector FMonolithMeshArchFeatureActions::ComputeAttachmentPosition(
+	const FVector& WallOrigin, const FVector& WallNormal, const FVector& WallRight,
+	float FeatureWidth, float FeatureDepth, float WallWidth)
+{
+	// Center the feature along the wall face
+	FVector Pos = WallOrigin + WallRight * (WallWidth * 0.5f);
+	// Push the feature outward from the wall by half its depth (features are built centered on Y)
+	// Actually features extend from Y=0 (wall face) outward, so no depth offset needed for the origin.
+	// The rotation handles making +Y point outward.
+	return Pos;
+}
+
+void FMonolithMeshArchFeatureActions::EmitWallOpenings(
+	const TSharedPtr<FJsonObject>& Result, const TArray<FWallOpeningRequest>& Openings)
+{
+	if (Openings.Num() == 0) return;
+
+	TArray<TSharedPtr<FJsonValue>> OpeningsArr;
+	for (const FWallOpeningRequest& O : Openings)
+	{
+		OpeningsArr.Add(MakeShared<FJsonValueObject>(O.ToJson()));
+	}
+	Result->SetArrayField(TEXT("wall_openings"), OpeningsArr);
+}
+
+// ============================================================================
+// Finalize + Save
+// ============================================================================
+
 void FMonolithMeshArchFeatureActions::FinalizeGeometry(UDynamicMesh* Mesh)
 {
 	if (!Mesh) return;
@@ -79,7 +181,8 @@ void FMonolithMeshArchFeatureActions::FinalizeGeometry(UDynamicMesh* Mesh)
 }
 
 FString FMonolithMeshArchFeatureActions::SaveAndPlace(UDynamicMesh* Mesh, const TSharedPtr<FJsonObject>& Params,
-	const TSharedPtr<FJsonObject>& Result)
+	const TSharedPtr<FJsonObject>& Result,
+	const FAttachmentContext& AttachCtx, float FeatureWidth, float FeatureDepth)
 {
 	FString SavePath;
 	Params->TryGetStringField(TEXT("save_path"), SavePath);
@@ -97,12 +200,27 @@ FString FMonolithMeshArchFeatureActions::SaveAndPlace(UDynamicMesh* Mesh, const 
 	}
 	Result->SetStringField(TEXT("asset_path"), SavePath);
 
-	// Place in scene
+	// Determine placement: attachment context overrides manual location/rotation
 	FVector Location = FVector::ZeroVector;
-	MonolithMeshUtils::ParseVector(Params, TEXT("location"), Location);
+	FRotator Rotation = FRotator::ZeroRotator;
 
-	float YawDeg = GetFloat(Params, TEXT("rotation"), 0.0f);
-	FRotator Rotation(0.0f, YawDeg, 0.0f);
+	if (AttachCtx.bValid)
+	{
+		// Auto-orient from wall normal
+		Rotation = ComputeWallRotation(AttachCtx.WallNormal);
+		Location = ComputeAttachmentPosition(
+			AttachCtx.WallOrigin, AttachCtx.WallNormal, AttachCtx.WallRight,
+			FeatureWidth, FeatureDepth, AttachCtx.WallWidth);
+
+		Result->SetBoolField(TEXT("auto_oriented"), true);
+	}
+	else
+	{
+		// Fall back to explicit location + rotation params
+		MonolithMeshUtils::ParseVector(Params, TEXT("location"), Location);
+		float YawDeg = GetFloat(Params, TEXT("rotation"), 0.0f);
+		Rotation = FRotator(0.0f, YawDeg, 0.0f);
+	}
 
 	FString Label;
 	Params->TryGetStringField(TEXT("label"), Label);
@@ -210,10 +328,20 @@ void FMonolithMeshArchFeatureActions::BuildRailingGeometry(UDynamicMesh* Mesh, c
 
 void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Registry)
 {
+	// Schema description for the building_context param (shared across all 5 actions)
+	static const FString BuildingContextDesc = TEXT(
+		"Optional building context for auto-orientation. Object with: "
+		"wall (string: north/south/east/west), floor_index (int), "
+		"world_origin ([x,y,z]), normal ([x,y,z] outward), "
+		"width (wall width cm), height (wall height cm), "
+		"building_id (string). When provided, overrides location/rotation "
+		"and emits wall_openings in the result.");
+
 	// ---- create_balcony ----
 	Registry.RegisterAction(TEXT("mesh"), TEXT("create_balcony"),
 		TEXT("Generate a balcony: floor slab + railing extending from an upper floor wall face. "
-			"Styles: simple (posts + top rail), bars (vertical balusters), solid (solid panel)."),
+			"Styles: simple (posts + top rail), bars (vertical balusters), solid (solid panel). "
+			"With building_context: auto-orients to wall normal and emits wall_openings (french_door)."),
 		FMonolithActionHandler::CreateStatic(&FMonolithMeshArchFeatureActions::CreateBalcony),
 		FParamSchemaBuilder()
 			.Required(TEXT("save_path"), TEXT("string"), TEXT("Asset path (e.g. /Game/Town/SM_Balcony_01)"))
@@ -229,6 +357,7 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 			.Optional(TEXT("material_railing"), TEXT("string"), TEXT("Material for railing (slot 1)"))
 			.Optional(TEXT("location"), TEXT("array"), TEXT("World location [x,y,z] — bottom of slab at wall face"))
 			.Optional(TEXT("rotation"), TEXT("number"), TEXT("Yaw rotation in degrees"))
+			.Optional(TEXT("building_context"), TEXT("object"), BuildingContextDesc)
 			.Optional(TEXT("label"), TEXT("string"), TEXT("Actor label"))
 			.Optional(TEXT("folder"), TEXT("string"), TEXT("Outliner folder path"))
 			.Optional(TEXT("overwrite"), TEXT("boolean"), TEXT("Overwrite existing asset"), TEXT("false"))
@@ -237,7 +366,8 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 	// ---- create_porch ----
 	Registry.RegisterAction(TEXT("mesh"), TEXT("create_porch"),
 		TEXT("Generate a covered porch: floor platform, support columns, roof slab, and optional entry steps with railings. "
-			"Configurable column count, step geometry, roof overhang."),
+			"Configurable column count, step geometry, roof overhang. "
+			"With building_context: auto-orients, aligns porch floor to building floor, emits wall_openings (door)."),
 		FMonolithActionHandler::CreateStatic(&FMonolithMeshArchFeatureActions::CreatePorch),
 		FParamSchemaBuilder()
 			.Required(TEXT("save_path"), TEXT("string"), TEXT("Asset path (e.g. /Game/Town/SM_Porch_01)"))
@@ -259,6 +389,7 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 			.Optional(TEXT("material_steps"), TEXT("string"), TEXT("Steps material (slot 3)"))
 			.Optional(TEXT("location"), TEXT("array"), TEXT("World location [x,y,z]"))
 			.Optional(TEXT("rotation"), TEXT("number"), TEXT("Yaw rotation in degrees"))
+			.Optional(TEXT("building_context"), TEXT("object"), BuildingContextDesc)
 			.Optional(TEXT("label"), TEXT("string"), TEXT("Actor label"))
 			.Optional(TEXT("folder"), TEXT("string"), TEXT("Outliner folder path"))
 			.Optional(TEXT("overwrite"), TEXT("boolean"), TEXT("Overwrite existing asset"), TEXT("false"))
@@ -267,7 +398,8 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 	// ---- create_fire_escape ----
 	Registry.RegisterAction(TEXT("mesh"), TEXT("create_fire_escape"),
 		TEXT("Generate a multi-story fire escape: zigzag exterior stairs between floor landings. "
-			"Each floor gets a landing platform. Stairs alternate left/right. Optional roof ladder."),
+			"Each floor gets a landing platform. Stairs alternate left/right. Optional roof ladder. "
+			"With building_context: auto-orients to wall, aligns landings to floor heights, emits wall_openings (windows)."),
 		FMonolithActionHandler::CreateStatic(&FMonolithMeshArchFeatureActions::CreateFireEscape),
 		FParamSchemaBuilder()
 			.Required(TEXT("save_path"), TEXT("string"), TEXT("Asset path (e.g. /Game/Town/SM_FireEscape_01)"))
@@ -284,6 +416,7 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 			.Optional(TEXT("material_stairs"), TEXT("string"), TEXT("Stairs material (slot 2)"))
 			.Optional(TEXT("location"), TEXT("array"), TEXT("World location [x,y,z] — base attachment point"))
 			.Optional(TEXT("rotation"), TEXT("number"), TEXT("Yaw rotation in degrees"))
+			.Optional(TEXT("building_context"), TEXT("object"), BuildingContextDesc)
 			.Optional(TEXT("label"), TEXT("string"), TEXT("Actor label"))
 			.Optional(TEXT("folder"), TEXT("string"), TEXT("Outliner folder path"))
 			.Optional(TEXT("overwrite"), TEXT("boolean"), TEXT("Overwrite existing asset"), TEXT("false"))
@@ -292,7 +425,8 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 	// ---- create_ramp_connector ----
 	Registry.RegisterAction(TEXT("mesh"), TEXT("create_ramp_connector"),
 		TEXT("Generate an ADA-compliant ramp between two heights. Auto-computes run length from rise and slope ratio. "
-			"Adds intermediate switchback landings if rise exceeds max_rise_per_run."),
+			"Adds intermediate switchback landings if rise exceeds max_rise_per_run. "
+			"With building_context: auto-orients to wall and emits wall_openings (door at top)."),
 		FMonolithActionHandler::CreateStatic(&FMonolithMeshArchFeatureActions::CreateRampConnector),
 		FParamSchemaBuilder()
 			.Required(TEXT("save_path"), TEXT("string"), TEXT("Asset path (e.g. /Game/Town/SM_Ramp_01)"))
@@ -308,6 +442,7 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 			.Optional(TEXT("material_landing"), TEXT("string"), TEXT("Landing material (slot 2)"))
 			.Optional(TEXT("location"), TEXT("array"), TEXT("World location [x,y,z] — base of ramp"))
 			.Optional(TEXT("rotation"), TEXT("number"), TEXT("Yaw rotation in degrees"))
+			.Optional(TEXT("building_context"), TEXT("object"), BuildingContextDesc)
 			.Optional(TEXT("label"), TEXT("string"), TEXT("Actor label"))
 			.Optional(TEXT("folder"), TEXT("string"), TEXT("Outliner folder path"))
 			.Optional(TEXT("overwrite"), TEXT("boolean"), TEXT("Overwrite existing asset"), TEXT("false"))
@@ -316,7 +451,8 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 	// ---- create_railing ----
 	Registry.RegisterAction(TEXT("mesh"), TEXT("create_railing"),
 		TEXT("Generate a railing along an arbitrary path defined by 3D points. "
-			"Styles: simple (posts + top rail), bars (+ vertical balusters), solid (+ panel infill)."),
+			"Styles: simple (posts + top rail), bars (+ vertical balusters), solid (+ panel infill). "
+			"With building_context: auto-orients to wall normal for placement."),
 		FMonolithActionHandler::CreateStatic(&FMonolithMeshArchFeatureActions::CreateRailing),
 		FParamSchemaBuilder()
 			.Required(TEXT("save_path"), TEXT("string"), TEXT("Asset path (e.g. /Game/Town/SM_Railing_01)"))
@@ -332,6 +468,7 @@ void FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry& Reg
 			.Optional(TEXT("closed_loop"), TEXT("boolean"), TEXT("Connect last point to first"), TEXT("false"))
 			.Optional(TEXT("material"), TEXT("string"), TEXT("Material path (slot 0)"))
 			.Optional(TEXT("location"), TEXT("array"), TEXT("World location [x,y,z]"))
+			.Optional(TEXT("building_context"), TEXT("object"), BuildingContextDesc)
 			.Optional(TEXT("label"), TEXT("string"), TEXT("Actor label"))
 			.Optional(TEXT("folder"), TEXT("string"), TEXT("Outliner folder path"))
 			.Optional(TEXT("overwrite"), TEXT("boolean"), TEXT("Overwrite existing asset"), TEXT("false"))
@@ -370,6 +507,9 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreateBalcony(const TShar
 	const float BarSpacing   = GetFloat(Params, TEXT("bar_spacing"), 12.0f);
 	const float BarDiam      = GetFloat(Params, TEXT("bar_diameter"), 2.0f);
 	const bool bFloorDrain   = GetBool(Params, TEXT("has_floor_drain"), true);
+
+	// Parse attachment context (optional)
+	FAttachmentContext AttachCtx = ParseBuildingContext(Params);
 
 	// Validate railing style
 	if (RailStyle != TEXT("simple") && RailStyle != TEXT("bars") && RailStyle != TEXT("solid"))
@@ -436,7 +576,25 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreateBalcony(const TShar
 	Result->SetStringField(TEXT("railing_style"), RailStyle);
 	Result->SetNumberField(TEXT("triangle_count"), TriCount);
 
-	FString FinalErr = SaveAndPlace(Mesh, Params, Result);
+	// Emit wall openings when attachment context is provided (Fix #9: balcony door access)
+	if (AttachCtx.bValid)
+	{
+		TArray<FWallOpeningRequest> Openings;
+		FWallOpeningRequest DoorOpening;
+		DoorOpening.BuildingId = AttachCtx.BuildingId;
+		DoorOpening.Wall = AttachCtx.Wall;
+		DoorOpening.FloorIndex = AttachCtx.FloorIndex;
+		DoorOpening.PositionAlongWall = AttachCtx.WallWidth * 0.5f; // centered on wall
+		DoorOpening.Width = 110.0f;    // door opening width (cm)
+		DoorOpening.Height = 230.0f;   // door opening height (cm)
+		DoorOpening.SillHeight = 0.0f; // floor-level access
+		DoorOpening.Type = TEXT("door");
+		DoorOpening.Purpose = TEXT("balcony_access");
+		Openings.Add(DoorOpening);
+		EmitWallOpenings(Result, Openings);
+	}
+
+	FString FinalErr = SaveAndPlace(Mesh, Params, Result, AttachCtx, Width, Depth);
 	if (!FinalErr.IsEmpty())
 		return FMonolithActionResult::Error(FinalErr);
 
@@ -476,16 +634,48 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreatePorch(const TShared
 	const float StepHeight = GetFloat(Params, TEXT("step_height"), 18.0f);
 	const float RailHeight = GetFloat(Params, TEXT("railing_height"), 90.0f);
 
-	// Floor height: if steps are present, porch floor = step_count * step_height
-	int32 StepCount = GetInt(Params, TEXT("step_count"), 3);
-	if (StepCount <= 0 && bHasSteps)
-	{
-		// Auto-compute step count from a reasonable porch floor height
-		float PorchFloorH = 54.0f; // 3 steps * 18cm default
-		StepCount = FMath::Max(1, FMath::RoundToInt32(PorchFloorH / StepHeight));
-	}
+	// Parse attachment context (optional)
+	FAttachmentContext AttachCtx = ParseBuildingContext(Params);
 
-	const float PorchFloorZ = bHasSteps ? (StepCount * StepHeight) : 0.0f;
+	// Floor height: if building context is provided, derive porch floor from building floor level.
+	// Otherwise fall back to step_count * step_height.
+	int32 StepCount = GetInt(Params, TEXT("step_count"), 3);
+	float PorchFloorZ = 0.0f;
+
+	if (AttachCtx.bValid)
+	{
+		// Porch floor should match the building's floor level.
+		// world_origin.Z gives the base of the wall face on this floor.
+		// For a ground floor porch, PorchFloorZ = world_origin.Z (relative to the mesh origin).
+		// Steps count is computed from porch floor height down to ground (Z=0).
+		PorchFloorZ = AttachCtx.WallOrigin.Z;
+
+		if (bHasSteps && PorchFloorZ > StepHeight * 0.5f)
+		{
+			// Auto-compute steps from porch floor to ground
+			StepCount = FMath::Max(1, FMath::RoundToInt32(PorchFloorZ / StepHeight));
+			// The porch floor Z is defined by the building, steps adapt to reach it
+		}
+		else if (!bHasSteps || PorchFloorZ < StepHeight * 0.5f)
+		{
+			StepCount = 0;
+			// Floor is at or near ground level; no steps needed
+		}
+
+		// Zero out the PorchFloorZ for geometry generation since we use it relative to mesh origin.
+		// The attachment system handles world positioning.
+		// Geometry is still built starting from Z=0 in local space; we store the computed Z offset.
+	}
+	else
+	{
+		if (StepCount <= 0 && bHasSteps)
+		{
+			// Auto-compute step count from a reasonable porch floor height
+			float PorchFloorH = 54.0f; // 3 steps * 18cm default
+			StepCount = FMath::Max(1, FMath::RoundToInt32(PorchFloorH / StepHeight));
+		}
+		PorchFloorZ = bHasSteps ? (StepCount * StepHeight) : 0.0f;
+	}
 	const float FloorThick = 10.0f;
 
 	UDynamicMesh* Mesh = NewObject<UDynamicMesh>(Pool);
@@ -594,9 +784,28 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreatePorch(const TShared
 	Result->SetNumberField(TEXT("height"), Height);
 	Result->SetNumberField(TEXT("column_count"), ColCount);
 	Result->SetNumberField(TEXT("step_count"), StepCount);
+	Result->SetNumberField(TEXT("porch_floor_z"), PorchFloorZ);
 	Result->SetNumberField(TEXT("triangle_count"), TriCount);
 
-	FString FinalErr = SaveAndPlace(Mesh, Params, Result);
+	// Emit wall openings when attachment context is provided (Fix #10: porch entry door)
+	if (AttachCtx.bValid)
+	{
+		TArray<FWallOpeningRequest> Openings;
+		FWallOpeningRequest DoorOpening;
+		DoorOpening.BuildingId = AttachCtx.BuildingId;
+		DoorOpening.Wall = AttachCtx.Wall;
+		DoorOpening.FloorIndex = AttachCtx.FloorIndex;
+		DoorOpening.PositionAlongWall = AttachCtx.WallWidth * 0.5f; // centered on wall
+		DoorOpening.Width = 110.0f;    // 110cm for momentum-based FPS movement (R2-I2)
+		DoorOpening.Height = 230.0f;   // standard door height
+		DoorOpening.SillHeight = 0.0f; // floor-level entry
+		DoorOpening.Type = TEXT("door");
+		DoorOpening.Purpose = TEXT("porch_entry");
+		Openings.Add(DoorOpening);
+		EmitWallOpenings(Result, Openings);
+	}
+
+	FString FinalErr = SaveAndPlace(Mesh, Params, Result, AttachCtx, Width, Depth);
 	if (!FinalErr.IsEmpty())
 		return FMonolithActionResult::Error(FinalErr);
 
@@ -632,6 +841,9 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreateFireEscape(const TS
 	const float RailHeight  = GetFloat(Params, TEXT("railing_height"), 100.0f);
 	const bool bHasLadder   = GetBool(Params, TEXT("has_ladder"), true);
 	const float LadderH     = GetFloat(Params, TEXT("ladder_height"), 150.0f);
+
+	// Parse attachment context (optional)
+	FAttachmentContext AttachCtx = ParseBuildingContext(Params);
 
 	UDynamicMesh* Mesh = NewObject<UDynamicMesh>(Pool);
 	if (!Mesh) return FMonolithActionResult::Error(TEXT("Failed to allocate UDynamicMesh"));
@@ -878,7 +1090,28 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreateFireEscape(const TS
 	Result->SetNumberField(TEXT("triangle_count"), TriCount);
 	Result->SetBoolField(TEXT("has_ladder"), bHasLadder);
 
-	FString FinalErr = SaveAndPlace(Mesh, Params, Result);
+	// Emit wall openings when attachment context is provided (Fix #11: fire escape egress windows)
+	if (AttachCtx.bValid)
+	{
+		TArray<FWallOpeningRequest> Openings;
+		for (int32 Fi = 0; Fi < FloorCount; ++Fi)
+		{
+			FWallOpeningRequest WindowOpening;
+			WindowOpening.BuildingId = AttachCtx.BuildingId;
+			WindowOpening.Wall = AttachCtx.Wall;
+			WindowOpening.FloorIndex = AttachCtx.FloorIndex + Fi + 1; // each landing is one floor up
+			WindowOpening.PositionAlongWall = AttachCtx.WallWidth * 0.5f; // centered
+			WindowOpening.Width = 70.0f;     // fire escape egress window width (cm)
+			WindowOpening.Height = 100.0f;   // fire escape egress window height (cm)
+			WindowOpening.SillHeight = 60.0f; // window sill at 60cm above floor
+			WindowOpening.Type = TEXT("window");
+			WindowOpening.Purpose = TEXT("fire_escape_egress");
+			Openings.Add(WindowOpening);
+		}
+		EmitWallOpenings(Result, Openings);
+	}
+
+	FString FinalErr = SaveAndPlace(Mesh, Params, Result, AttachCtx, LandingW, LandingD);
 	if (!FinalErr.IsEmpty())
 		return FMonolithActionResult::Error(FinalErr);
 
@@ -909,6 +1142,9 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreateRampConnector(const
 	const float LandingLen    = GetFloat(Params, TEXT("landing_length"), 150.0f);
 	const float RailHeight    = GetFloat(Params, TEXT("railing_height"), 90.0f);
 	const FString RailStyle   = GetString(Params, TEXT("railing_style"), TEXT("simple")).ToLower();
+
+	// Parse attachment context (optional)
+	FAttachmentContext AttachCtx = ParseBuildingContext(Params);
 
 	if (SlopeRatio <= 0.0f || SlopeRatio > 1.0f)
 		return FMonolithActionResult::Error(TEXT("slope_ratio must be between 0 and 1 (exclusive)"));
@@ -1064,7 +1300,25 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreateRampConnector(const
 	Result->SetBoolField(TEXT("ada_compliant"), SlopeRatio <= (1.0f / 12.0f) + 0.001f);
 	Result->SetNumberField(TEXT("triangle_count"), TriCount);
 
-	FString FinalErr = SaveAndPlace(Mesh, Params, Result);
+	// Emit wall openings when attachment context is provided (ramp door at top)
+	if (AttachCtx.bValid)
+	{
+		TArray<FWallOpeningRequest> Openings;
+		FWallOpeningRequest DoorOpening;
+		DoorOpening.BuildingId = AttachCtx.BuildingId;
+		DoorOpening.Wall = AttachCtx.Wall;
+		DoorOpening.FloorIndex = AttachCtx.FloorIndex;
+		DoorOpening.PositionAlongWall = AttachCtx.WallWidth * 0.5f; // centered
+		DoorOpening.Width = 110.0f;    // 110cm for accessibility
+		DoorOpening.Height = 230.0f;   // standard door
+		DoorOpening.SillHeight = 0.0f;
+		DoorOpening.Type = TEXT("door");
+		DoorOpening.Purpose = TEXT("ramp_entry");
+		Openings.Add(DoorOpening);
+		EmitWallOpenings(Result, Openings);
+	}
+
+	FString FinalErr = SaveAndPlace(Mesh, Params, Result, AttachCtx, Width, FootprintY);
 	if (!FinalErr.IsEmpty())
 		return FMonolithActionResult::Error(FinalErr);
 
@@ -1119,6 +1373,9 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreateRailing(const TShar
 	if (Style != TEXT("simple") && Style != TEXT("bars") && Style != TEXT("solid"))
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid style '%s'. Valid: simple, bars, solid"), *Style));
 
+	// Parse attachment context (optional — for railing, only affects placement, no wall openings)
+	FAttachmentContext AttachCtx = ParseBuildingContext(Params);
+
 	UDynamicMesh* Mesh = NewObject<UDynamicMesh>(Pool);
 	if (!Mesh) return FMonolithActionResult::Error(TEXT("Failed to allocate UDynamicMesh"));
 
@@ -1150,7 +1407,8 @@ FMonolithActionResult FMonolithMeshArchFeatureActions::CreateRailing(const TShar
 	Result->SetBoolField(TEXT("closed_loop"), bClosedLoop);
 	Result->SetNumberField(TEXT("triangle_count"), TriCount);
 
-	FString FinalErr = SaveAndPlace(Mesh, Params, Result);
+	// Railing has no wall openings — just pass attachment context for auto-placement
+	FString FinalErr = SaveAndPlace(Mesh, Params, Result, AttachCtx, PathLen, 0.0f);
 	if (!FinalErr.IsEmpty())
 		return FMonolithActionResult::Error(FinalErr);
 

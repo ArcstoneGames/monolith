@@ -33,6 +33,7 @@ void FMonolithMeshFloorPlanGenerator::RegisterActions(FMonolithToolRegistry& Reg
 			.Optional(TEXT("seed"), TEXT("number"), TEXT("Random seed for deterministic generation. -1 = random"), TEXT("-1"))
 			.Optional(TEXT("hospice_mode"), TEXT("boolean"), TEXT("Enforce wheelchair accessibility: min 100cm doors, 180cm corridors, rest alcoves"), TEXT("false"))
 			.Optional(TEXT("min_room_aspect"), TEXT("number"), TEXT("Minimum acceptable room aspect ratio (width/height). Rooms worse than this get rebalanced"), TEXT("3.0"))
+			.Optional(TEXT("floor_index"), TEXT("number"), TEXT("Floor index for per-floor room filtering: 0=ground, 1+=upper, -1=all floors (default)"), TEXT("-1"))
 			.Build());
 
 	Registry.RegisterAction(TEXT("mesh"), TEXT("list_building_archetypes"),
@@ -93,6 +94,19 @@ bool FMonolithMeshFloorPlanGenerator::ParseArchetypeJson(const TSharedPtr<FJsonO
 	Json->TryGetStringField(TEXT("description"), OutArchetype.Description);
 	Json->TryGetStringField(TEXT("roof_type"), OutArchetype.RoofType);
 
+	// Parse floor_height
+	if (Json->HasField(TEXT("floor_height")))
+		OutArchetype.FloorHeight = static_cast<float>(Json->GetNumberField(TEXT("floor_height")));
+
+	// Parse material_hints
+	const TSharedPtr<FJsonObject>* MatHintsObj = nullptr;
+	if (Json->TryGetObjectField(TEXT("material_hints"), MatHintsObj) && MatHintsObj && (*MatHintsObj).IsValid())
+	{
+		(*MatHintsObj)->TryGetStringField(TEXT("exterior"), OutArchetype.MaterialHints.Exterior);
+		(*MatHintsObj)->TryGetStringField(TEXT("interior"), OutArchetype.MaterialHints.Interior);
+		(*MatHintsObj)->TryGetStringField(TEXT("floor"), OutArchetype.MaterialHints.FloorMaterial);
+	}
+
 	// Parse floors
 	const TSharedPtr<FJsonObject>* FloorsObj = nullptr;
 	if (Json->TryGetObjectField(TEXT("floors"), FloorsObj) && FloorsObj && (*FloorsObj).IsValid())
@@ -151,6 +165,16 @@ bool FMonolithMeshFloorPlanGenerator::ParseArchetypeJson(const TSharedPtr<FJsonO
 		if ((*RObj)->HasField(TEXT("exterior_wall")))
 			Room.bExteriorWall = (*RObj)->GetBoolField(TEXT("exterior_wall"));
 
+		// Per-floor assignment
+		if ((*RObj)->HasField(TEXT("floor")))
+			(*RObj)->TryGetStringField(TEXT("floor"), Room.Floor);
+
+		// Aspect ratio constraints
+		if ((*RObj)->HasField(TEXT("min_aspect")))
+			Room.MinAspect = static_cast<float>((*RObj)->GetNumberField(TEXT("min_aspect")));
+		if ((*RObj)->HasField(TEXT("max_aspect")))
+			Room.MaxAspect = static_cast<float>((*RObj)->GetNumberField(TEXT("max_aspect")));
+
 		OutArchetype.Rooms.Add(MoveTemp(Room));
 	}
 
@@ -186,7 +210,7 @@ bool FMonolithMeshFloorPlanGenerator::ParseArchetypeJson(const TSharedPtr<FJsonO
 // ============================================================================
 
 TArray<FMonolithMeshFloorPlanGenerator::FRoomInstance> FMonolithMeshFloorPlanGenerator::ResolveRoomInstances(
-	const FBuildingArchetype& Archetype, int32 GridW, int32 GridH, FRandomStream& Rng)
+	const FBuildingArchetype& Archetype, int32 GridW, int32 GridH, FRandomStream& Rng, int32 FloorIndex)
 {
 	TArray<FRoomInstance> Instances;
 	const int32 TotalCells = GridW * GridH;
@@ -195,6 +219,17 @@ TArray<FMonolithMeshFloorPlanGenerator::FRoomInstance> FMonolithMeshFloorPlanGen
 	{
 		if (AR.bAutoGenerate)
 			continue;  // Corridors are generated later
+
+		// Per-floor filtering: skip rooms that don't belong on this floor
+		if (FloorIndex >= 0)
+		{
+			const FString& RoomFloor = AR.Floor;
+			if (RoomFloor == TEXT("ground") && FloorIndex != 0)
+				continue;
+			if (RoomFloor == TEXT("upper") && FloorIndex == 0)
+				continue;
+			// "every" and "any" (default) pass through on all floors
+		}
 
 		// Roll how many of this room type
 		int32 Count = Rng.RandRange(AR.CountMin, AR.CountMax);
@@ -206,6 +241,9 @@ TArray<FMonolithMeshFloorPlanGenerator::FRoomInstance> FMonolithMeshFloorPlanGen
 			Inst.RoomId = (Count > 1) ? FString::Printf(TEXT("%s_%d"), *AR.Type, i + 1) : AR.Type;
 			Inst.Priority = AR.Priority;
 			Inst.bExteriorWall = AR.bExteriorWall;
+			Inst.Floor = AR.Floor;
+			Inst.MinAspect = AR.MinAspect;
+			Inst.MaxAspect = AR.MaxAspect;
 
 			// Target area: random within range, clamped to available grid space
 			float Area = Rng.FRandRange(AR.MinArea, AR.MaxArea);
@@ -237,6 +275,143 @@ TArray<FMonolithMeshFloorPlanGenerator::FRoomInstance> FMonolithMeshFloorPlanGen
 	}
 
 	return Instances;
+}
+
+// ============================================================================
+// Validation
+// ============================================================================
+
+FString FMonolithMeshFloorPlanGenerator::ValidateFootprintCapacity(
+	const FBuildingArchetype& Archetype, int32 GridW, int32 GridH, int32 FloorIndex)
+{
+	float TotalRequiredMin = 0.0f;
+	for (const FArchetypeRoom& AR : Archetype.Rooms)
+	{
+		if (AR.bAutoGenerate)
+			continue;
+		if (!AR.bRequired)
+			continue;
+
+		// Per-floor filtering
+		if (FloorIndex >= 0)
+		{
+			if (AR.Floor == TEXT("ground") && FloorIndex != 0)
+				continue;
+			if (AR.Floor == TEXT("upper") && FloorIndex == 0)
+				continue;
+		}
+
+		TotalRequiredMin += AR.MinArea * static_cast<float>(AR.CountMin);
+	}
+
+	const float AvailableArea = static_cast<float>(GridW * GridH) * 0.85f;  // 85% after corridors
+	if (TotalRequiredMin > AvailableArea)
+	{
+		// Convert to meters for a helpful error message
+		float NeededM2 = TotalRequiredMin * 0.25f / 0.85f;  // Account for corridor reservation
+		float NeededSide = FMath::Sqrt(NeededM2);
+		float NeededCm = NeededSide * 100.0f;
+		return FString::Printf(
+			TEXT("Footprint too small for archetype '%s'. Required rooms need at least %.0f grid cells (%.0f m²) "
+				"but footprint provides %.0f usable cells (%.0f m²). Try at least %.0fx%.0f cm."),
+			*Archetype.Name,
+			TotalRequiredMin, TotalRequiredMin * 0.25f,
+			AvailableArea, AvailableArea * 0.25f,
+			NeededCm, NeededCm);
+	}
+
+	return FString();
+}
+
+FString FMonolithMeshFloorPlanGenerator::ValidateStairwellRequirement(const FBuildingArchetype& Archetype)
+{
+	if (Archetype.FloorsMax <= 1)
+		return FString();  // Single-floor archetypes don't need stairwells
+
+	bool bHasStairwell = false;
+	for (const FArchetypeRoom& AR : Archetype.Rooms)
+	{
+		if (AR.Type == TEXT("stairwell") || AR.Type == TEXT("stairs"))
+		{
+			bHasStairwell = true;
+			if (AR.MinArea < 24.0f)
+			{
+				return FString::Printf(
+					TEXT("Multi-floor archetype '%s' has stairwell with min_area %.0f but minimum is 24 cells "
+						"(4x6 = 200x300cm). Increase stairwell min_area."),
+					*Archetype.Name, AR.MinArea);
+			}
+			break;
+		}
+	}
+
+	if (!bHasStairwell)
+	{
+		return FString::Printf(
+			TEXT("Multi-floor archetype '%s' (%d-%d floors) has no stairwell room type. "
+				"Add a room with type 'stairwell', floor 'every', and min_area >= 24."),
+			*Archetype.Name, Archetype.FloorsMin, Archetype.FloorsMax);
+	}
+
+	return FString();
+}
+
+// ============================================================================
+// Aspect Ratio Correction
+// ============================================================================
+
+void FMonolithMeshFloorPlanGenerator::CorrectAspectRatios(
+	TArray<FGridRect>& Rects, const TArray<FRoomInstance>& Rooms, int32 GridW, int32 GridH)
+{
+	for (int32 i = 0; i < Rects.Num() && i < Rooms.Num(); ++i)
+	{
+		FGridRect& R = Rects[i];
+		if (R.W <= 0 || R.H <= 0)
+			continue;
+
+		float MaxAspect = Rooms[i].MaxAspect;
+		float CurrentAspect = R.AspectRatio();
+
+		if (CurrentAspect <= MaxAspect)
+			continue;
+
+		// Room exceeds max aspect ratio. Try to reshape it.
+		// Strategy: reduce the longer dimension and increase the shorter one,
+		// keeping area roughly the same (within grid constraints).
+		int32 Area = R.Area();
+		bool bWideRoom = R.W > R.H;
+
+		// Calculate ideal dimensions for the target aspect ratio
+		// Area = W * H, W/H = MaxAspect => W = sqrt(Area * MaxAspect), H = sqrt(Area / MaxAspect)
+		int32 IdealW, IdealH;
+		if (bWideRoom)
+		{
+			IdealW = FMath::RoundToInt32(FMath::Sqrt(static_cast<float>(Area) * MaxAspect));
+			IdealH = FMath::Max(1, FMath::RoundToInt32(static_cast<float>(Area) / static_cast<float>(IdealW)));
+		}
+		else
+		{
+			IdealH = FMath::RoundToInt32(FMath::Sqrt(static_cast<float>(Area) * MaxAspect));
+			IdealW = FMath::Max(1, FMath::RoundToInt32(static_cast<float>(Area) / static_cast<float>(IdealH)));
+		}
+
+		// Clamp to grid bounds
+		IdealW = FMath::Clamp(IdealW, 1, GridW - R.X);
+		IdealH = FMath::Clamp(IdealH, 1, GridH - R.Y);
+
+		// Only apply if the new aspect ratio is actually better
+		float NewAspect = (IdealW > 0 && IdealH > 0)
+			? FMath::Max(static_cast<float>(IdealW) / IdealH, static_cast<float>(IdealH) / IdealW)
+			: CurrentAspect;
+
+		if (NewAspect < CurrentAspect)
+		{
+			UE_LOG(LogMonolithFloorPlan, Log, TEXT("Correcting aspect ratio for '%s': %dx%d (%.1f) -> %dx%d (%.1f)"),
+				*Rooms[i].RoomId, R.W, R.H, CurrentAspect, IdealW, IdealH, NewAspect);
+			R.W = IdealW;
+			R.H = IdealH;
+		}
+	}
 }
 
 // ============================================================================
@@ -1228,36 +1403,56 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 
 	FRandomStream Rng(Seed);
 
+	// ---- Parse optional floor_index for per-floor generation ----
+	double FloorIndexDbl = -1.0;
+	Params->TryGetNumberField(TEXT("floor_index"), FloorIndexDbl);
+	int32 FloorIndex = static_cast<int32>(FloorIndexDbl);
+
 	// ---- Load archetype ----
 	FBuildingArchetype Archetype;
 	FString LoadError;
 	if (!LoadArchetype(ArchetypeName, Archetype, LoadError))
 		return FMonolithActionResult::Error(LoadError);
 
+	// ---- Validate stairwell requirement for multi-floor archetypes ----
+	FString StairwellError = ValidateStairwellRequirement(Archetype);
+	if (!StairwellError.IsEmpty())
+		return FMonolithActionResult::Error(StairwellError);
+
 	// ---- Compute grid dimensions ----
 	int32 GridW = FMath::Max(2, FMath::RoundToInt32(static_cast<float>(FootprintW) / CellSize));
 	int32 GridH = FMath::Max(2, FMath::RoundToInt32(static_cast<float>(FootprintH) / CellSize));
 
-	UE_LOG(LogMonolithFloorPlan, Log, TEXT("Generating floor plan: archetype=%s, grid=%dx%d, cell=%.0f, seed=%d, hospice=%d"),
-		*Archetype.Name, GridW, GridH, CellSize, Seed, bHospiceMode ? 1 : 0);
+	// ---- Validate footprint capacity ----
+	FString CapacityError = ValidateFootprintCapacity(Archetype, GridW, GridH, FloorIndex);
+	if (!CapacityError.IsEmpty())
+		return FMonolithActionResult::Error(CapacityError);
 
-	// ---- Resolve room instances ----
-	TArray<FRoomInstance> Instances = ResolveRoomInstances(Archetype, GridW, GridH, Rng);
+	UE_LOG(LogMonolithFloorPlan, Log, TEXT("Generating floor plan: archetype=%s, grid=%dx%d, cell=%.0f, seed=%d, hospice=%d, floor=%d"),
+		*Archetype.Name, GridW, GridH, CellSize, Seed, bHospiceMode ? 1 : 0, FloorIndex);
+
+	// ---- Resolve room instances (with per-floor filtering) ----
+	TArray<FRoomInstance> Instances = ResolveRoomInstances(Archetype, GridW, GridH, Rng, FloorIndex);
 
 	if (Instances.Num() == 0)
-		return FMonolithActionResult::Error(TEXT("Archetype produced zero room instances"));
+		return FMonolithActionResult::Error(TEXT("Archetype produced zero room instances for this floor. Check per-floor room assignments."));
 
 	// ---- Squarified treemap layout ----
 	TArray<FGridRect> Rects = SquarifiedTreemapLayout(Instances, GridW, GridH);
 
-	// ---- Validate room quality (reject extreme aspect ratios) ----
+	// ---- Correct aspect ratios (per-room max_aspect from archetype) ----
+	CorrectAspectRatios(Rects, Instances, GridW, GridH);
+
+	// ---- Validate room quality (warn on remaining extreme aspect ratios) ----
 	float MaxAspect = static_cast<float>(MinAspectDbl);
 	for (int32 i = 0; i < Rects.Num(); ++i)
 	{
-		if (Rects[i].AspectRatio() > MaxAspect && Rects[i].Area() > 2)
+		float RoomMaxAspect = (i < Instances.Num()) ? Instances[i].MaxAspect : MaxAspect;
+		float EffectiveMax = FMath::Max(MaxAspect, RoomMaxAspect);
+		if (Rects[i].AspectRatio() > EffectiveMax && Rects[i].Area() > 2)
 		{
-			UE_LOG(LogMonolithFloorPlan, Warning, TEXT("Room '%s' has extreme aspect ratio %.1f (%dx%d) -- may produce awkward geometry"),
-				*Instances[i].RoomId, Rects[i].AspectRatio(), Rects[i].W, Rects[i].H);
+			UE_LOG(LogMonolithFloorPlan, Warning, TEXT("Room '%s' has extreme aspect ratio %.1f (%dx%d, max=%.1f) -- may produce awkward geometry"),
+				*Instances[i].RoomId, Rects[i].AspectRatio(), Rects[i].W, Rects[i].H, EffectiveMax);
 		}
 	}
 
@@ -1286,9 +1481,24 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 		bHospiceMode, CellSize);
 
 	ResultJson->SetNumberField(TEXT("seed"), Seed);
+	ResultJson->SetNumberField(TEXT("floor_index"), FloorIndex);
+	ResultJson->SetNumberField(TEXT("floor_height"), Archetype.FloorHeight);
 
-	UE_LOG(LogMonolithFloorPlan, Log, TEXT("Floor plan generated: %d rooms, %d doors, seed=%d"),
-		Rooms.Num(), Doors.Num(), Seed);
+	// Include material hints if present
+	if (!Archetype.MaterialHints.Exterior.IsEmpty() || !Archetype.MaterialHints.Interior.IsEmpty() || !Archetype.MaterialHints.FloorMaterial.IsEmpty())
+	{
+		auto MatHints = MakeShared<FJsonObject>();
+		if (!Archetype.MaterialHints.Exterior.IsEmpty())
+			MatHints->SetStringField(TEXT("exterior"), Archetype.MaterialHints.Exterior);
+		if (!Archetype.MaterialHints.Interior.IsEmpty())
+			MatHints->SetStringField(TEXT("interior"), Archetype.MaterialHints.Interior);
+		if (!Archetype.MaterialHints.FloorMaterial.IsEmpty())
+			MatHints->SetStringField(TEXT("floor"), Archetype.MaterialHints.FloorMaterial);
+		ResultJson->SetObjectField(TEXT("material_hints"), MatHints);
+	}
+
+	UE_LOG(LogMonolithFloorPlan, Log, TEXT("Floor plan generated: %d rooms, %d doors, seed=%d, floor=%d"),
+		Rooms.Num(), Doors.Num(), Seed, FloorIndex);
 
 	return FMonolithActionResult::Success(ResultJson);
 }
