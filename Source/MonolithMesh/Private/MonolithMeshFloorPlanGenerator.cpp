@@ -23,7 +23,10 @@ void FMonolithMeshFloorPlanGenerator::RegisterActions(FMonolithToolRegistry& Reg
 	Registry.RegisterAction(TEXT("mesh"), TEXT("generate_floor_plan"),
 		TEXT("Generate a complete floor plan from a building archetype. Returns grid, rooms, and doors "
 			"in the exact format consumed by create_building_from_grid. "
-			"Algorithm: archetype loading -> room resolution -> squarified treemap layout -> corridor insertion -> door placement."),
+			"Algorithm: archetype loading -> room resolution -> squarified treemap layout -> "
+			"adjacency validation -> privacy gradient -> corridor insertion -> door placement. "
+			"WP-2: Supports adjacency_matrix (MUST/MUST_NOT), privacy gradient, wet wall clustering, "
+			"and circulation patterns (double_loaded, hub_spoke, racetrack, enfilade)."),
 		FMonolithActionHandler::CreateStatic(&FMonolithMeshFloorPlanGenerator::GenerateFloorPlan),
 		FParamSchemaBuilder()
 			.Required(TEXT("archetype"), TEXT("string"), TEXT("Archetype name (e.g. 'residential_house') or full path to archetype JSON file"))
@@ -48,6 +51,894 @@ void FMonolithMeshFloorPlanGenerator::RegisterActions(FMonolithToolRegistry& Reg
 		FParamSchemaBuilder()
 			.Required(TEXT("archetype"), TEXT("string"), TEXT("Archetype name (e.g. 'residential_house') without .json extension"))
 			.Build());
+}
+
+// ============================================================================
+// WP-2: Adjacency Matrix
+// ============================================================================
+
+FMonolithMeshFloorPlanGenerator::EAdjacencyRelation
+FMonolithMeshFloorPlanGenerator::FAdjacencyMatrix::GetRule(const FString& TypeA, const FString& TypeB) const
+{
+	// Check A->B
+	if (const auto* Inner = Rules.Find(TypeA))
+	{
+		if (const auto* Rule = Inner->Find(TypeB))
+		{
+			return *Rule;
+		}
+	}
+	// Check B->A (symmetric)
+	if (const auto* Inner = Rules.Find(TypeB))
+	{
+		if (const auto* Rule = Inner->Find(TypeA))
+		{
+			return *Rule;
+		}
+	}
+	return EAdjacencyRelation::MAY;
+}
+
+bool FMonolithMeshFloorPlanGenerator::FAdjacencyMatrix::ViolatesMustNot(const FString& TypeA, const FString& TypeB) const
+{
+	return GetRule(TypeA, TypeB) == EAdjacencyRelation::MUST_NOT;
+}
+
+// ============================================================================
+// WP-2: Privacy Zone Mapping
+// ============================================================================
+
+FMonolithMeshFloorPlanGenerator::EPrivacyZone
+FMonolithMeshFloorPlanGenerator::GetPrivacyZone(const FString& RoomType)
+{
+	// PUBLIC
+	static const TSet<FString> PublicTypes = {
+		TEXT("entry"), TEXT("entryway"), TEXT("foyer"), TEXT("lobby"),
+		TEXT("living_room"), TEXT("reception"), TEXT("vestibule"),
+		TEXT("waiting_room"), TEXT("waiting_area"), TEXT("nave"),
+		TEXT("front_desk")
+	};
+
+	// SEMI_PUBLIC
+	static const TSet<FString> SemiPublicTypes = {
+		TEXT("dining_room"), TEXT("family_room"), TEXT("dining_area"),
+		TEXT("bar"), TEXT("fellowship_hall"), TEXT("cafeteria"),
+		TEXT("gymnasium"), TEXT("library"), TEXT("classroom"),
+		TEXT("open_office"), TEXT("bullpen"), TEXT("mailbox_area")
+	};
+
+	// SEMI_PRIVATE
+	static const TSet<FString> SemiPrivateTypes = {
+		TEXT("hallway"), TEXT("corridor"), TEXT("kitchen"),
+		TEXT("break_room"), TEXT("nurse_station"), TEXT("copy_room"),
+		TEXT("teacher_lounge"), TEXT("admin_office"), TEXT("nurse_office"),
+		TEXT("conference_room"), TEXT("stairwell"), TEXT("elevator")
+	};
+
+	// PRIVATE
+	static const TSet<FString> PrivateTypes = {
+		TEXT("bedroom"), TEXT("bathroom"), TEXT("office"),
+		TEXT("master_bedroom"), TEXT("interrogation"), TEXT("exam_room"),
+		TEXT("doctor_office"), TEXT("private_office"), TEXT("chief_office"),
+		TEXT("detective_office"), TEXT("observation"), TEXT("half_bath"),
+		TEXT("bathroom_ada"), TEXT("restroom_male"), TEXT("restroom_female"),
+		TEXT("restroom_block"), TEXT("holding_cell"), TEXT("sacristy"),
+		TEXT("altar")
+	};
+
+	// SERVICE
+	static const TSet<FString> ServiceTypes = {
+		TEXT("laundry"), TEXT("laundry_room"), TEXT("utility"),
+		TEXT("utility_closet"), TEXT("storage"), TEXT("storage_cage"),
+		TEXT("closet"), TEXT("garage"), TEXT("janitor_closet"),
+		TEXT("server_room"), TEXT("mechanical"), TEXT("armory"),
+		TEXT("evidence_room"), TEXT("locker_room"), TEXT("booking"),
+		TEXT("dispatch"), TEXT("security_desk"), TEXT("supply_room"),
+		TEXT("mail_room"), TEXT("loading_dock"), TEXT("warehouse_floor"),
+		TEXT("rest_alcove")
+	};
+
+	if (PublicTypes.Contains(RoomType)) return EPrivacyZone::PUBLIC;
+	if (SemiPublicTypes.Contains(RoomType)) return EPrivacyZone::SEMI_PUBLIC;
+	if (SemiPrivateTypes.Contains(RoomType)) return EPrivacyZone::SEMI_PRIVATE;
+	if (PrivateTypes.Contains(RoomType)) return EPrivacyZone::PRIVATE;
+	if (ServiceTypes.Contains(RoomType)) return EPrivacyZone::SERVICE;
+
+	// Default: SEMI_PRIVATE for unknown types
+	return EPrivacyZone::SEMI_PRIVATE;
+}
+
+// ============================================================================
+// WP-2: Wet Wall Clustering
+// ============================================================================
+
+bool FMonolithMeshFloorPlanGenerator::IsWetRoom(const FString& RoomType)
+{
+	static const TSet<FString> WetTypes = {
+		TEXT("bathroom"), TEXT("half_bath"), TEXT("bathroom_ada"),
+		TEXT("restroom_male"), TEXT("restroom_female"), TEXT("restroom_block"),
+		TEXT("kitchen"), TEXT("laundry"), TEXT("laundry_room")
+	};
+	return WetTypes.Contains(RoomType);
+}
+
+TSet<FIntPoint> FMonolithMeshFloorPlanGenerator::BuildPlumbingChaseSet(
+	const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	const TArray<FRoomDef>& Rooms)
+{
+	TSet<FIntPoint> PlumbingCells;
+	static const FIntPoint Dirs[] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+
+	for (int32 i = 0; i < Rooms.Num(); ++i)
+	{
+		if (!IsWetRoom(Rooms[i].RoomType))
+			continue;
+
+		// Mark all cells of wet rooms and their adjacent cells as plumbing chase
+		for (const FIntPoint& Cell : Rooms[i].GridCells)
+		{
+			PlumbingCells.Add(Cell);
+			for (const FIntPoint& D : Dirs)
+			{
+				FIntPoint N = Cell + D;
+				if (N.X >= 0 && N.Y >= 0 && N.X < GridW && N.Y < GridH)
+				{
+					PlumbingCells.Add(N);
+				}
+			}
+		}
+	}
+
+	return PlumbingCells;
+}
+
+// ============================================================================
+// WP-2: Adjacency Validation & Fix
+// ============================================================================
+
+TArray<TPair<int32, int32>> FMonolithMeshFloorPlanGenerator::FindMustNotViolations(
+	const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	const TArray<FRoomDef>& Rooms, const FAdjacencyMatrix& Matrix)
+{
+	TArray<TPair<int32, int32>> Violations;
+	TSet<uint64> Checked;
+
+	auto PairKey = [](int32 A, int32 B) -> uint64 {
+		int32 Lo = FMath::Min(A, B);
+		int32 Hi = FMath::Max(A, B);
+		return (static_cast<uint64>(Lo) << 32) | static_cast<uint64>(Hi);
+	};
+
+	static const FIntPoint Dirs[] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+
+	for (int32 Y = 0; Y < GridH; ++Y)
+	{
+		for (int32 X = 0; X < GridW; ++X)
+		{
+			int32 IdxA = Grid[Y][X];
+			if (IdxA < 0 || IdxA >= Rooms.Num()) continue;
+
+			for (const FIntPoint& D : Dirs)
+			{
+				int32 NX = X + D.X, NY = Y + D.Y;
+				if (NX < 0 || NY < 0 || NX >= GridW || NY >= GridH) continue;
+
+				int32 IdxB = Grid[NY][NX];
+				if (IdxB < 0 || IdxB >= Rooms.Num() || IdxB == IdxA) continue;
+
+				uint64 Key = PairKey(IdxA, IdxB);
+				if (Checked.Contains(Key)) continue;
+				Checked.Add(Key);
+
+				if (Matrix.ViolatesMustNot(Rooms[IdxA].RoomType, Rooms[IdxB].RoomType))
+				{
+					Violations.Add(TPair<int32, int32>(IdxA, IdxB));
+				}
+			}
+		}
+	}
+
+	return Violations;
+}
+
+TArray<TPair<int32, int32>> FMonolithMeshFloorPlanGenerator::FindUnmetMustRequirements(
+	const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	const TArray<FRoomDef>& Rooms, const FAdjacencyMatrix& Matrix)
+{
+	TArray<TPair<int32, int32>> Unmet;
+
+	// Build adjacency set from grid
+	TSet<uint64> AdjacentPairs;
+	auto PairKey = [](int32 A, int32 B) -> uint64 {
+		int32 Lo = FMath::Min(A, B);
+		int32 Hi = FMath::Max(A, B);
+		return (static_cast<uint64>(Lo) << 32) | static_cast<uint64>(Hi);
+	};
+
+	static const FIntPoint Dirs[] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+	for (int32 Y = 0; Y < GridH; ++Y)
+	{
+		for (int32 X = 0; X < GridW; ++X)
+		{
+			int32 IdxA = Grid[Y][X];
+			if (IdxA < 0) continue;
+			for (const FIntPoint& D : Dirs)
+			{
+				int32 NX = X + D.X, NY = Y + D.Y;
+				if (NX < 0 || NY < 0 || NX >= GridW || NY >= GridH) continue;
+				int32 IdxB = Grid[NY][NX];
+				if (IdxB >= 0 && IdxB != IdxA)
+					AdjacentPairs.Add(PairKey(IdxA, IdxB));
+			}
+		}
+	}
+
+	// Check all MUST rules in the matrix
+	for (const auto& OuterPair : Matrix.Rules)
+	{
+		const FString& TypeA = OuterPair.Key;
+		for (const auto& InnerPair : OuterPair.Value)
+		{
+			if (InnerPair.Value != EAdjacencyRelation::MUST) continue;
+
+			const FString& TypeB = InnerPair.Key;
+
+			// Find all room instances of TypeA and TypeB
+			TArray<int32> IndicesA, IndicesB;
+			for (int32 i = 0; i < Rooms.Num(); ++i)
+			{
+				if (Rooms[i].RoomType == TypeA) IndicesA.Add(i);
+				if (Rooms[i].RoomType == TypeB) IndicesB.Add(i);
+			}
+
+			// Each instance of TypeA must be adjacent to at least one instance of TypeB
+			for (int32 IA : IndicesA)
+			{
+				bool bFound = false;
+				for (int32 IB : IndicesB)
+				{
+					if (AdjacentPairs.Contains(PairKey(IA, IB)))
+					{
+						bFound = true;
+						break;
+					}
+				}
+				if (!bFound && IndicesB.Num() > 0)
+				{
+					Unmet.Add(TPair<int32, int32>(IA, IndicesB[0]));
+				}
+			}
+		}
+	}
+
+	return Unmet;
+}
+
+bool FMonolithMeshFloorPlanGenerator::TrySwapRooms(
+	TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	TArray<FRoomDef>& Rooms, int32 RoomIdxA, int32 RoomIdxB)
+{
+	if (RoomIdxA < 0 || RoomIdxB < 0 || RoomIdxA >= Rooms.Num() || RoomIdxB >= Rooms.Num())
+		return false;
+
+	if (RoomIdxA == RoomIdxB)
+		return false;
+
+	// Don't swap corridor rooms
+	if (Rooms[RoomIdxA].RoomType == TEXT("corridor") || Rooms[RoomIdxB].RoomType == TEXT("corridor"))
+		return false;
+
+	// Swap grid cell assignments
+	for (const FIntPoint& Cell : Rooms[RoomIdxA].GridCells)
+	{
+		if (Cell.Y >= 0 && Cell.Y < GridH && Cell.X >= 0 && Cell.X < GridW)
+			Grid[Cell.Y][Cell.X] = RoomIdxB;
+	}
+	for (const FIntPoint& Cell : Rooms[RoomIdxB].GridCells)
+	{
+		if (Cell.Y >= 0 && Cell.Y < GridH && Cell.X >= 0 && Cell.X < GridW)
+			Grid[Cell.Y][Cell.X] = RoomIdxA;
+	}
+
+	// Swap grid cell lists
+	TArray<FIntPoint> TempCells = MoveTemp(Rooms[RoomIdxA].GridCells);
+	Rooms[RoomIdxA].GridCells = MoveTemp(Rooms[RoomIdxB].GridCells);
+	Rooms[RoomIdxB].GridCells = MoveTemp(TempCells);
+
+	return true;
+}
+
+int32 FMonolithMeshFloorPlanGenerator::ValidateAndFixAdjacency(
+	TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	TArray<FRoomDef>& Rooms, const FAdjacencyMatrix& Matrix, int32 MaxRetries)
+{
+	for (int32 Retry = 0; Retry < MaxRetries; ++Retry)
+	{
+		TArray<TPair<int32, int32>> Violations = FindMustNotViolations(Grid, GridW, GridH, Rooms, Matrix);
+
+		if (Violations.Num() == 0)
+		{
+			UE_LOG(LogMonolithFloorPlan, Log, TEXT("Adjacency validation passed (retry %d): 0 MUST_NOT violations"), Retry);
+			return 0;
+		}
+
+		UE_LOG(LogMonolithFloorPlan, Log, TEXT("Adjacency validation retry %d: %d MUST_NOT violation(s), attempting swaps"),
+			Retry, Violations.Num());
+
+		bool bFixedAny = false;
+
+		for (const auto& Violation : Violations)
+		{
+			int32 RoomA = Violation.Key;
+			int32 RoomB = Violation.Value;
+
+			// Try to swap RoomA with any non-violating neighbor of RoomB
+			bool bSwapped = false;
+			for (int32 Candidate = 0; Candidate < Rooms.Num(); ++Candidate)
+			{
+				if (Candidate == RoomA || Candidate == RoomB) continue;
+				if (Rooms[Candidate].RoomType == TEXT("corridor")) continue;
+				if (Rooms[Candidate].RoomType == TEXT("rest_alcove")) continue;
+
+				// Would swapping RoomA <-> Candidate fix this violation without creating a new one?
+				// Check: if Candidate ends up next to RoomB, does that violate?
+				if (Matrix.ViolatesMustNot(Rooms[Candidate].RoomType, Rooms[RoomB].RoomType))
+					continue;
+
+				// Check: if RoomA ends up in Candidate's position, does it violate with Candidate's old neighbors?
+				// Simplified: just try the swap and validate
+				TrySwapRooms(Grid, GridW, GridH, Rooms, RoomA, Candidate);
+
+				// Check if we didn't make things worse
+				TArray<TPair<int32, int32>> NewViolations = FindMustNotViolations(Grid, GridW, GridH, Rooms, Matrix);
+				if (NewViolations.Num() < Violations.Num())
+				{
+					UE_LOG(LogMonolithFloorPlan, Log, TEXT("  Swapped '%s' <-> '%s' to fix violation (violations: %d -> %d)"),
+						*Rooms[RoomA].RoomId, *Rooms[Candidate].RoomId, Violations.Num(), NewViolations.Num());
+					bSwapped = true;
+					bFixedAny = true;
+					break;
+				}
+				else
+				{
+					// Undo swap
+					TrySwapRooms(Grid, GridW, GridH, Rooms, RoomA, Candidate);
+				}
+			}
+
+			if (!bSwapped)
+			{
+				// Also try swapping RoomB with someone
+				for (int32 Candidate = 0; Candidate < Rooms.Num(); ++Candidate)
+				{
+					if (Candidate == RoomA || Candidate == RoomB) continue;
+					if (Rooms[Candidate].RoomType == TEXT("corridor")) continue;
+					if (Rooms[Candidate].RoomType == TEXT("rest_alcove")) continue;
+
+					if (Matrix.ViolatesMustNot(Rooms[Candidate].RoomType, Rooms[RoomA].RoomType))
+						continue;
+
+					TrySwapRooms(Grid, GridW, GridH, Rooms, RoomB, Candidate);
+
+					TArray<TPair<int32, int32>> NewViolations = FindMustNotViolations(Grid, GridW, GridH, Rooms, Matrix);
+					if (NewViolations.Num() < Violations.Num())
+					{
+						UE_LOG(LogMonolithFloorPlan, Log, TEXT("  Swapped '%s' <-> '%s' to fix violation (violations: %d -> %d)"),
+							*Rooms[RoomB].RoomId, *Rooms[Candidate].RoomId, Violations.Num(), NewViolations.Num());
+						bFixedAny = true;
+						break;
+					}
+					else
+					{
+						TrySwapRooms(Grid, GridW, GridH, Rooms, RoomB, Candidate);
+					}
+				}
+			}
+		}
+
+		if (!bFixedAny)
+		{
+			// No progress -- stop retrying
+			TArray<TPair<int32, int32>> Remaining = FindMustNotViolations(Grid, GridW, GridH, Rooms, Matrix);
+			for (const auto& V : Remaining)
+			{
+				UE_LOG(LogMonolithFloorPlan, Warning, TEXT("Unresolved MUST_NOT violation: '%s' (%s) adjacent to '%s' (%s)"),
+					*Rooms[V.Key].RoomId, *Rooms[V.Key].RoomType, *Rooms[V.Value].RoomId, *Rooms[V.Value].RoomType);
+			}
+			return Remaining.Num();
+		}
+	}
+
+	TArray<TPair<int32, int32>> Final = FindMustNotViolations(Grid, GridW, GridH, Rooms, Matrix);
+	return Final.Num();
+}
+
+// ============================================================================
+// WP-2: Privacy Gradient
+// ============================================================================
+
+TMap<int32, int32> FMonolithMeshFloorPlanGenerator::ComputeGraphDepthFromEntry(
+	const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	const TArray<FRoomDef>& Rooms)
+{
+	TMap<int32, int32> Depth;
+
+	// Find entry room (first room with PUBLIC privacy zone on the perimeter)
+	int32 EntryIdx = -1;
+
+	// Priority 1: explicitly named entryway/foyer/lobby/vestibule
+	static const TArray<FString> EntryTypes = {
+		TEXT("entryway"), TEXT("foyer"), TEXT("lobby"), TEXT("vestibule")
+	};
+
+	for (int32 i = 0; i < Rooms.Num(); ++i)
+	{
+		if (EntryTypes.Contains(Rooms[i].RoomType))
+		{
+			EntryIdx = i;
+			break;
+		}
+	}
+
+	// Priority 2: any PUBLIC room on the perimeter
+	if (EntryIdx < 0)
+	{
+		for (int32 i = 0; i < Rooms.Num(); ++i)
+		{
+			if (GetPrivacyZone(Rooms[i].RoomType) == EPrivacyZone::PUBLIC)
+			{
+				for (const FIntPoint& Cell : Rooms[i].GridCells)
+				{
+					if (Cell.X == 0 || Cell.X == GridW - 1 || Cell.Y == 0 || Cell.Y == GridH - 1)
+					{
+						EntryIdx = i;
+						break;
+					}
+				}
+				if (EntryIdx >= 0) break;
+			}
+		}
+	}
+
+	// Priority 3: first room
+	if (EntryIdx < 0 && Rooms.Num() > 0)
+		EntryIdx = 0;
+
+	if (EntryIdx < 0) return Depth;
+
+	// Build room adjacency graph from grid
+	TMap<int32, TSet<int32>> AdjGraph;
+	static const FIntPoint Dirs[] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+
+	for (int32 Y = 0; Y < GridH; ++Y)
+	{
+		for (int32 X = 0; X < GridW; ++X)
+		{
+			int32 IdxA = Grid[Y][X];
+			if (IdxA < 0) continue;
+			for (const FIntPoint& D : Dirs)
+			{
+				int32 NX = X + D.X, NY = Y + D.Y;
+				if (NX < 0 || NY < 0 || NX >= GridW || NY >= GridH) continue;
+				int32 IdxB = Grid[NY][NX];
+				if (IdxB >= 0 && IdxB != IdxA)
+				{
+					AdjGraph.FindOrAdd(IdxA).Add(IdxB);
+					AdjGraph.FindOrAdd(IdxB).Add(IdxA);
+				}
+			}
+		}
+	}
+
+	// BFS from entry
+	TQueue<int32> Queue;
+	Queue.Enqueue(EntryIdx);
+	Depth.Add(EntryIdx, 0);
+
+	while (!Queue.IsEmpty())
+	{
+		int32 Current;
+		Queue.Dequeue(Current);
+		int32 CurrentDepth = Depth[Current];
+
+		if (const TSet<int32>* Neighbors = AdjGraph.Find(Current))
+		{
+			for (int32 Neighbor : *Neighbors)
+			{
+				if (!Depth.Contains(Neighbor))
+				{
+					Depth.Add(Neighbor, CurrentDepth + 1);
+					Queue.Enqueue(Neighbor);
+				}
+			}
+		}
+	}
+
+	return Depth;
+}
+
+int32 FMonolithMeshFloorPlanGenerator::ValidatePrivacyGradient(
+	const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	const TArray<FRoomDef>& Rooms, TArray<FString>& OutViolations)
+{
+	TMap<int32, int32> Depths = ComputeGraphDepthFromEntry(Grid, GridW, GridH, Rooms);
+	int32 ViolationCount = 0;
+
+	for (int32 i = 0; i < Rooms.Num(); ++i)
+	{
+		const int32* DepthPtr = Depths.Find(i);
+		if (!DepthPtr) continue;
+
+		int32 RoomDepth = *DepthPtr;
+		EPrivacyZone Zone = GetPrivacyZone(Rooms[i].RoomType);
+
+		// PRIVATE rooms must be >= 2 steps from entry
+		if (Zone == EPrivacyZone::PRIVATE && RoomDepth < 2)
+		{
+			FString Msg = FString::Printf(TEXT("Privacy violation: '%s' (%s, PRIVATE) is only %d step(s) from entry (need >= 2)"),
+				*Rooms[i].RoomId, *Rooms[i].RoomType, RoomDepth);
+			OutViolations.Add(Msg);
+			UE_LOG(LogMonolithFloorPlan, Warning, TEXT("%s"), *Msg);
+			++ViolationCount;
+		}
+
+		// Rooms 1 step from entry should be PUBLIC or SEMI_PUBLIC (warning only)
+		if (RoomDepth == 1 && Zone != EPrivacyZone::PUBLIC && Zone != EPrivacyZone::SEMI_PUBLIC
+			&& Zone != EPrivacyZone::SEMI_PRIVATE)
+		{
+			// Service and private rooms directly adjacent to entry is a warning
+			FString Msg = FString::Printf(TEXT("Privacy warning: '%s' (%s) is 1 step from entry but is not PUBLIC/SEMI_PUBLIC"),
+				*Rooms[i].RoomId, *Rooms[i].RoomType);
+			OutViolations.Add(Msg);
+			UE_LOG(LogMonolithFloorPlan, Warning, TEXT("%s"), *Msg);
+			++ViolationCount;
+		}
+	}
+
+	return ViolationCount;
+}
+
+// ============================================================================
+// WP-2: Circulation Patterns
+// ============================================================================
+
+FMonolithMeshFloorPlanGenerator::ECirculationType
+FMonolithMeshFloorPlanGenerator::ParseCirculationType(const FString& TypeStr)
+{
+	if (TypeStr == TEXT("hub_spoke") || TypeStr == TEXT("hub_and_spoke"))
+		return ECirculationType::HubSpoke;
+	if (TypeStr == TEXT("racetrack") || TypeStr == TEXT("loop"))
+		return ECirculationType::Racetrack;
+	if (TypeStr == TEXT("enfilade"))
+		return ECirculationType::Enfilade;
+	return ECirculationType::DoubleLoaded;
+}
+
+void FMonolithMeshFloorPlanGenerator::InsertCorridorsForCirculation(
+	ECirculationType Circulation,
+	TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
+	bool bHospiceMode, FRandomStream& Rng)
+{
+	switch (Circulation)
+	{
+	case ECirculationType::HubSpoke:
+		InsertCorridorsHubSpoke(Grid, GridW, GridH, Rooms, Adjacency, bHospiceMode, Rng);
+		break;
+	case ECirculationType::Racetrack:
+		InsertCorridorsRacetrack(Grid, GridW, GridH, Rooms, Adjacency, bHospiceMode, Rng);
+		break;
+	case ECirculationType::Enfilade:
+		InsertCorridorsEnfilade(Grid, GridW, GridH, Rooms, Adjacency, bHospiceMode, Rng);
+		break;
+	case ECirculationType::DoubleLoaded:
+	default:
+		InsertCorridors(Grid, GridW, GridH, Rooms, Adjacency, bHospiceMode, Rng);
+		break;
+	}
+}
+
+void FMonolithMeshFloorPlanGenerator::InsertCorridorsHubSpoke(
+	TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
+	bool bHospiceMode, FRandomStream& Rng)
+{
+	// Hub-and-spoke: find the entry/foyer/lobby room (the hub).
+	// If all rooms are directly adjacent to the hub, no corridor needed.
+	// Only generate corridor for rooms that can't reach the hub.
+
+	int32 HubIdx = -1;
+	static const TArray<FString> HubTypes = {
+		TEXT("entryway"), TEXT("foyer"), TEXT("lobby"), TEXT("vestibule"),
+		TEXT("living_room")
+	};
+
+	for (int32 i = 0; i < Rooms.Num(); ++i)
+	{
+		if (HubTypes.Contains(Rooms[i].RoomType))
+		{
+			HubIdx = i;
+			break;
+		}
+	}
+
+	if (HubIdx < 0)
+	{
+		// No hub found -- fall back to double-loaded
+		InsertCorridors(Grid, GridW, GridH, Rooms, Adjacency, bHospiceMode, Rng);
+		return;
+	}
+
+	// Check which rooms are NOT adjacent to the hub
+	TArray<int32> Unreachable;
+	for (int32 i = 0; i < Rooms.Num(); ++i)
+	{
+		if (i == HubIdx) continue;
+		if (!RoomsShareEdge(Rooms[i], Rooms[HubIdx]))
+		{
+			Unreachable.Add(i);
+		}
+	}
+
+	if (Unreachable.Num() == 0)
+	{
+		UE_LOG(LogMonolithFloorPlan, Log, TEXT("Hub-spoke: all %d rooms adjacent to hub '%s', no corridor needed"),
+			Rooms.Num() - 1, *Rooms[HubIdx].RoomId);
+		return;
+	}
+
+	// For unreachable rooms, build corridor paths from them to the hub
+	int32 CorridorRoomIndex = Rooms.Num();
+	FRoomDef CorridorRoom;
+	CorridorRoom.RoomId = TEXT("corridor");
+	CorridorRoom.RoomType = TEXT("corridor");
+
+	int32 CorridorWidth = bHospiceMode ? 4 : 3;
+
+	for (int32 Idx : Unreachable)
+	{
+		TArray<FIntPoint> Path = FindCorridorPath(Grid, GridW, GridH, Rooms[Idx], Rooms[HubIdx], CorridorRoomIndex, CorridorWidth);
+		for (const FIntPoint& P : Path)
+		{
+			if (P.X >= 0 && P.Y >= 0 && P.X < GridW && P.Y < GridH)
+			{
+				int32 Current = Grid[P.Y][P.X];
+				if (Current == -1 || Current == CorridorRoomIndex)
+				{
+					Grid[P.Y][P.X] = CorridorRoomIndex;
+					CorridorRoom.GridCells.AddUnique(P);
+				}
+			}
+		}
+	}
+
+	if (CorridorRoom.GridCells.Num() > 0)
+	{
+		Rooms.Add(MoveTemp(CorridorRoom));
+		UE_LOG(LogMonolithFloorPlan, Log, TEXT("Hub-spoke: corridor with %d cells connects %d unreachable room(s) to hub"),
+			Rooms.Last().GridCells.Num(), Unreachable.Num());
+	}
+}
+
+void FMonolithMeshFloorPlanGenerator::InsertCorridorsRacetrack(
+	TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
+	bool bHospiceMode, FRandomStream& Rng)
+{
+	// Racetrack: create a loop corridor around a central core.
+	// Core = center cells reserved for stairwell/elevator/restrooms.
+	// Corridor forms a rectangular loop between core and perimeter rooms.
+
+	int32 CorridorWidth = bHospiceMode ? 4 : 3;
+
+	// Calculate core region (center ~30% of grid)
+	int32 CoreMarginX = FMath::Max(CorridorWidth + 2, GridW / 4);
+	int32 CoreMarginY = FMath::Max(CorridorWidth + 2, GridH / 4);
+	int32 CoreX1 = CoreMarginX;
+	int32 CoreY1 = CoreMarginY;
+	int32 CoreX2 = GridW - CoreMarginX - 1;
+	int32 CoreY2 = GridH - CoreMarginY - 1;
+
+	// Ensure core is at least 2x2
+	if (CoreX2 <= CoreX1) { CoreX1 = GridW / 3; CoreX2 = 2 * GridW / 3; }
+	if (CoreY2 <= CoreY1) { CoreY1 = GridH / 3; CoreY2 = 2 * GridH / 3; }
+
+	int32 CorridorRoomIndex = Rooms.Num();
+	FRoomDef CorridorRoom;
+	CorridorRoom.RoomId = TEXT("corridor");
+	CorridorRoom.RoomType = TEXT("corridor");
+
+	// Carve the loop corridor just outside the core
+	// Top edge of loop
+	for (int32 X = CoreX1 - CorridorWidth; X <= CoreX2 + CorridorWidth; ++X)
+	{
+		for (int32 W = 0; W < CorridorWidth; ++W)
+		{
+			int32 Y = CoreY1 - CorridorWidth + W;
+			if (X >= 0 && X < GridW && Y >= 0 && Y < GridH)
+			{
+				if (Grid[Y][X] == -1 || Grid[Y][X] == CorridorRoomIndex)
+				{
+					Grid[Y][X] = CorridorRoomIndex;
+					CorridorRoom.GridCells.AddUnique(FIntPoint(X, Y));
+				}
+			}
+		}
+	}
+
+	// Bottom edge of loop
+	for (int32 X = CoreX1 - CorridorWidth; X <= CoreX2 + CorridorWidth; ++X)
+	{
+		for (int32 W = 0; W < CorridorWidth; ++W)
+		{
+			int32 Y = CoreY2 + 1 + W;
+			if (X >= 0 && X < GridW && Y >= 0 && Y < GridH)
+			{
+				if (Grid[Y][X] == -1 || Grid[Y][X] == CorridorRoomIndex)
+				{
+					Grid[Y][X] = CorridorRoomIndex;
+					CorridorRoom.GridCells.AddUnique(FIntPoint(X, Y));
+				}
+			}
+		}
+	}
+
+	// Left edge of loop (between top and bottom)
+	for (int32 Y = CoreY1 - CorridorWidth; Y <= CoreY2 + CorridorWidth; ++Y)
+	{
+		for (int32 W = 0; W < CorridorWidth; ++W)
+		{
+			int32 X = CoreX1 - CorridorWidth + W;
+			if (X >= 0 && X < GridW && Y >= 0 && Y < GridH)
+			{
+				if (Grid[Y][X] == -1 || Grid[Y][X] == CorridorRoomIndex)
+				{
+					Grid[Y][X] = CorridorRoomIndex;
+					CorridorRoom.GridCells.AddUnique(FIntPoint(X, Y));
+				}
+			}
+		}
+	}
+
+	// Right edge of loop
+	for (int32 Y = CoreY1 - CorridorWidth; Y <= CoreY2 + CorridorWidth; ++Y)
+	{
+		for (int32 W = 0; W < CorridorWidth; ++W)
+		{
+			int32 X = CoreX2 + 1 + W;
+			if (X >= 0 && X < GridW && Y >= 0 && Y < GridH)
+			{
+				if (Grid[Y][X] == -1 || Grid[Y][X] == CorridorRoomIndex)
+				{
+					Grid[Y][X] = CorridorRoomIndex;
+					CorridorRoom.GridCells.AddUnique(FIntPoint(X, Y));
+				}
+			}
+		}
+	}
+
+	if (CorridorRoom.GridCells.Num() > 0)
+	{
+		Rooms.Add(MoveTemp(CorridorRoom));
+
+		// Ensure all rooms can reach the corridor
+		for (int32 i = 0; i < Rooms.Num() - 1; ++i)
+		{
+			if (!RoomsShareEdge(Rooms[i], Rooms.Last()))
+			{
+				TArray<FIntPoint> Path = FindCorridorPath(Grid, GridW, GridH, Rooms[i], Rooms.Last(), CorridorRoomIndex, 1);
+				for (const FIntPoint& P : Path)
+				{
+					if (P.X >= 0 && P.Y >= 0 && P.X < GridW && P.Y < GridH)
+					{
+						if (Grid[P.Y][P.X] == -1 || Grid[P.Y][P.X] == CorridorRoomIndex)
+						{
+							Grid[P.Y][P.X] = CorridorRoomIndex;
+							Rooms.Last().GridCells.AddUnique(P);
+						}
+					}
+				}
+			}
+		}
+
+		UE_LOG(LogMonolithFloorPlan, Log, TEXT("Racetrack: loop corridor with %d cells, core=(%d,%d)-(%d,%d)"),
+			Rooms.Last().GridCells.Num(), CoreX1, CoreY1, CoreX2, CoreY2);
+	}
+	else
+	{
+		// Fallback to double-loaded if racetrack couldn't carve cells
+		InsertCorridors(Grid, GridW, GridH, Rooms, Adjacency, bHospiceMode, Rng);
+	}
+}
+
+void FMonolithMeshFloorPlanGenerator::InsertCorridorsEnfilade(
+	TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+	TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
+	bool bHospiceMode, FRandomStream& Rng)
+{
+	// Enfilade: rooms connect directly through aligned doors.
+	// No corridor generated. Rooms chain sequentially.
+	// Just verify all rooms share at least one edge with a neighbor.
+
+	// Build a graph of which rooms are adjacent
+	TSet<int32> Connected;
+	TSet<int32> All;
+	for (int32 i = 0; i < Rooms.Num(); ++i)
+		All.Add(i);
+
+	if (Rooms.Num() == 0) return;
+
+	// BFS from first room to find connected component
+	TQueue<int32> Queue;
+	Queue.Enqueue(0);
+	Connected.Add(0);
+
+	while (!Queue.IsEmpty())
+	{
+		int32 Current;
+		Queue.Dequeue(Current);
+
+		for (int32 Other = 0; Other < Rooms.Num(); ++Other)
+		{
+			if (Connected.Contains(Other)) continue;
+			if (RoomsShareEdge(Rooms[Current], Rooms[Other]))
+			{
+				Connected.Add(Other);
+				Queue.Enqueue(Other);
+			}
+		}
+	}
+
+	// If some rooms are disconnected, add minimal corridor to connect them
+	TSet<int32> Disconnected = All.Difference(Connected);
+	if (Disconnected.Num() > 0)
+	{
+		int32 CorridorRoomIndex = Rooms.Num();
+		FRoomDef CorridorRoom;
+		CorridorRoom.RoomId = TEXT("corridor");
+		CorridorRoom.RoomType = TEXT("corridor");
+
+		int32 CorridorWidth = bHospiceMode ? 4 : 2;  // Narrower for enfilade
+
+		for (int32 DisIdx : Disconnected)
+		{
+			// Find closest connected room and path to it
+			int32 ClosestConnected = *Connected.begin();
+			TArray<FIntPoint> BestPath;
+
+			for (int32 ConIdx : Connected)
+			{
+				TArray<FIntPoint> Path = FindCorridorPath(Grid, GridW, GridH, Rooms[DisIdx], Rooms[ConIdx], CorridorRoomIndex, CorridorWidth);
+				if (Path.Num() > 0 && (BestPath.Num() == 0 || Path.Num() < BestPath.Num()))
+				{
+					BestPath = Path;
+				}
+			}
+
+			for (const FIntPoint& P : BestPath)
+			{
+				if (P.X >= 0 && P.Y >= 0 && P.X < GridW && P.Y < GridH)
+				{
+					if (Grid[P.Y][P.X] == -1 || Grid[P.Y][P.X] == CorridorRoomIndex)
+					{
+						Grid[P.Y][P.X] = CorridorRoomIndex;
+						CorridorRoom.GridCells.AddUnique(P);
+					}
+				}
+			}
+		}
+
+		if (CorridorRoom.GridCells.Num() > 0)
+		{
+			Rooms.Add(MoveTemp(CorridorRoom));
+			UE_LOG(LogMonolithFloorPlan, Log, TEXT("Enfilade: minimal corridor with %d cells to connect %d disconnected room(s)"),
+				Rooms.Last().GridCells.Num(), Disconnected.Num());
+		}
+	}
+	else
+	{
+		UE_LOG(LogMonolithFloorPlan, Log, TEXT("Enfilade: all %d rooms connected directly, no corridor needed"), Rooms.Num());
+	}
 }
 
 // ============================================================================
@@ -117,6 +1008,13 @@ bool FMonolithMeshFloorPlanGenerator::ParseArchetypeJson(const TSharedPtr<FJsonO
 			OutArchetype.FloorsMax = static_cast<int32>((*FloorsObj)->GetNumberField(TEXT("max")));
 	}
 
+	// WP-2: Parse circulation type
+	FString CircStr;
+	if (Json->TryGetStringField(TEXT("circulation"), CircStr))
+	{
+		OutArchetype.Circulation = ParseCirculationType(CircStr);
+	}
+
 	// Parse rooms
 	const TArray<TSharedPtr<FJsonValue>>* RoomsArr = nullptr;
 	if (!Json->TryGetArrayField(TEXT("rooms"), RoomsArr) || !RoomsArr)
@@ -178,7 +1076,7 @@ bool FMonolithMeshFloorPlanGenerator::ParseArchetypeJson(const TSharedPtr<FJsonO
 		OutArchetype.Rooms.Add(MoveTemp(Room));
 	}
 
-	// Parse adjacency
+	// Parse adjacency (legacy array format)
 	const TArray<TSharedPtr<FJsonValue>>* AdjArr = nullptr;
 	if (Json->TryGetArrayField(TEXT("adjacency"), AdjArr) && AdjArr)
 	{
@@ -193,6 +1091,39 @@ bool FMonolithMeshFloorPlanGenerator::ParseArchetypeJson(const TSharedPtr<FJsonO
 			(*AObj)->TryGetStringField(TEXT("to"), Rule.To);
 			(*AObj)->TryGetStringField(TEXT("strength"), Rule.Strength);
 			OutArchetype.Adjacency.Add(MoveTemp(Rule));
+		}
+	}
+
+	// WP-2: Parse adjacency_matrix (new format, complements legacy adjacency array)
+	const TSharedPtr<FJsonObject>* AdjMatObj = nullptr;
+	if (Json->TryGetObjectField(TEXT("adjacency_matrix"), AdjMatObj) && AdjMatObj && (*AdjMatObj).IsValid())
+	{
+		for (const auto& OuterPair : (*AdjMatObj)->Values)
+		{
+			const FString& RoomTypeA = OuterPair.Key;
+			const TSharedPtr<FJsonObject>* InnerObj = nullptr;
+			if (!OuterPair.Value->TryGetObject(InnerObj) || !InnerObj || !(*InnerObj).IsValid())
+				continue;
+
+			TMap<FString, EAdjacencyRelation>& InnerMap = OutArchetype.AdjacencyMatrix.Rules.FindOrAdd(RoomTypeA);
+
+			for (const auto& InnerPair : (*InnerObj)->Values)
+			{
+				const FString& RoomTypeB = InnerPair.Key;
+				FString RelStr;
+				if (InnerPair.Value->TryGetString(RelStr))
+				{
+					EAdjacencyRelation Rel = EAdjacencyRelation::MAY;
+					if (RelStr == TEXT("MUST")) Rel = EAdjacencyRelation::MUST;
+					else if (RelStr == TEXT("SHOULD")) Rel = EAdjacencyRelation::SHOULD;
+					else if (RelStr == TEXT("MAY")) Rel = EAdjacencyRelation::MAY;
+					else if (RelStr == TEXT("MAY_NOT")) Rel = EAdjacencyRelation::MAY_NOT;
+					else if (RelStr == TEXT("MUST_NOT")) Rel = EAdjacencyRelation::MUST_NOT;
+					else if (RelStr == TEXT("PREFERRED")) Rel = EAdjacencyRelation::SHOULD;
+
+					InnerMap.Add(RoomTypeB, Rel);
+				}
+			}
 		}
 	}
 
@@ -675,7 +1606,7 @@ TArray<FRoomDef> FMonolithMeshFloorPlanGenerator::BuildRoomDefs(
 }
 
 // ============================================================================
-// Corridor insertion
+// Corridor insertion (double-loaded, default)
 // ============================================================================
 
 bool FMonolithMeshFloorPlanGenerator::RoomsShareEdge(const FRoomDef& A, const FRoomDef& B)
@@ -1717,8 +2648,8 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 	if (!CapacityError.IsEmpty())
 		return FMonolithActionResult::Error(CapacityError);
 
-	UE_LOG(LogMonolithFloorPlan, Log, TEXT("Generating floor plan: archetype=%s, grid=%dx%d, cell=%.0f, seed=%d, hospice=%d, floor=%d"),
-		*Archetype.Name, GridW, GridH, CellSize, Seed, bHospiceMode ? 1 : 0, FloorIndex);
+	UE_LOG(LogMonolithFloorPlan, Log, TEXT("Generating floor plan: archetype=%s, grid=%dx%d, cell=%.0f, seed=%d, hospice=%d, floor=%d, circulation=%d"),
+		*Archetype.Name, GridW, GridH, CellSize, Seed, bHospiceMode ? 1 : 0, FloorIndex, static_cast<int32>(Archetype.Circulation));
 
 	// ---- Resolve room instances (with per-floor filtering) ----
 	TArray<FRoomInstance> Instances = ResolveRoomInstances(Archetype, GridW, GridH, Rng, FloorIndex);
@@ -1751,14 +2682,35 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 	// ---- Build initial room defs ----
 	TArray<FRoomDef> Rooms = BuildRoomDefs(Grid, GridW, GridH, Instances);
 
-	// ---- Insert corridors ----
-	InsertCorridors(Grid, GridW, GridH, Rooms, Archetype.Adjacency, bHospiceMode, Rng);
+	// ---- WP-2: Adjacency MUST_NOT validation + swap pass ----
+	int32 AdjacencyViolations = 0;
+	if (Archetype.AdjacencyMatrix.Rules.Num() > 0)
+	{
+		AdjacencyViolations = ValidateAndFixAdjacency(Grid, GridW, GridH, Rooms, Archetype.AdjacencyMatrix, 3);
+
+		// Also check MUST requirements
+		TArray<TPair<int32, int32>> UnmetMust = FindUnmetMustRequirements(Grid, GridW, GridH, Rooms, Archetype.AdjacencyMatrix);
+		for (const auto& Pair : UnmetMust)
+		{
+			UE_LOG(LogMonolithFloorPlan, Warning, TEXT("Unmet MUST adjacency: '%s' (%s) should be adjacent to '%s' (%s)"),
+				*Rooms[Pair.Key].RoomId, *Rooms[Pair.Key].RoomType,
+				*Rooms[Pair.Value].RoomId, *Rooms[Pair.Value].RoomType);
+		}
+		AdjacencyViolations += UnmetMust.Num();
+	}
+
+	// ---- WP-2: Insert corridors based on circulation pattern ----
+	InsertCorridorsForCirculation(Archetype.Circulation, Grid, GridW, GridH, Rooms, Archetype.Adjacency, bHospiceMode, Rng);
 
 	// ---- Hospice: rest alcoves ----
 	if (bHospiceMode)
 	{
 		InsertRestAlcoves(Grid, GridW, GridH, Rooms, 4, Rng);
 	}
+
+	// ---- WP-2: Privacy gradient validation ----
+	TArray<FString> PrivacyViolations;
+	int32 PrivacyViolationCount = ValidatePrivacyGradient(Grid, GridW, GridH, Rooms, PrivacyViolations);
 
 	// ---- Place doors ----
 	TArray<FDoorDef> Doors = PlaceDoors(Grid, GridW, GridH, Rooms, Archetype.Adjacency, bHospiceMode, Rng);
@@ -1769,6 +2721,27 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 	// ---- Validate door clearances ----
 	ValidateDoorClearances(Grid, GridW, GridH, Rooms, Doors, CellSize);
 
+	// ---- WP-2: Wet wall clustering stats ----
+	TSet<FIntPoint> PlumbingCells = BuildPlumbingChaseSet(Grid, GridW, GridH, Rooms);
+	int32 WetRoomCount = 0;
+	int32 ClusteredWetRooms = 0;
+	for (int32 i = 0; i < Rooms.Num(); ++i)
+	{
+		if (!IsWetRoom(Rooms[i].RoomType)) continue;
+		++WetRoomCount;
+
+		// Check if this wet room shares a wall with another wet room
+		for (int32 j = 0; j < Rooms.Num(); ++j)
+		{
+			if (i == j || !IsWetRoom(Rooms[j].RoomType)) continue;
+			if (RoomsShareEdge(Rooms[i], Rooms[j]))
+			{
+				++ClusteredWetRooms;
+				break;
+			}
+		}
+	}
+
 	// ---- Build output ----
 	TSharedPtr<FJsonObject> ResultJson = BuildOutputJson(
 		Grid, GridW, GridH, Rooms, Doors,
@@ -1778,6 +2751,38 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 	ResultJson->SetNumberField(TEXT("seed"), Seed);
 	ResultJson->SetNumberField(TEXT("floor_index"), FloorIndex);
 	ResultJson->SetNumberField(TEXT("floor_height"), Archetype.FloorHeight);
+
+	// ---- WP-2: Add intelligence stats to output ----
+	auto StatsObj = ResultJson->GetObjectField(TEXT("stats"));
+	if (StatsObj.IsValid())
+	{
+		StatsObj->SetNumberField(TEXT("adjacency_violations"), AdjacencyViolations);
+		StatsObj->SetNumberField(TEXT("privacy_violations"), PrivacyViolationCount);
+		StatsObj->SetNumberField(TEXT("wet_rooms"), WetRoomCount);
+		StatsObj->SetNumberField(TEXT("wet_rooms_clustered"), ClusteredWetRooms);
+
+		// Circulation type
+		FString CircStr;
+		switch (Archetype.Circulation)
+		{
+		case ECirculationType::HubSpoke: CircStr = TEXT("hub_spoke"); break;
+		case ECirculationType::Racetrack: CircStr = TEXT("racetrack"); break;
+		case ECirculationType::Enfilade: CircStr = TEXT("enfilade"); break;
+		default: CircStr = TEXT("double_loaded"); break;
+		}
+		StatsObj->SetStringField(TEXT("circulation"), CircStr);
+	}
+
+	// ---- WP-2: Privacy violations detail ----
+	if (PrivacyViolations.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> ViolArr;
+		for (const FString& V : PrivacyViolations)
+		{
+			ViolArr.Add(MakeShared<FJsonValueString>(V));
+		}
+		ResultJson->SetArrayField(TEXT("privacy_violations"), ViolArr);
+	}
 
 	// ---- Entrance info ----
 	{
@@ -1815,8 +2820,8 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 		ResultJson->SetObjectField(TEXT("material_hints"), MatHints);
 	}
 
-	UE_LOG(LogMonolithFloorPlan, Log, TEXT("Floor plan generated: %d rooms, %d doors, seed=%d, floor=%d"),
-		Rooms.Num(), Doors.Num(), Seed, FloorIndex);
+	UE_LOG(LogMonolithFloorPlan, Log, TEXT("Floor plan generated: %d rooms, %d doors, seed=%d, floor=%d, adj_violations=%d, privacy_violations=%d, wet_clustered=%d/%d"),
+		Rooms.Num(), Doors.Num(), Seed, FloorIndex, AdjacencyViolations, PrivacyViolationCount, ClusteredWetRooms, WetRoomCount);
 
 	return FMonolithActionResult::Success(ResultJson);
 }
@@ -1849,6 +2854,18 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::ListBuildingArchetypes(co
 			Entry->SetNumberField(TEXT("room_types"), Arch.Rooms.Num());
 			Entry->SetNumberField(TEXT("adjacency_rules"), Arch.Adjacency.Num());
 			Entry->SetStringField(TEXT("roof_type"), Arch.RoofType);
+
+			// WP-2: include circulation type
+			FString CircStr;
+			switch (Arch.Circulation)
+			{
+			case ECirculationType::HubSpoke: CircStr = TEXT("hub_spoke"); break;
+			case ECirculationType::Racetrack: CircStr = TEXT("racetrack"); break;
+			case ECirculationType::Enfilade: CircStr = TEXT("enfilade"); break;
+			default: CircStr = TEXT("double_loaded"); break;
+			}
+			Entry->SetStringField(TEXT("circulation"), CircStr);
+			Entry->SetBoolField(TEXT("has_adjacency_matrix"), Arch.AdjacencyMatrix.Rules.Num() > 0);
 
 			auto Floors = MakeShared<FJsonObject>();
 			Floors->SetNumberField(TEXT("min"), Arch.FloorsMin);

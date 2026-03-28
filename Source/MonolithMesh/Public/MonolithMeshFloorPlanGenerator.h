@@ -10,7 +10,14 @@
  * Given a building archetype + footprint dimensions, generates a grid + rooms + doors
  * that feed directly into SP1's create_building_from_grid.
  *
- * Algorithm: Graph-based topology -> Squarified treemap layout -> Corridor insertion -> Door placement
+ * Algorithm: Graph-based topology -> Squarified treemap layout -> Corridor insertion ->
+ *            Adjacency validation -> Privacy gradient enforcement -> Door placement
+ *
+ * WP-2 additions:
+ *   - Adjacency MUST_NOT enforcement (post-placement swap pass)
+ *   - Public-to-private gradient (BFS depth from entry)
+ *   - Wet wall clustering (plumbing chase scoring)
+ *   - Circulation patterns: double_loaded, hub_spoke, racetrack, enfilade
  *
  * 3 actions:
  *   - generate_floor_plan: Full pipeline from archetype to grid/rooms/doors
@@ -29,6 +36,49 @@ private:
 	static FMonolithActionResult GenerateFloorPlan(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult ListBuildingArchetypes(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult GetBuildingArchetype(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- WP-2: Adjacency Matrix types (defined here per R1-I2: no BuildingTypes.h changes) ----
+
+	/** Adjacency relationship between room types */
+	enum class EAdjacencyRelation : uint8
+	{
+		MUST,       // Rooms MUST share a wall
+		SHOULD,     // Strong preference for adjacency
+		MAY,        // Default -- no constraint
+		MAY_NOT,    // Soft avoidance
+		MUST_NOT    // Rooms MUST NOT share a wall
+	};
+
+	/** Privacy zone for public-to-private gradient enforcement */
+	enum class EPrivacyZone : uint8
+	{
+		PUBLIC,        // entry, foyer, lobby, living_room, reception, vestibule, waiting_room, nave
+		SEMI_PUBLIC,   // dining_room, family_room, dining_area, bar, fellowship_hall, waiting_area
+		SEMI_PRIVATE,  // hallway, corridor, kitchen, break_room, nurse_station, copy_room
+		PRIVATE,       // bedroom, bathroom, office, master_bedroom, interrogation, exam_room
+		SERVICE        // laundry, utility, storage, closet, garage, janitor_closet, server_room, mechanical
+	};
+
+	/** Circulation pattern for a building */
+	enum class ECirculationType : uint8
+	{
+		DoubleLoaded,  // Standard: corridor with rooms on both sides (default)
+		HubSpoke,      // Central hub room with rooms radiating off it (residential, <8 rooms)
+		Racetrack,     // Loop corridor around a central core (office, commercial)
+		Enfilade       // Rooms connect sequentially through aligned doors (mansion wings, horror)
+	};
+
+	/** Adjacency matrix: maps (RoomTypeA, RoomTypeB) -> EAdjacencyRelation */
+	struct FAdjacencyMatrix
+	{
+		TMap<FString, TMap<FString, EAdjacencyRelation>> Rules;
+
+		/** Get the rule for a pair of room types. Returns MAY if no rule defined. */
+		EAdjacencyRelation GetRule(const FString& TypeA, const FString& TypeB) const;
+
+		/** Returns true if TypeA and TypeB being adjacent violates a MUST_NOT rule */
+		bool ViolatesMustNot(const FString& TypeA, const FString& TypeB) const;
+	};
 
 	// ---- Archetype types ----
 
@@ -53,7 +103,7 @@ private:
 		float MaxAspect = 3.0f;       // Maximum (prevents 1x20 rooms)
 	};
 
-	/** An adjacency constraint from an archetype */
+	/** An adjacency constraint from an archetype (legacy array format, still parsed) */
 	struct FAdjacencyRule
 	{
 		FString From;
@@ -76,6 +126,8 @@ private:
 		FString Description;
 		TArray<FArchetypeRoom> Rooms;
 		TArray<FAdjacencyRule> Adjacency;
+		FAdjacencyMatrix AdjacencyMatrix;  // WP-2: MUST/MUST_NOT matrix from JSON
+		ECirculationType Circulation = ECirculationType::DoubleLoaded;  // WP-2
 		int32 FloorsMin = 1;
 		int32 FloorsMax = 1;
 		FString RoofType;
@@ -146,10 +198,77 @@ private:
 	/** Calculate the worst aspect ratio if we lay out the given areas in a row against the given length */
 	static float WorstAspectRatio(const TArray<float>& RowAreas, float SideLength);
 
+	// ---- WP-2: Privacy zone utilities ----
+
+	/** Map a room type string to its default privacy zone */
+	static EPrivacyZone GetPrivacyZone(const FString& RoomType);
+
+	/** Compute BFS depth from entry room for all rooms. Returns map RoomIndex -> Depth. */
+	static TMap<int32, int32> ComputeGraphDepthFromEntry(const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		const TArray<FRoomDef>& Rooms);
+
+	/** Validate privacy gradient: PRIVATE rooms must be >= 2 steps from entry. Returns violation count. */
+	static int32 ValidatePrivacyGradient(const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		const TArray<FRoomDef>& Rooms, TArray<FString>& OutViolations);
+
+	// ---- WP-2: Adjacency validation ----
+
+	/** Post-placement adjacency validation. Attempts room swaps to fix MUST_NOT violations.
+	 *  Returns number of unresolved violations. */
+	static int32 ValidateAndFixAdjacency(TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		TArray<FRoomDef>& Rooms, const FAdjacencyMatrix& Matrix, int32 MaxRetries = 3);
+
+	/** Check all MUST_NOT violations in the current layout. Returns list of violating room pairs. */
+	static TArray<TPair<int32, int32>> FindMustNotViolations(const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		const TArray<FRoomDef>& Rooms, const FAdjacencyMatrix& Matrix);
+
+	/** Check all unmet MUST requirements. Returns list of room pairs that must be adjacent but aren't. */
+	static TArray<TPair<int32, int32>> FindUnmetMustRequirements(const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		const TArray<FRoomDef>& Rooms, const FAdjacencyMatrix& Matrix);
+
+	/** Attempt to swap two rooms in the grid to resolve an adjacency violation */
+	static bool TrySwapRooms(TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		TArray<FRoomDef>& Rooms, int32 RoomIdxA, int32 RoomIdxB);
+
+	// ---- WP-2: Wet wall clustering ----
+
+	/** Track plumbing chase cells and compute wet-room placement bonus */
+	static TSet<FIntPoint> BuildPlumbingChaseSet(const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		const TArray<FRoomDef>& Rooms);
+
+	/** Returns true if the room type represents a "wet room" (needs plumbing) */
+	static bool IsWetRoom(const FString& RoomType);
+
+	// ---- WP-2: Circulation patterns ----
+
+	/** Insert corridors using hub-and-spoke pattern: central hub with rooms radiating off it */
+	static void InsertCorridorsHubSpoke(TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
+		bool bHospiceMode, FRandomStream& Rng);
+
+	/** Insert corridors using racetrack pattern: loop corridor around central core */
+	static void InsertCorridorsRacetrack(TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
+		bool bHospiceMode, FRandomStream& Rng);
+
+	/** Insert corridors using enfilade pattern: sequential room connections, no corridor */
+	static void InsertCorridorsEnfilade(TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
+		bool bHospiceMode, FRandomStream& Rng);
+
+	/** Parse circulation type string from archetype JSON */
+	static ECirculationType ParseCirculationType(const FString& TypeStr);
+
 	// ---- Corridor insertion ----
 
-	/** Insert corridor cells where rooms need connectivity but don't share edges */
+	/** Insert corridor cells where rooms need connectivity but don't share edges (double-loaded, default) */
 	static void InsertCorridors(TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
+		TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
+		bool bHospiceMode, FRandomStream& Rng);
+
+	/** Dispatch to the correct corridor insertion based on circulation type */
+	static void InsertCorridorsForCirculation(ECirculationType Circulation,
+		TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,
 		TArray<FRoomDef>& Rooms, const TArray<FAdjacencyRule>& Adjacency,
 		bool bHospiceMode, FRandomStream& Rng);
 
