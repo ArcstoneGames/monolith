@@ -1202,6 +1202,14 @@ FMonolithActionResult FMonolithMeshCityBlockActions::CreateCityBlock(const TShar
 	// Facade style for integrated generation (v3)
 	FString BlockFacadeStyle;
 	Params->TryGetStringField(TEXT("facade_style"), BlockFacadeStyle);
+	// Default facade style per genre if not specified
+	if (BlockFacadeStyle.IsEmpty())
+	{
+		if (Genre == TEXT("horror")) BlockFacadeStyle = TEXT("abandoned");
+		else if (Genre == TEXT("suburban")) BlockFacadeStyle = TEXT("colonial");
+		else if (Genre == TEXT("downtown")) BlockFacadeStyle = TEXT("brutalist");
+		else BlockFacadeStyle = TEXT("colonial"); // fallback
+	}
 	const bool bSkipRoofs = Params->HasField(TEXT("skip_roofs"))
 		? Params->GetBoolField(TEXT("skip_roofs")) : false;
 	const bool bSkipStreets = Params->HasField(TEXT("skip_streets"))

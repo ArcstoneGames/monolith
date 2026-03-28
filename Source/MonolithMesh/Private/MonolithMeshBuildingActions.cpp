@@ -723,8 +723,10 @@ void FMonolithMeshBuildingActions::CutDoorOpenings(UDynamicMesh* Mesh, const TAr
 		bool bExterior = (SideA == -1 || SideB == -1);
 		float WallT = bExterior ? ExteriorT : InteriorT;
 
-		// Cutter box: slightly wider than the wall thickness to clean-cut, door width from param
-		float CutterOvershoot = WallT + 10.0f;
+		// Cutter box: must be wide enough to clear any perpendicular wall at the door position.
+		// A perpendicular wall can be up to ExteriorT thick at a T-junction or corner.
+		// Use max wall thickness + generous margin to ensure clean cut through any intersection.
+		float CutterOvershoot = FMath::Max(ExteriorT, InteriorT) * 2.0f + 20.0f;
 
 		// Clamp cutter bottom Z to FloorZ — on upper floors, never punch through the ceiling slab below
 		float CutterBaseZ = FloorZ;
