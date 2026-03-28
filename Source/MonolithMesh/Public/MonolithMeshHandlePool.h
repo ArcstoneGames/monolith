@@ -37,7 +37,8 @@ public:
 	bool CreateHandle(const FString& HandleName, const FString& Source, FString& OutError);
 	UDynamicMesh* GetHandle(const FString& HandleName, FString& OutError);
 	bool ReleaseHandle(const FString& HandleName);
-	bool SaveHandle(const FString& HandleName, const FString& TargetPath, bool bOverwrite, FString& OutError);
+	bool SaveHandle(const FString& HandleName, const FString& TargetPath, bool bOverwrite, FString& OutError,
+		const FString& CollisionMode = TEXT("auto"), int32 MaxHulls = 4);
 	TSharedPtr<FJsonObject> ListHandles() const;
 
 private:

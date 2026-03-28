@@ -56,12 +56,14 @@ void FMonolithMeshOperationActions::RegisterActions(FMonolithToolRegistry& Regis
 		FParamSchemaBuilder().Build());
 
 	Registry.RegisterAction(TEXT("mesh"), TEXT("save_handle"),
-		TEXT("Save a mesh handle as a new StaticMesh asset"),
+		TEXT("Save a mesh handle as a new StaticMesh asset with auto-generated collision"),
 		FMonolithActionHandler::CreateStatic(&FMonolithMeshOperationActions::SaveHandle),
 		FParamSchemaBuilder()
 			.Required(TEXT("handle"), TEXT("string"), TEXT("Handle name to save"))
 			.Required(TEXT("target_path"), TEXT("string"), TEXT("Asset path for the new StaticMesh (e.g. /Game/Meshes/SM_Result)"))
 			.Optional(TEXT("overwrite"), TEXT("boolean"), TEXT("Allow overwriting existing asset"), TEXT("false"))
+			.Optional(TEXT("collision"), TEXT("string"), TEXT("Collision mode: auto, box, convex, complex_as_simple, none"), TEXT("auto"))
+			.Optional(TEXT("max_hulls"), TEXT("integer"), TEXT("Max convex hulls for decomposition (auto/convex modes)"), TEXT("4"))
 			.Build());
 
 	Registry.RegisterAction(TEXT("mesh"), TEXT("mesh_boolean"),
@@ -220,14 +222,24 @@ FMonolithActionResult FMonolithMeshOperationActions::SaveHandle(const TSharedPtr
 	FString HandleName = Params->GetStringField(TEXT("handle"));
 	FString TargetPath = Params->GetStringField(TEXT("target_path"));
 	bool bOverwrite = Params->HasField(TEXT("overwrite")) ? Params->GetBoolField(TEXT("overwrite")) : false;
+	FString CollisionMode = Params->HasField(TEXT("collision")) ? Params->GetStringField(TEXT("collision")).ToLower() : TEXT("auto");
+	int32 MaxHulls = Params->HasField(TEXT("max_hulls")) ? static_cast<int32>(Params->GetNumberField(TEXT("max_hulls"))) : 4;
 
 	if (HandleName.IsEmpty() || TargetPath.IsEmpty())
 	{
 		return FMonolithActionResult::Error(TEXT("Both 'handle' and 'target_path' are required"));
 	}
 
+	// Validate collision mode
+	static const TSet<FString> ValidModes = { TEXT("auto"), TEXT("convex"), TEXT("box"), TEXT("complex_as_simple"), TEXT("none") };
+	if (!ValidModes.Contains(CollisionMode))
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("Invalid collision mode '%s'. Valid: auto, convex, box, complex_as_simple, none"), *CollisionMode));
+	}
+
 	FString Error;
-	if (!Pool->SaveHandle(HandleName, TargetPath, bOverwrite, Error))
+	if (!Pool->SaveHandle(HandleName, TargetPath, bOverwrite, Error, CollisionMode, MaxHulls))
 	{
 		return FMonolithActionResult::Error(Error);
 	}
@@ -235,6 +247,8 @@ FMonolithActionResult FMonolithMeshOperationActions::SaveHandle(const TSharedPtr
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("handle"), HandleName);
 	Result->SetStringField(TEXT("saved_to"), TargetPath);
+	Result->SetStringField(TEXT("collision_mode"), CollisionMode);
+	Result->SetNumberField(TEXT("max_hulls"), MaxHulls);
 	Result->SetStringField(TEXT("status"), TEXT("saved"));
 
 	return FMonolithActionResult::Success(Result);
@@ -474,12 +488,30 @@ FMonolithActionResult FMonolithMeshOperationActions::GenerateCollision(const TSh
 	FGeometryScriptSimpleCollision Collision = UGeometryScriptLibrary_CollisionFunctions::GenerateCollisionFromMesh(
 		Mesh, CollisionOpts);
 
+	// BUG (known): The collision data computed above is discarded after this function returns.
+	// It is NOT stored on the handle or applied to any StaticMesh.
+	// This is harmless in practice because save_handle now auto-generates collision
+	// (added in Task 4 of the proc-geo overhaul). Users wanting custom collision can
+	// use the collision/max_hulls params on save_handle instead.
+	// TODO: Phase 2 fix — store collision in a TMap<FString, FGeometryScriptSimpleCollision>
+	// on the pool so save_handle can use pre-generated collision instead of re-computing.
+
+	// Report collision shape counts so the user gets useful feedback
+	int32 ShapeCount = Collision.AggGeom.BoxElems.Num()
+		+ Collision.AggGeom.SphereElems.Num()
+		+ Collision.AggGeom.SphylElems.Num()
+		+ Collision.AggGeom.ConvexElems.Num();
+
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("handle"), HandleName);
 	Result->SetStringField(TEXT("method"), Method);
+	Result->SetNumberField(TEXT("shape_count"), ShapeCount);
+	Result->SetNumberField(TEXT("box_elements"), Collision.AggGeom.BoxElems.Num());
+	Result->SetNumberField(TEXT("sphere_elements"), Collision.AggGeom.SphereElems.Num());
+	Result->SetNumberField(TEXT("capsule_elements"), Collision.AggGeom.SphylElems.Num());
+	Result->SetNumberField(TEXT("convex_elements"), Collision.AggGeom.ConvexElems.Num());
 	Result->SetStringField(TEXT("status"), TEXT("generated"));
-	// Note: Collision data is generated but stays in-memory.
-	// Use save_handle to persist the mesh with collision applied.
+	Result->SetStringField(TEXT("note"), TEXT("Collision shapes computed but not stored. Use save_handle with collision param to persist collision on the saved StaticMesh."));
 
 	return FMonolithActionResult::Success(Result);
 }

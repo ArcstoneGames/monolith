@@ -7,7 +7,7 @@ void UMonolithMeshHandlePool::Teardown() {}
 bool UMonolithMeshHandlePool::CreateHandle(const FString&, const FString&, FString& OutError) { OutError = TEXT("GeometryScript not available"); return false; }
 UDynamicMesh* UMonolithMeshHandlePool::GetHandle(const FString&, FString& OutError) { OutError = TEXT("GeometryScript not available"); return nullptr; }
 bool UMonolithMeshHandlePool::ReleaseHandle(const FString&) { return false; }
-bool UMonolithMeshHandlePool::SaveHandle(const FString&, const FString&, bool, FString& OutError) { OutError = TEXT("GeometryScript not available"); return false; }
+bool UMonolithMeshHandlePool::SaveHandle(const FString&, const FString&, bool, FString& OutError, const FString&, int32) { OutError = TEXT("GeometryScript not available"); return false; }
 TSharedPtr<FJsonObject> UMonolithMeshHandlePool::ListHandles() const { return MakeShared<FJsonObject>(); }
 #else // WITH_GEOMETRYSCRIPT
 #include "MonolithJsonUtils.h"
@@ -26,6 +26,8 @@ TSharedPtr<FJsonObject> UMonolithMeshHandlePool::ListHandles() const { return Ma
 #include "Misc/PackageName.h"
 
 #include "GeometryScript/MeshPrimitiveFunctions.h"
+#include "GeometryScript/CollisionFunctions.h"
+#include "PhysicsEngine/BodySetup.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -144,7 +146,8 @@ bool UMonolithMeshHandlePool::ReleaseHandle(const FString& HandleName)
 	return true;
 }
 
-bool UMonolithMeshHandlePool::SaveHandle(const FString& HandleName, const FString& TargetPath, bool bOverwrite, FString& OutError)
+bool UMonolithMeshHandlePool::SaveHandle(const FString& HandleName, const FString& TargetPath, bool bOverwrite, FString& OutError,
+	const FString& CollisionMode, int32 MaxHulls)
 {
 	FString Error;
 	UDynamicMesh* DynMesh = GetHandle(HandleName, Error);
@@ -208,6 +211,56 @@ bool UMonolithMeshHandlePool::SaveHandle(const FString& HandleName, const FStrin
 	BuildParams.bCommitMeshDescription = true;
 
 	StaticMesh->BuildFromMeshDescriptions(MeshDescs, BuildParams);
+
+	// Auto-generate collision based on CollisionMode
+	if (CollisionMode != TEXT("none"))
+	{
+		StaticMesh->CreateBodySetup();
+		UBodySetup* BS = StaticMesh->GetBodySetup();
+		check(BS);
+
+		if (CollisionMode == TEXT("complex_as_simple"))
+		{
+			BS->CollisionTraceFlag = CTF_UseComplexAsSimple;
+			BS->CreatePhysicsMeshes();
+		}
+		else if (CollisionMode == TEXT("box"))
+		{
+			FKBoxElem BoxElem;
+			BoxElem.Center = StaticMesh->GetRenderData()->Bounds.Origin;
+			BoxElem.X = StaticMesh->GetRenderData()->Bounds.BoxExtent.X * 2.0f;
+			BoxElem.Y = StaticMesh->GetRenderData()->Bounds.BoxExtent.Y * 2.0f;
+			BoxElem.Z = StaticMesh->GetRenderData()->Bounds.BoxExtent.Z * 2.0f;
+			BS->AggGeom.BoxElems.Add(BoxElem);
+			BS->CreatePhysicsMeshes();
+		}
+		else // "auto" or "convex"
+		{
+			if (DynMesh)
+			{
+				FGeometryScriptCollisionFromMeshOptions CollisionOpts;
+				CollisionOpts.bEmitTransaction = false;
+				CollisionOpts.Method = EGeometryScriptCollisionGenerationMethod::ConvexHulls;
+				CollisionOpts.MaxConvexHullsPerMesh = FMath::Max(1, MaxHulls);
+				CollisionOpts.bSimplifyHulls = true;
+				CollisionOpts.ConvexHullTargetFaceCount = 25;
+
+				UGeometryScriptLibrary_CollisionFunctions::SetStaticMeshCollisionFromMesh(
+					DynMesh, StaticMesh, CollisionOpts);
+			}
+			else
+			{
+				// DynMesh was released before save — fall back to AABB box collision
+				FKBoxElem BoxElem;
+				BoxElem.Center = StaticMesh->GetRenderData()->Bounds.Origin;
+				BoxElem.X = StaticMesh->GetRenderData()->Bounds.BoxExtent.X * 2.0f;
+				BoxElem.Y = StaticMesh->GetRenderData()->Bounds.BoxExtent.Y * 2.0f;
+				BoxElem.Z = StaticMesh->GetRenderData()->Bounds.BoxExtent.Z * 2.0f;
+				BS->AggGeom.BoxElems.Add(BoxElem);
+				BS->CreatePhysicsMeshes();
+			}
+		}
+	}
 
 	// Save the package
 	FSavePackageArgs SaveArgs;
