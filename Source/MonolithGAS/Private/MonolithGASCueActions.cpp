@@ -387,7 +387,8 @@ FMonolithActionResult FMonolithGASCueActions::HandleLinkCueToEffect(const TShare
 
 	BP->Modify();
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
-	FKismetEditorUtilities::CompileBlueprint(BP, EBlueprintCompileOptions::SkipGarbageCollection);
+	// Note: Do NOT compile here — GE CDO changes don't require recompilation
+	// and CompileBlueprint can trigger tag container processing that crashes
 
 	TSharedPtr<FJsonObject> Result = MonolithGAS::MakeAssetResult(EffectPath,
 		FString::Printf(TEXT("Linked cue tag '%s' to effect '%s'"), *CueTag, *EffectPath));
@@ -433,7 +434,6 @@ FMonolithActionResult FMonolithGASCueActions::HandleUnlinkCueFromEffect(const TS
 
 	BP->Modify();
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
-	FKismetEditorUtilities::CompileBlueprint(BP, EBlueprintCompileOptions::SkipGarbageCollection);
 
 	TSharedPtr<FJsonObject> Result = MonolithGAS::MakeAssetResult(EffectPath,
 		FString::Printf(TEXT("Unlinked cue tag '%s' from effect '%s'"), *CueTag, *EffectPath));
