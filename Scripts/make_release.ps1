@@ -93,7 +93,7 @@ if (Test-Path $binDir) {
         }
     Write-Host "    $binCount binary files included (no .pdb, no .patch_*)" -ForegroundColor Green
 } else {
-    Write-Host "    WARNING: No Binaries/ found — Blueprint-only users will need to compile" -ForegroundColor Red
+    Write-Host "    WARNING: No Binaries/ found - Blueprint-only users will need to compile" -ForegroundColor Red
 }
 
 # --- Step 4: Patch and package ---
