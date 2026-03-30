@@ -5,7 +5,7 @@ description: Use when working with ComboGraph plugin via Monolith MCP — creati
 
 # Unreal ComboGraph Workflows
 
-You have access to **Monolith** with **12 ComboGraph actions** across 4 categories via `combograph_query()`.
+You have access to **Monolith** with **13 ComboGraph actions** across 5 categories via `combograph_query()`.
 
 ## Discovery
 
@@ -51,6 +51,12 @@ monolith_discover({ namespace: "combograph" })
 | `create_combo_ability` | `save_path`, `combo_graph_path`, `ability_name`? | Create a Gameplay Ability that drives a ComboGraph |
 | `link_ability_to_combo_graph` | `ability_path`, `combo_graph_path` | Link an existing ability to a ComboGraph asset |
 | `scaffold_combo_from_montages` | `save_path`, `montages`, `graph_name`? | Scaffold a complete combo graph from an ordered list of montages |
+
+### Layout
+
+| Action | Key Params | Purpose |
+|--------|-----------|---------|
+| `layout_combo_graph` | `asset_path`, `horizontal_spacing`?, `vertical_spacing`? | Auto-layout nodes left-to-right (BFS tree). Asset must have been opened in editor at least once |
 
 ## Key Technical Notes
 
