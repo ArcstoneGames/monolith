@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 13 MCP tools (443 total actions across 10 domains), cutting AI assistant context consumption by ~95%.
+Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 14 MCP tools (684 total actions across 11 domains), cutting AI assistant context consumption by ~95%.
 
 ### What It Replaces
 
@@ -44,6 +44,8 @@ Monolith.uplugin
   MonolithIndex         — SQLite FTS5 deep project indexer, 14 internal indexers (7 MCP actions)
   MonolithSource        — Engine source + API lookup (11 actions)
   MonolithUI            — Widget blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility (42 actions)
+  MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript ops, horror/accessibility, lighting, audio/acoustics, performance, decals, level design, tech art, context props, procedural geometry (sweep walls, auto-collision, proc mesh caching, blueprint prefabs), genre presets, encounter design, hospice reports, procedural town generator (241 actions)
+  MonolithBABridge      — Optional IModularFeatures bridge for Blueprint Assist integration. Exposes IMonolithGraphFormatter; enables BA-powered auto_layout across blueprint, material, animation, and niagara modules when Blueprint Assist is present (0 MCP actions — integration only)
 ```
 
 ### Discovery/Dispatch Pattern
@@ -64,7 +66,8 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | Module | Loading Phase | Type |
 |--------|--------------|------|
 | MonolithCore | PostEngineInit | Editor |
-| All others (9) | Default | Editor |
+| All others (10) | Default | Editor |
+| MonolithBABridge | Default | Editor (optional) |
 
 ### Plugin Dependencies
 
@@ -76,6 +79,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 - IKRig
 - ControlRig
 - RigVM
+- GeometryScripting (optional — enables Tier 5 mesh operations)
 
 ---
 
@@ -105,7 +109,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | `discover` | `monolith_discover` | List available tool namespaces and their actions. Optional `namespace` filter |
 | `status` | `monolith_status` | Server health: version, uptime, port, action count, engine_version, project_name |
 | `update` | `monolith_update` | Check/install updates from GitHub Releases. `action`: "check" or "install" |
-| `reindex` | `monolith_reindex` | Trigger full project re-index (via reflection to MonolithIndex, no hard dependency) |
+| `reindex` | `monolith_reindex` | Trigger project re-index. Defaults to incremental (hash-based delta); pass `force=true` for full wipe-and-rebuild (via reflection to MonolithIndex, no hard dependency) |
 
 ---
 
@@ -193,6 +197,11 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | `duplicate_blueprint` | `asset_path`, `new_path` | Duplicate a Blueprint asset to a new path |
 | `get_dependencies` | `asset_path` | List all hard and soft asset dependencies |
 
+**Layout (1)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `auto_layout` | `asset_path`, `graph_name`?, `formatter`? | Auto-arrange nodes in a Blueprint graph. `formatter`: `"auto"` (default) — uses Blueprint Assist if available, falls back to built-in hierarchical layout; `"blueprint_assist"` — requires BA, errors if not present; `"builtin"` — built-in layout only |
+
 ---
 
 ### 3.3 MonolithMaterial
@@ -253,6 +262,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | `get_function_instance_info` | Read MFI parent chain and all parameter overrides (11 types: scalar, vector, texture, font, static switch, static component mask, and more) |
 | `layout_function_expressions` | Auto-arrange material function graph layout |
 | `rename_function_parameter_group` | Rename a parameter group across all parameters in a material function |
+| `auto_layout` | Auto-arrange expression nodes in a material graph. `formatter`: `"auto"` (default) — uses Blueprint Assist if available, falls back to built-in layout; `"blueprint_assist"` — requires BA; `"builtin"` — built-in only |
 
 **Extended Actions (1)**
 | Action | Change |
@@ -387,6 +397,11 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | `add_database_sequence` | Add an animation sequence to a PoseSearch database |
 | `remove_database_sequence` | Remove a sequence from a PoseSearch database by index |
 | `get_database_stats` | Get PoseSearch database statistics (pose count, search mode, costs) |
+
+**Layout (1)**
+| Action | Description |
+|--------|-------------|
+| `auto_layout` | Auto-arrange nodes in an Animation Blueprint graph. `formatter`: `"auto"` (default) — uses Blueprint Assist if available, falls back to built-in hierarchical layout; `"blueprint_assist"` — requires BA; `"builtin"` — built-in only. Optional `graph_name` to target a specific graph |
 
 ---
 
@@ -555,7 +570,7 @@ These exist because Epic's `FNiagaraStackGraphUtilities` functions lack `NIAGARA
 | `get_effect_type` | Get effect type settings (scalability, significance, budget) |
 | `set_effect_type_property` | Set a property on an effect type |
 
-**Utilities (4)**
+**Utilities (5)**
 | Action | Description |
 |--------|-------------|
 | `get_available_parameters` | List available parameters that can be bound to inputs |
@@ -563,6 +578,7 @@ These exist because Epic's `FNiagaraStackGraphUtilities` functions lack `NIAGARA
 | `diff_systems` | Compare two Niagara systems and return structural differences |
 | `save_emitter_as_template` | Save an emitter as a reusable template asset |
 | `clone_module_overrides` | Clone input overrides from one module to another |
+| `auto_layout` | Auto-arrange nodes in a Niagara module script graph. `formatter`: `"auto"` (default) — uses Blueprint Assist if available, falls back to built-in layout; `"blueprint_assist"` — requires BA; `"builtin"` — built-in only |
 
 #### UE 5.7 Compatibility Fixes (6 sites)
 
@@ -645,9 +661,9 @@ All marked with "UE 5.7 FIX" comments:
 | Class | Responsibility |
 |-------|---------------|
 | `FMonolithIndexModule` | Registers 7 project actions |
-| `FMonolithIndexDatabase` | RAII SQLite wrapper. 13 tables + 2 FTS5 + 6 triggers + 1 meta. DELETE journal mode, 64MB cache |
-| `UMonolithIndexSubsystem` | UEditorSubsystem. Incremental + full indexing via FRunnable. Asset Registry callbacks for add/remove/rename. Deep asset indexing with game-thread batching. Batches every 100 assets. Progress notifications |
-| `IMonolithIndexer` | Pure virtual interface: GetSupportedClasses(), IndexAsset(), GetName() |
+| `FMonolithIndexDatabase` | RAII SQLite wrapper. 13 tables + 2 FTS5 + 6 triggers + 1 meta. DELETE journal mode, 64MB cache. Schema v2: `saved_hash` column (Blake3 `FIoHash` hex), `schema_version` meta key |
+| `UMonolithIndexSubsystem` | UEditorSubsystem. 3-layer indexing (startup delta, live AR callbacks, full fallback). Hash-based startup catch-up. Live batched AR delegates on 2s timer. Deep asset indexing with game-thread batching. Batches every 100 assets. Progress notifications |
+| `IMonolithIndexer` | Pure virtual interface: GetSupportedClasses(), IndexAsset(), GetName(), IsSentinel(), SupportsIncrementalIndex(), IndexScoped() |
 | `FBlueprintIndexer` | Blueprint, WidgetBlueprint, AnimBlueprint — graphs, nodes, variables |
 | `FMaterialIndexer` | Material, MaterialInstanceConstant, MaterialFunction — expressions, params, connections |
 | `FAnimationIndexer` | AnimSequence, AnimMontage, BlendSpace, AnimBlueprint — tracks, notifies, slots, state machines |
@@ -680,6 +696,55 @@ All marked with "UE 5.7 FIX" comments:
 - `fts_nodes` — content=nodes, tokenize='porter unicode61', columns: node_name, node_class, node_type
 
 **DB Location:** `Plugins/Monolith/Saved/ProjectIndex.db`
+
+#### Incremental Indexing
+
+The project indexer uses a 3-layer architecture to keep `ProjectIndex.db` in sync without costly full rebuilds:
+
+**Layer 1 — Startup Catch-Up (hash-based delta)**
+
+On editor startup, `UMonolithIndexSubsystem` runs a fast delta engine:
+1. `EnumerateAllPackages()` collects all discoverable `.uasset` packages with their `FIoHash` (Blake3).
+2. Hash comparison against the `saved_hash` column in the `assets` table identifies added, removed, and changed assets. Move detection uses a `TMultiMap<FIoHash, FString>` to match removed→added pairs with identical hashes.
+3. Delta application (inserts, updates, deletes, renames) executes in a single SQLite transaction.
+4. Hash updates are deferred until after commit for crash recovery — if the editor crashes mid-index, the next startup re-detects the delta.
+
+Performance: ~14K assets compared in ~20ms. <1s total startup time with no changes.
+
+**Layer 2 — Live Asset Registry Callbacks**
+
+Four AR delegates are registered at startup:
+- `OnAssetsAdded` — new assets
+- `OnAssetsRemoved` — deleted assets
+- `OnAssetRenamed` — moved/renamed assets
+- `OnAssetsUpdatedOnDisk` — externally modified assets
+
+Events are batched into a pending queue and drained on a 2-second timer tick. The drain deduplicates entries (same asset touched multiple times within the window) and applies changes in a single transaction.
+
+**Layer 3 — Forced Full Reindex (fallback)**
+
+`monolith_reindex()` defaults to incremental mode (Layer 1 logic). Passing `force=true` triggers a full wipe-and-rebuild: drops all table data, re-enumerates, and re-indexes every asset. Used when the DB is suspected corrupt or after schema migrations.
+
+**Schema v2 Migration**
+
+Schema v2 adds:
+- `saved_hash TEXT` column on the `assets` table (stores Blake3 `FIoHash` as hex string)
+- `schema_version` key in the `meta` table
+- Index on `saved_hash` for fast lookup
+
+Migration is automatic: on startup, `PRAGMA table_info(assets)` checks for the `saved_hash` column. If missing, `ALTER TABLE assets ADD COLUMN saved_hash TEXT` runs followed by index creation.
+
+**IMonolithIndexer Interface Additions**
+
+| Method | Purpose |
+|--------|---------|
+| `IsSentinel()` | Returns true if this indexer acts as a sentinel for a specific asset type (used by incremental path to decide which indexers to invoke) |
+| `SupportsIncrementalIndex()` | Returns true if the indexer can process individual asset changes without a full rebuild |
+| `IndexScoped()` | Index a specific set of assets (subset of full index). Default implementation falls back to `IndexAsset()` per asset |
+
+**Plugin Content Scope Fix**
+
+The `bInstalled` filter on plugin content paths was replaced with explicit path enumeration. This fixes discovery of project-local plugins (e.g., DrawCallReducer, NiagaraDestructionDriver) that previously reported `bInstalled=false` and were excluded from indexing. The `MeshCatalogIndexer` paths were also corrected to use the new enumeration.
 
 ---
 
@@ -812,6 +877,336 @@ All marked with "UE 5.7 FIX" comments:
 | `audit_accessibility` | `asset_path` | Audit a Widget Blueprint for common accessibility issues (missing tooltips, low contrast, small text) |
 | `set_colorblind_mode` | `asset_path`, `mode` | Apply a colorblind-safe palette mode (deuteranopia, protanopia, tritanopia) |
 | `set_text_scale` | `asset_path`, `scale` | Apply a global text scale factor to all text widgets in the blueprint |
+
+---
+
+### 3.11 MonolithMesh
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore, MonolithIndex, SQLiteCore, UnrealEd, EditorSubsystem, MeshDescription, StaticMeshDescription, MeshConversion, PhysicsCore, NavigationSystem, RenderCore, EditorScriptingUtilities, Json, JsonUtilities, Slate, SlateCore. Optional: GeometryScriptingCore, GeometryFramework (Tier 5 mesh ops)
+
+#### Classes
+
+| Class | Responsibility |
+|-------|---------------|
+| `FMonolithMeshModule` | Registers 240 mesh actions across 30+ action classes (+ GeometryScript ops conditional) |
+| `FMonolithMeshInspectionActions` | Mesh asset inspection: geometry stats, LODs, UVs, materials, collision, quality analysis, catalog (12 actions) |
+| `FMonolithMeshSceneActions` | Scene actor manipulation: spawn, move, duplicate, delete, group, batch execute (8 actions) |
+| `FMonolithMeshSpatialActions` | Spatial queries: raycasts, sweeps, overlaps, nearest, line of sight, navmesh, scene bounds/stats (11 actions) |
+| `FMonolithMeshBlockoutActions` | Level blockout: volumes, primitives, grids, asset matching, replacement, layout import/export, prop scatter (15 actions) |
+| `FMonolithMeshProceduralActions` | Procedural geometry: parametric furniture, structures, mazes, pipes, terrain, horror props, sweep-based walls, auto-collision, human-scale defaults, door/window trim frames (8 actions) |
+| `FMonolithMeshCacheActions` | Procedural mesh caching: hash-based manifest, list/clear/validate/stats (4 actions) |
+| `FMonolithMeshPrefabActions` | Blueprint prefabs: dialog-free HarvestBlueprintFromActors (1 action) |
+| `FMonolithMeshBuildingActions` | Grid-based building construction: grid → geometry + Building Descriptor (2 actions) |
+| `FMonolithMeshFloorPlanGenerator` | Automatic floor plan generation: treemap layout, archetype loading, corridor insertion (3 actions) |
+| `FMonolithMeshFacadeActions` | Facade & window generation: window placement, trim profiles, horror damage (3 actions) |
+| `FMonolithMeshRoofActions` | Roof generation: gable, hip, flat/parapet, shed, gambrel (1 action) |
+| `FMonolithMeshCityBlockActions` | City block layout: lot subdivision, street geometry, orchestration (4 actions) |
+| `FMonolithMeshSpatialRegistry` | Spatial registry: hierarchical JSON descriptor, adjacency graph, BFS pathfinding (10 actions) |
+| `FMonolithMeshAutoVolumeActions` | Auto-volume generation: NavMesh, blocking, audio, trigger volumes (3 actions) |
+| `FMonolithMeshTerrainActions` | Terrain adaptation: height sampling, foundations, retaining walls (5 actions) |
+| `FMonolithMeshArchFeatureActions` | Architectural features: balconies, porches, fire escapes, railings (5 actions) |
+| `FMonolithMeshDebugViewActions` | Daredevil debug view: section clip, floor plan capture, camera bookmarks (6 actions) |
+| `FMonolithMeshFurnishingActions` | Room furnishing: room-type furniture mapping, placement rules (3 actions) |
+| `FMonolithMeshBuildingTypes` | Shared structs: FBuildingGrid, FRoomDef, FDoorDef, FStairwellDef, FBuildingDescriptor |
+| `FMonolithMeshCatalog` | Mesh catalog database for search_meshes_by_size and get_mesh_catalog_stats |
+| `FMonolithMeshUtils` | Shared helpers for mesh loading, bounds calculation, actor queries |
+
+#### Actions (241 — namespace: "mesh")
+
+> **Note:** 195 original actions (Phases 1-22 + Proc Geo Overhaul) + 46 Procedural Town Generator actions (SP1-SP10 + `validate_building`).
+
+**Inspection (12)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `get_mesh_info` | `asset_path` | Full mesh info: vertex/triangle counts, bounds, LODs, materials, collision |
+| `get_mesh_bounds` | `asset_path` | Bounding box dimensions and center |
+| `get_mesh_materials` | `asset_path` | Material slot names and assigned materials |
+| `get_mesh_lods` | `asset_path` | LOD details: vertex/triangle counts, screen sizes |
+| `get_mesh_collision` | `asset_path` | Collision geometry: type, complexity, body count |
+| `get_mesh_uvs` | `asset_path` | UV channel info: channel count, bounds per channel |
+| `analyze_skeletal_mesh` | `asset_path` | Skeletal mesh analysis: bones, sockets, morph targets, physics bodies |
+| `analyze_mesh_quality` | `asset_path` | Quality metrics: degenerate triangles, UV distortion, overdraw estimate |
+| `compare_meshes` | `asset_path_a`, `asset_path_b` | Side-by-side comparison of two meshes |
+| `get_vertex_data` | `asset_path`, `lod`, `section` | Raw vertex data for a mesh section |
+| `search_meshes_by_size` | `min_size`, `max_size`, `limit` | Search indexed meshes by bounding box size range |
+| `get_mesh_catalog_stats` | none | Mesh catalog database statistics |
+
+**Scene Manipulation (8)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `get_actor_info` | `actor_name` | Full actor details: class, transform, components, tags |
+| `spawn_actor` | `class_name`, `location`, `rotation`, `label` | Spawn an actor in the current level |
+| `move_actor` | `actor_name`, `location`, `rotation`, `scale` | Set actor transform |
+| `duplicate_actor` | `actor_name`, `offset` | Duplicate an actor with optional offset |
+| `delete_actors` | `actor_names` | Delete one or more actors by name |
+| `group_actors` | `actor_names`, `group_name` | Group actors under a folder |
+| `set_actor_properties` | `actor_name`, `properties` | Set properties on an actor via reflection |
+| `batch_execute` | `operations` | Execute multiple scene operations in a single transaction |
+
+**Spatial Queries (11)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `query_raycast` | `start`, `end`, `channel` | Single-hit raycast with collision response |
+| `query_multi_raycast` | `start`, `end`, `channel` | Multi-hit raycast returning all intersections |
+| `query_radial_sweep` | `center`, `radius`, `channel` | Radial sphere sweep around a point |
+| `query_overlap` | `location`, `extent`, `channel` | Box overlap test at location |
+| `query_nearest` | `location`, `radius`, `class_filter` | Find nearest actor of a given class within radius |
+| `query_line_of_sight` | `from`, `to`, `ignore_actors` | Line-of-sight check between two points |
+| `get_actors_in_volume` | `volume_name` | Get all actors inside a named volume |
+| `get_scene_bounds` | none | Get the total bounds of all actors in the level |
+| `get_scene_statistics` | none | Scene stats: actor count, triangle count, draw calls, texture memory |
+| `get_spatial_relationships` | `actor_name`, `radius` | Get nearby actors and their spatial relationships |
+| `query_navmesh` | `start`, `end` | Query navigation mesh for path between two points |
+
+**Level Blockout (15)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `get_blockout_volumes` | none | List all blockout volumes in the level |
+| `get_blockout_volume_info` | `volume_name` | Detailed info about a blockout volume |
+| `setup_blockout_volume` | `location`, `extent`, `name`, `tags` | Create a blockout volume for level design |
+| `create_blockout_primitive` | `type`, `location`, `scale`, `material` | Create a blockout primitive (box, cylinder, sphere, etc.) |
+| `create_blockout_primitives_batch` | `primitives` | Batch-create multiple blockout primitives |
+| `create_blockout_grid` | `origin`, `cell_size`, `rows`, `columns` | Create a grid of blockout primitives |
+| `match_asset_to_blockout` | `blockout_actor`, `asset_path` | Match a production asset to replace a blockout primitive |
+| `match_all_in_volume` | `volume_name`, `asset_mapping` | Match all blockout primitives in a volume to production assets |
+| `apply_replacement` | `blockout_actor`, `asset_path` | Replace a blockout actor with a production mesh |
+| `set_actor_tags` | `actor_name`, `tags` | Set tags on an actor for blockout categorization |
+| `clear_blockout` | `volume_name` | Remove all blockout primitives in a volume |
+| `export_blockout_layout` | `volume_name`, `save_path` | Export blockout layout to JSON |
+| `import_blockout_layout` | `file_path` | Import a blockout layout from JSON |
+| `scan_volume` | `volume_name` | Scan a volume and report contents |
+| `scatter_props` | `volume_name`, `asset_paths`, `density`, `seed` | Scatter props randomly within a volume |
+
+**Procedural Mesh Caching (4)** — Hash-based manifest at `Saved/Monolith/ProceduralCache/manifest.json`
+| Action | Params | Description |
+|--------|--------|-------------|
+| `list_cached_meshes` | `type_filter`?, `limit`? (default 100) | List cached procedural mesh entries with asset_path, action, type, dimensions, triangle_count, created_utc |
+| `clear_cache` | `type_filter`? | Clear cached meshes — all or filtered by type. Returns cleared_count |
+| `validate_cache` | none | Remove stale cache entries where the asset no longer exists on disk. Returns removed_count |
+| `get_cache_stats` | none | Cache statistics: total_entries and per-type breakdown |
+
+**Blueprint Prefabs (1)** — Dialog-free blueprint creation from placed actors
+| Action | Params | Description |
+|--------|--------|-------------|
+| `create_blueprint_prefab` | `*actor_names`, `*save_path`, `center_pivot`? (default true), `keep_source_actors`? (default true) | Create a Blueprint from selected actors via HarvestBlueprintFromActors. Returns blueprint_path, asset_name, source_actor_count, component_count |
+
+> **Procedural Geometry Overhaul (2026-03-28):** The proc gen actions (`create_parametric_mesh`, `create_structure`, `create_horror_prop`, etc.) now feature sweep-based thin walls (`wall_mode: "sweep"` default), auto snap-to-floor (`snap_to_floor` param), auto-collision on all saved meshes (`collision: auto/box/convex/complex_as_simple/none`), human-scale defaults (stairs 90/28/18cm, doors 90cm, floor 3cm), door/window/vent trim frames (`add_trim` param), and vent openings via `create_structure`. Collision-aware prop placement uses `collision_mode: none/warn/reject/adjust` on scatter actions with SweepSingle box traces for floor finding. All proc gen actions support `use_cache` and `auto_save` params for the caching system.
+
+#### Procedural Town Generator (46 actions — 11 sub-projects)
+
+Procedural city block generation from a single MCP call. 11 sub-projects composing into a pipeline: grid-based buildings with connected rooms, roofs, facades, furniture, lighting, horror dressing, navmesh, and volumes, all adaptive to terrain. The critical interface is the **Building Descriptor** — a JSON contract that SP1 outputs and SP2-SP10 consume. All building specs are generated server-side (not sent over MCP wire).
+
+**Master plan:** `Docs/plans/2026-03-28-proc-town-generator-master-plan.md`
+
+**Building Descriptor Contract (Critical Interface)**
+
+SP1's `create_building_from_grid` returns a JSON descriptor consumed by all downstream SPs. Key fields:
+- `building_id`, `asset_path`, `actors[]` — building identity and spawned actors
+- `footprint_polygon` — 2D building outline for roof generation
+- `floors[]` — per-floor data: `rooms[]` (room_id, room_type, grid_cells, world_bounds), `doors[]` (connects, wall, width), `stairwells[]`
+- `exterior_faces[]` — wall segments for facade decoration (normal, width, height, is_exterior)
+- `grid_cell_size`, `wall_thickness`, `materials_assigned`, `tags_applied`
+
+**SP1: Grid-Based Building Construction (2 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `create_building_from_grid` | `grid`, `rooms`, `doors`, `floors`, `cell_size`?, `materials`?, `omit_exterior_walls`? | Grid of room IDs → geometry + Building Descriptor. Auto-detects interior/exterior walls, generates floor/ceiling slabs, stairwell cutouts, trim frames, actor tags. `omit_exterior_walls` (default false) skips exterior wall generation for facade-only workflows |
+| `create_grid_from_rooms` | `rooms`, `adjacency` | Room list + adjacency requirements → grid layout |
+
+**SP2: Automatic Floor Plan Generation (3 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `generate_floor_plan` | `archetype`, `width`, `depth`, `floors`?, `hospice_mode`? | Building archetype + footprint → grid + rooms + doors. Squarified treemap with per-floor room assignment, aspect ratio enforcement, footprint boundary validation, and guaranteed exterior entrance on ground floor. Corridor width min 120cm, door width min 90cm. Hospice mode: 100cm doors, 180cm corridors, rest alcoves |
+| `list_building_archetypes` | none | List available archetype definitions (residential, clinic, police_station, apartment, etc.) |
+| `get_building_archetype` | `archetype` | Get archetype JSON: room types, sizes, adjacency requirements |
+
+**SP3: Facade & Window Generation (3 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `generate_facade` | `building_descriptor`, `style`?, `damage`? | Exterior walls → windows, doors, trim, cornices, storefronts. CGA-style vertical split (base/shaft/cap). Optional horror damage |
+| `list_facade_styles` | none | List available facade style presets (Victorian, Colonial, Brutalist, Abandoned) |
+| `apply_horror_damage` | `building_descriptor`, `decay` | Apply horror damage to facades: boarded windows, broken glass, rust stains |
+
+**SP4: Roof Generation (1 action)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `generate_roof` | `building_descriptor`, `roof_type`?, `overhang`? | Footprint polygon → roof geometry (gable, hip, flat/parapet, shed, gambrel). Separate MaterialID for roof surface |
+
+**SP5: City Block Layout (4 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `create_city_block` | `buildings`, `genre`?, `seed`?, `block_size`?, `decay`? | Top-level orchestrator. Subdivides block → generates buildings → facades → roofs → streets → horror decay. Graceful degradation if SPs unavailable |
+| `create_lot_layout` | `block_size`, `lot_count`?, `seed`? | Subdivide block into lots (OBB recursive), return lot positions and footprint shapes |
+| `create_street` | `block_bounds`, `lot_positions` | Generate street geometry: sidewalks, curbs, road surface |
+| `place_street_furniture` | `street_bounds`, `density`?, `seed`? | Place lamps, hydrants, benches, trash cans along streets |
+
+**SP6: Spatial Registry (10 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `register_building` | `building_descriptor` | Register a building in the spatial registry |
+| `register_room` | `building_id`, `room` | Register an individual room |
+| `register_street_furniture` | `block_id`, `actors` | Register street furniture actors |
+| `query_room_at` | `position` | Query what room is at a world position |
+| `query_adjacent_rooms` | `room_id` | Query rooms adjacent to a given room |
+| `query_rooms_by_filter` | `filter` | Query rooms by type, floor, building, or tags |
+| `query_building_exits` | `building_id` | Query all exit points from a building |
+| `path_between_rooms` | `from_room`, `to_room` | BFS pathfinding between two rooms through the adjacency graph |
+| `save_block_descriptor` | `block_id`, `save_path`? | Persist block descriptor to JSON |
+| `load_block_descriptor` | `file_path` | Load a persisted block descriptor |
+
+**SP7: Auto-Volume Generation (3 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `auto_volumes_for_building` | `building_descriptor` | Auto-spawn NavMeshBounds, BlockingVolume, AudioVolume (reverb by room size), TriggerVolume for a building |
+| `auto_volumes_for_block` | `block_id` | Auto-volumes for all buildings in a block + navmesh build |
+| `spawn_nav_link` | `location`, `left_point`, `right_point` | Spawn a NavLinkProxy between two points |
+
+**SP8a: Terrain + Foundations (5 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `sample_terrain_grid` | `origin`, `extent`, `resolution` | Sample NxM height grid via downward traces |
+| `analyze_building_site` | `footprint`, `terrain_grid` | Analyze site slope and recommend foundation strategy (Flat/CutAndFill/Stepped/Piers/WalkoutBasement) |
+| `create_foundation` | `building_descriptor`, `strategy`?, `hospice_mode`? | Generate foundation geometry. ADA-compliant ramps in hospice mode (1:12 slope, 76cm max rise, 150cm landings) |
+| `create_retaining_wall` | `path`, `height`, `material`? | Generate retaining wall geometry along a path |
+| `place_building_on_terrain` | `building_descriptor`, `terrain_grid` | Adapt a building to uneven terrain with auto-selected foundation |
+
+**SP8b: Architectural Features (5 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `create_balcony` | `building_descriptor`, `floor`, `face`, `width`?, `depth`?, `building_context`? | Floor slab + railing extending from upper floor exterior. `building_context` enables collision checks against existing geometry. Returns `wall_openings` for facade integration |
+| `create_porch` | `building_descriptor`, `face`, `depth`?, `columns`?, `building_context`? | Ground-level covered entry with columns. `building_context` enables collision checks. Returns `wall_openings` for facade integration |
+| `create_fire_escape` | `building_descriptor`, `face`, `floors`?, `building_context`? | Zigzag exterior stairs between floor landings (45-degree angle). `building_context` enables collision checks. Returns `wall_openings` for facade integration |
+| `create_ramp_connector` | `start`, `end`, `width`?, `slope`?, `building_context`? | ADA-compliant ramp between two heights with switchback support. Returns `wall_openings` for facade integration |
+| `create_railing` | `path`, `height`?, `style`? | Swept profile railing along edge path |
+
+**SP9: Daredevil Debug View (6 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `toggle_section_view` | `z_height`?, `enabled`? | MPC-based section clip — hide everything above a Z height |
+| `toggle_ceiling_visibility` | `visible`?, `floor`? | Toggle ceiling/roof visibility via actor tags (BuildingCeiling, BuildingRoof) |
+| `capture_floor_plan` | `building_descriptor`, `floor`?, `output_path`? | Orthographic top-down floor plan capture to PNG |
+| `highlight_room` | `room_id`, `color`?, `duration`? | Room highlighting with overlay materials |
+| `save_camera_bookmark` | `name`, `location`?, `rotation`? | Save current or specified camera viewpoint |
+| `load_camera_bookmark` | `name` | Restore a saved camera viewpoint |
+
+**SP10: Room Furnishing Pipeline (3 actions)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `furnish_room` | `building_descriptor`, `room_id`, `preset`?, `disturbance`? | Place appropriate furniture per room type. Horror dressing via optional disturbance level (orderly/slightly_messy/ransacked/abandoned) |
+| `furnish_building` | `building_descriptor`, `decay`? | Furnish all rooms in a building, applying horror decay per room |
+| `list_furniture_presets` | `room_type`? | List available furniture preset configurations per room type |
+
+**Validation (1 action)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `validate_building` | `building_descriptor` | Post-generation validation: checks room connectivity, door reachability, stair angle limits, wall thickness, exterior entrance existence, floor slab coverage. Returns `valid` bool + `issues[]` with severity, location, and description per problem found |
+
+#### Fix Plan v2 Changes (2026-03-28)
+
+20 issues fixed across 3 phases targeting building generation correctness and playability:
+
+**Phase 1 — Geometry Fixes:**
+1. Building stairs angle reduced from 70 degrees to 32 degrees (standard residential)
+2. Building stairs switchback support for multi-story buildings
+3. Fire escape angle reduced from 66 degrees to 45 degrees
+4. Ramp connector switchback self-intersection fix
+5. Exterior wall omission via `omit_exterior_walls` param on `create_building_from_grid`
+6. Wall thickness validation (minimum 10cm, maximum 60cm)
+
+**Phase 2 — Floor Plan Fixes:**
+7. Corridor minimum width enforced at 120cm
+8. Door minimum width enforced at 90cm
+9. Per-floor room assignment in `generate_floor_plan` (bedrooms upstairs, living areas ground floor)
+10. Room aspect ratio enforcement (no rooms narrower than 1:4)
+11. Footprint boundary validation (rooms cannot exceed building footprint)
+12. Guaranteed exterior entrance on ground floor
+
+**Phase 3 — Integration Fixes:**
+13. `building_context` param on architectural feature actions (balcony, porch, fire escape, ramp)
+14. `wall_openings` output on architectural feature actions for facade coordination
+15. Stairwell ceiling cutout geometry correctness
+16. Floor slab coverage validation (no gaps between rooms)
+17. Room connectivity validation (all rooms reachable)
+18. Door placement validation (doors on shared walls only)
+19. `validate_building` action added for post-generation integrity checks
+20. Graceful error reporting with per-issue severity levels
+
+**Data Files (Procedural Town Generator)**
+| Directory | Sub-Project | Contents |
+|-----------|------------|----------|
+| `Saved/Monolith/BuildingArchetypes/` | SP2 | JSON room catalogs per building type (residential_house, clinic, police_station, apartment) |
+| `Saved/Monolith/FacadeStyles/` | SP3 | JSON facade presets (Victorian, Colonial, Brutalist, Abandoned) |
+| `Saved/Monolith/BlockPresets/` | SP5 | JSON block configuration presets |
+| `Saved/Monolith/SpatialRegistry/` | SP6 | Persisted block descriptors |
+| `Saved/Monolith/CameraBookmarks/` | SP9 | Saved camera positions |
+| `Saved/Monolith/FurniturePresets/` | SP10 | Room-type furniture configs per room type (kitchen, bedroom, bathroom, office, lobby, corridor) |
+
+---
+
+### 3.12 MonolithBABridge
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore (optional — loads only when both Monolith and Blueprint Assist are present)
+
+MonolithBABridge is an **optional** editor module that bridges Blueprint Assist's graph formatter into Monolith's `auto_layout` actions. It registers no MCP actions of its own. Its sole job is to expose BA's layout logic via `IModularFeatures` so that blueprint, material, animation, and niagara modules can consume it without a hard dependency on Blueprint Assist.
+
+#### Classes
+
+| Class | Responsibility |
+|-------|---------------|
+| `FMonolithBABridgeModule` | IModuleInterface. On startup, checks for Blueprint Assist via `FModuleManager::IsModuleLoaded("BlueprintAssist")` and registers `IMonolithGraphFormatter` impl via `IModularFeatures::Get().RegisterFeature()` |
+| `FMonolithBAGraphFormatter` | Concrete `IMonolithGraphFormatter` impl. Delegates to BA's `FBAFormatterUtils` / `FBANodePositioner`. Reads cached node sizes from `FBACache` when available |
+
+#### IMonolithGraphFormatter Interface
+
+```cpp
+class IMonolithGraphFormatter
+{
+public:
+    virtual ~IMonolithGraphFormatter() = default;
+
+    /** Feature name used with IModularFeatures */
+    static const FName FeatureName;
+
+    /**
+     * Format a graph using the registered formatter.
+     * @param Graph  Target graph to layout
+     * @return true if layout was applied
+     */
+    virtual bool FormatGraph(UEdGraph* Graph) = 0;
+};
+```
+
+Consumer pattern used by `auto_layout` actions in each domain module:
+
+```cpp
+// Check at call time — BA may not be loaded
+if (IModularFeatures::Get().IsFeatureAvailable(IMonolithGraphFormatter::FeatureName))
+{
+    auto& Formatter = IModularFeatures::Get().GetFeature<IMonolithGraphFormatter>(
+        IMonolithGraphFormatter::FeatureName);
+    Formatter.FormatGraph(Graph);
+}
+```
+
+#### `formatter` Parameter (three-mode behavior)
+
+All four `auto_layout` actions accept an optional `formatter` param:
+
+| Value | Behavior |
+|-------|----------|
+| `"auto"` (default) | Uses Blueprint Assist formatter if `IMonolithGraphFormatter` is registered; otherwise falls back to built-in hierarchical layout. Never errors |
+| `"blueprint_assist"` | Forces BA formatter. Returns an error if MonolithBABridge is not loaded or BA is not present |
+| `"builtin"` | Forces built-in layout regardless of BA presence |
+
+#### `bEnableBlueprintAssist` Setting
+
+`UMonolithSettings` exposes a toggle that controls whether MonolithBABridge attempts registration on startup:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `bEnableBlueprintAssist` | True | When false, MonolithBABridge skips `IModularFeatures` registration even if Blueprint Assist is present. `formatter: "auto"` will fall back to built-in; `formatter: "blueprint_assist"` will error |
+
+**Config key:** `bEnableBlueprintAssist` in `[/Script/MonolithCore.MonolithSettings]`
 
 ---
 
@@ -971,6 +1366,7 @@ All skills follow a common structure: YAML frontmatter, Discovery section, Asset
 | bIndexEnabled | True | Enable Index module |
 | bSourceEnabled | True | Enable Source module |
 | bUIEnabled | True | Enable UI module |
+| bEnableBlueprintAssist | True | Allow MonolithBABridge to register IMonolithGraphFormatter when Blueprint Assist is present. Set false to force built-in layout for all auto_layout calls |
 | LogVerbosity | 3 (Log) | 0=Silent, 1=Error, 2=Warning, 3=Log, 4=Verbose |
 
 **Note:** Module enable toggles are functional — each module checks its toggle at registration time and skips action registration if disabled.
@@ -1103,15 +1499,17 @@ See `TODO.md` for the full list. Key architectural constraints:
 | Module | Namespace | Actions |
 |--------|-----------|---------|
 | MonolithCore | monolith | 4 |
-| MonolithBlueprint | blueprint | 66 |
+| MonolithBlueprint | blueprint | 86 |
 | MonolithMaterial | material | 57 |
-| MonolithAnimation | animation | 74 |
-| MonolithNiagara | niagara | 65 |
+| MonolithAnimation | animation | 115 |
+| MonolithNiagara | niagara | 96 |
+| MonolithMesh | mesh | 240 |
 | MonolithEditor | editor | 19 |
 | MonolithConfig | config | 6 |
-| MonolithIndex | project | 5 |
+| MonolithIndex | project | 7 |
 | MonolithSource | source | 11 |
 | MonolithUI | ui | 42 |
-| **Total** | | **349** |
+| MonolithBABridge | — | 0 (integration only) |
+| **Total** | | **683** |
 
-**Note:** PoseSearch's 5 actions are included in Animation's 74 — they are not additive. The original Python server had higher counts (~231 tools) due to fragmented action design.
+**Note:** MonolithMesh includes all 22 expansion phases (195 original actions) plus 45 Procedural Town Generator actions (SP1-SP10). MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 14 MCP tools with namespaced actions.

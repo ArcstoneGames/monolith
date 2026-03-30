@@ -18,6 +18,7 @@ public:
 
 	virtual bool IndexAsset(const FAssetData& AssetData, UObject* LoadedAsset, FMonolithIndexDatabase& DB, int64 AssetId) override;
 	virtual FString GetName() const override { return TEXT("GameplayTagIndexer"); }
+	virtual bool IsSentinel() const override { return true; }
 
 private:
 	/** Recursively index a tag node and its children, returns the DB id */

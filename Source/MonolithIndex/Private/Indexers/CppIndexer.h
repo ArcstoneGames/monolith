@@ -18,6 +18,7 @@ public:
 
 	virtual bool IndexAsset(const FAssetData& AssetData, UObject* LoadedAsset, FMonolithIndexDatabase& DB, int64 AssetId) override;
 	virtual FString GetName() const override { return TEXT("CppIndexer"); }
+	virtual bool IsSentinel() const override { return true; }
 
 private:
 	/** Parse a single source file and insert discovered symbols */

@@ -28,4 +28,13 @@ public:
 
 	/** Human-readable name for logging */
 	virtual FString GetName() const = 0;
+
+	/** Whether this is a sentinel indexer (does its own AR enumeration) */
+	virtual bool IsSentinel() const { return false; }
+
+	/** Whether this sentinel supports scoped (incremental) indexing */
+	virtual bool SupportsIncrementalIndex() const { return false; }
+
+	/** Re-index only specified assets. Called AFTER main transaction commits — may open own transaction. */
+	virtual bool IndexScoped(const TSet<FString>& ChangedPaths, const TSet<FString>& RemovedPaths, FMonolithIndexDatabase& DB) { return false; }
 };

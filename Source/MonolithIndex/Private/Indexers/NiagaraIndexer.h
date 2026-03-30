@@ -18,6 +18,7 @@ public:
 
 	virtual bool IndexAsset(const FAssetData& AssetData, UObject* LoadedAsset, FMonolithIndexDatabase& DB, int64 AssetId) override;
 	virtual FString GetName() const override { return TEXT("NiagaraIndexer"); }
+	virtual bool IsSentinel() const override { return true; }
 
 private:
 	void IndexNiagaraSystem(class UNiagaraSystem* System, FMonolithIndexDatabase& DB, int64 AssetId);

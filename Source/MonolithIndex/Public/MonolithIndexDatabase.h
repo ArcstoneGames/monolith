@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IO/IoHash.h"
 #include "SQLiteDatabase.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogMonolithIndex, Log, All);
@@ -15,6 +16,7 @@ struct FIndexedAsset
 	FString Description;
 	int64 FileSizeBytes = 0;
 	FString LastModified;
+	FString SavedHash;
 	FString IndexedAt;
 };
 
@@ -203,6 +205,7 @@ public:
 
 	// --- Meta ---
 	bool WriteMeta(const FString& Key, const FString& Value);
+	FString ReadMeta(const FString& Key) const;
 
 	// --- Config CRUD ---
 	int64 InsertConfig(const FIndexedConfig& Config);
@@ -227,6 +230,16 @@ public:
 
 	// --- Find references (bidirectional) ---
 	TSharedPtr<FJsonObject> FindReferences(const FString& PackagePath);
+
+	// --- Incremental indexing helpers ---
+	TArray<FString> GetAllIndexedPaths();
+	FString GetSavedHash(const FString& PackagePath);
+	TMap<FString, FString> GetAllPathsAndHashes();
+	bool DeleteAssetByPath(const FString& PackagePath);
+	bool UpdateAssetPath(const FString& OldPath, const FString& NewPath, const FString& NewAssetName = FString());
+	bool UpdateAssetMetadata(const FIndexedAsset& Asset);
+	bool DeleteChildDataForAsset(int64 AssetId);
+	bool UpdateSavedHash(const FString& PackagePath, const FString& HashHex);
 
 private:
 	bool CreateTables();

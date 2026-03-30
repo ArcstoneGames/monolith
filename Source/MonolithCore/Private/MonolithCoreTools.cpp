@@ -57,7 +57,7 @@ void FMonolithCoreTools::RegisterAll()
 	{
 		Registry.RegisterAction(
 			TEXT("monolith"), TEXT("reindex"),
-			TEXT("Trigger a full project re-index of the Monolith project database."),
+			TEXT("Re-index the Monolith project database. Incremental by default (delta only). Pass force=true for full wipe+rebuild."),
 			FMonolithActionHandler::CreateStatic(&FMonolithCoreTools::HandleReindex)
 		);
 	}
@@ -222,7 +222,7 @@ FMonolithActionResult FMonolithCoreTools::HandleReindex(const TSharedPtr<FJsonOb
 	if (!FModuleManager::Get().IsModuleLoaded(TEXT("MonolithIndex")))
 	{
 		Result->SetStringField(TEXT("status"), TEXT("module_not_loaded"));
-		Result->SetStringField(TEXT("message"), TEXT("MonolithIndex module is not loaded. Enable it in Monolith settings."));
+		Result->SetStringField(TEXT("message"), TEXT("MonolithIndex module is not loaded."));
 		return FMonolithActionResult::Success(Result);
 	}
 
@@ -231,25 +231,63 @@ FMonolithActionResult FMonolithCoreTools::HandleReindex(const TSharedPtr<FJsonOb
 		return FMonolithActionResult::Error(TEXT("GEditor not available"));
 	}
 
-	// Find the index subsystem by class name to avoid hard module dependency
+	bool bForce = Params.IsValid() && Params->HasField(TEXT("force"))
+	              && Params->GetBoolField(TEXT("force"));
+
 	UClass* IndexSubsystemClass = FindObject<UClass>(nullptr, TEXT("/Script/MonolithIndex.MonolithIndexSubsystem"));
-	if (IndexSubsystemClass)
+	if (!IndexSubsystemClass)
 	{
-		UEditorSubsystem* IndexSubsystem = GEditor->GetEditorSubsystemBase(IndexSubsystemClass);
-		if (IndexSubsystem)
+		Result->SetStringField(TEXT("status"), TEXT("subsystem_unavailable"));
+		Result->SetStringField(TEXT("message"), TEXT("MonolithIndexSubsystem class not found."));
+		return FMonolithActionResult::Success(Result);
+	}
+
+	UEditorSubsystem* IndexSubsystem = GEditor->GetEditorSubsystemBase(IndexSubsystemClass);
+	if (!IndexSubsystem)
+	{
+		Result->SetStringField(TEXT("status"), TEXT("subsystem_unavailable"));
+		Result->SetStringField(TEXT("message"), TEXT("MonolithIndexSubsystem instance not available."));
+		return FMonolithActionResult::Success(Result);
+	}
+
+	FString FuncName;
+	if (bForce)
+	{
+		FuncName = TEXT("StartFullIndex");
+	}
+	else
+	{
+		// Check if incremental is possible
+		UFunction* CanIncrementalFunc = IndexSubsystemClass->FindFunctionByName(TEXT("CanDoIncrementalIndex"));
+		if (CanIncrementalFunc)
 		{
-			UFunction* RebuildFunc = IndexSubsystemClass->FindFunctionByName(TEXT("StartFullIndex"));
-			if (RebuildFunc)
-			{
-				IndexSubsystem->ProcessEvent(RebuildFunc, nullptr);
-				Result->SetStringField(TEXT("status"), TEXT("reindex_started"));
-				Result->SetStringField(TEXT("message"), TEXT("Project re-index triggered successfully."));
-				return FMonolithActionResult::Success(Result);
-			}
+			struct { uint8 ReturnValue = 0; } Parms;
+			FMemory::Memzero(&Parms, sizeof(Parms));
+			IndexSubsystem->ProcessEvent(CanIncrementalFunc, &Parms);
+			FuncName = Parms.ReturnValue != 0 ? TEXT("StartIncrementalIndex") : TEXT("StartFullIndex");
+		}
+		else
+		{
+			// Fallback if CanDoIncrementalIndex not found (old MonolithIndex version)
+			FuncName = TEXT("StartFullIndex");
 		}
 	}
 
-	Result->SetStringField(TEXT("status"), TEXT("subsystem_unavailable"));
-	Result->SetStringField(TEXT("message"), TEXT("MonolithIndex module is loaded but the index subsystem could not be found."));
+	UFunction* Func = IndexSubsystemClass->FindFunctionByName(*FuncName);
+	if (Func)
+	{
+		IndexSubsystem->ProcessEvent(Func, nullptr);
+		Result->SetStringField(TEXT("status"), TEXT("reindex_started"));
+		Result->SetStringField(TEXT("message"),
+			FString::Printf(TEXT("%s triggered successfully."),
+				FuncName == TEXT("StartFullIndex") ? TEXT("Full re-index") : TEXT("Incremental index")));
+	}
+	else
+	{
+		Result->SetStringField(TEXT("status"), TEXT("function_not_found"));
+		Result->SetStringField(TEXT("message"),
+			FString::Printf(TEXT("Function %s not found."), *FuncName));
+	}
+
 	return FMonolithActionResult::Success(Result);
 }

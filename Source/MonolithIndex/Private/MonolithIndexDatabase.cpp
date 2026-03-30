@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS assets (
     description TEXT DEFAULT '',
     file_size_bytes INTEGER DEFAULT 0,
     last_modified TEXT DEFAULT '',
+    saved_hash TEXT DEFAULT '',
     indexed_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_assets_class ON assets(asset_class);
@@ -265,6 +266,40 @@ bool FMonolithIndexDatabase::Open(const FString& InDbPath)
 		return false;
 	}
 
+	// Schema migration: v1 -> v2
+	{
+		FString SchemaVersion = ReadMeta(TEXT("schema_version"));
+		if (SchemaVersion.IsEmpty() || FCString::Atoi(*SchemaVersion) < 2)
+		{
+			// Check if saved_hash column already exists (fresh DBs have it from CreateTables)
+			bool bHasSavedHash = false;
+			FSQLitePreparedStatement PragmaStmt;
+			if (PragmaStmt.Create(*Database, TEXT("PRAGMA table_info(assets);"), ESQLitePreparedStatementFlags::Persistent))
+			{
+				while (PragmaStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+				{
+					FString ColName;
+					PragmaStmt.GetColumnValueByIndex(1, ColName);
+					if (ColName == TEXT("saved_hash"))
+					{
+						bHasSavedHash = true;
+						break;
+					}
+				}
+			}
+
+			if (!bHasSavedHash)
+			{
+				ExecuteSQL(TEXT("ALTER TABLE assets ADD COLUMN saved_hash TEXT DEFAULT '';"));
+				ExecuteSQL(TEXT("CREATE INDEX IF NOT EXISTS idx_assets_hash ON assets(saved_hash);"));
+			}
+			WriteMeta(TEXT("schema_version"), TEXT("2"));
+		}
+	}
+
+	// Ensure hash index exists (safe for both fresh and migrated DBs)
+	ExecuteSQL(TEXT("CREATE INDEX IF NOT EXISTS idx_assets_hash ON assets(saved_hash);"));
+
 	UE_LOG(LogMonolithIndex, Log, TEXT("Index database opened: %s"), *DbPath);
 	return true;
 }
@@ -342,7 +377,7 @@ int64 FMonolithIndexDatabase::InsertAsset(const FIndexedAsset& Asset)
 	if (!IsOpen()) return -1;
 
 	FSQLitePreparedStatement Stmt;
-	Stmt.Create(*Database, TEXT("INSERT OR REPLACE INTO assets (package_path, asset_name, asset_class, module_name, description, file_size_bytes, last_modified) VALUES (?, ?, ?, ?, ?, ?, ?);"));
+	Stmt.Create(*Database, TEXT("INSERT INTO assets (package_path, asset_name, asset_class, module_name, description, file_size_bytes, last_modified, saved_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?);"));
 	Stmt.SetBindingValueByIndex(1, Asset.PackagePath);
 	Stmt.SetBindingValueByIndex(2, Asset.AssetName);
 	Stmt.SetBindingValueByIndex(3, Asset.AssetClass);
@@ -350,6 +385,7 @@ int64 FMonolithIndexDatabase::InsertAsset(const FIndexedAsset& Asset)
 	Stmt.SetBindingValueByIndex(5, Asset.Description);
 	Stmt.SetBindingValueByIndex(6, Asset.FileSizeBytes);
 	Stmt.SetBindingValueByIndex(7, Asset.LastModified);
+	Stmt.SetBindingValueByIndex(8, Asset.SavedHash);
 
 	if (!Stmt.Execute()) return -1;
 	return Database->GetLastInsertRowId();
@@ -360,7 +396,7 @@ TOptional<FIndexedAsset> FMonolithIndexDatabase::GetAssetByPath(const FString& P
 	if (!IsOpen()) return {};
 
 	FSQLitePreparedStatement Stmt;
-	Stmt.Create(*Database, TEXT("SELECT id, package_path, asset_name, asset_class, module_name, description, file_size_bytes, last_modified, indexed_at FROM assets WHERE package_path = ?;"));
+	Stmt.Create(*Database, TEXT("SELECT id, package_path, asset_name, asset_class, module_name, description, file_size_bytes, last_modified, saved_hash, indexed_at FROM assets WHERE package_path = ?;"));
 	Stmt.SetBindingValueByIndex(1, PackagePath);
 
 	if (Stmt.Step() == ESQLitePreparedStatementStepResult::Row)
@@ -374,7 +410,8 @@ TOptional<FIndexedAsset> FMonolithIndexDatabase::GetAssetByPath(const FString& P
 		Stmt.GetColumnValueByIndex(5, Asset.Description);
 		Stmt.GetColumnValueByIndex(6, Asset.FileSizeBytes);
 		Stmt.GetColumnValueByIndex(7, Asset.LastModified);
-		Stmt.GetColumnValueByIndex(8, Asset.IndexedAt);
+		Stmt.GetColumnValueByIndex(8, Asset.SavedHash);
+		Stmt.GetColumnValueByIndex(9, Asset.IndexedAt);
 		return Asset;
 	}
 	return {};
@@ -783,6 +820,196 @@ bool FMonolithIndexDatabase::WriteMeta(const FString& Key, const FString& Value)
 	return Stmt.Execute();
 }
 
+FString FMonolithIndexDatabase::ReadMeta(const FString& Key) const
+{
+	if (!Database || !Database->IsValid()) return FString();
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("SELECT value FROM meta WHERE key = ?;"));
+	Stmt.SetBindingValueByIndex(1, Key);
+
+	if (Stmt.Step() == ESQLitePreparedStatementStepResult::Row)
+	{
+		FString Value;
+		Stmt.GetColumnValueByIndex(0, Value);
+		return Value;
+	}
+	return FString();
+}
+
+// ============================================================
+// Incremental indexing helpers
+// ============================================================
+
+TArray<FString> FMonolithIndexDatabase::GetAllIndexedPaths()
+{
+	TArray<FString> Result;
+	if (!IsOpen()) return Result;
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("SELECT package_path FROM assets;"));
+
+	while (Stmt.Step() == ESQLitePreparedStatementStepResult::Row)
+	{
+		FString Path;
+		Stmt.GetColumnValueByIndex(0, Path);
+		Result.Add(MoveTemp(Path));
+	}
+	return Result;
+}
+
+FString FMonolithIndexDatabase::GetSavedHash(const FString& PackagePath)
+{
+	if (!IsOpen()) return FString();
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("SELECT saved_hash FROM assets WHERE package_path = ?;"));
+	Stmt.SetBindingValueByIndex(1, PackagePath);
+
+	if (Stmt.Step() == ESQLitePreparedStatementStepResult::Row)
+	{
+		FString Hash;
+		Stmt.GetColumnValueByIndex(0, Hash);
+		return Hash;
+	}
+	return FString();
+}
+
+TMap<FString, FString> FMonolithIndexDatabase::GetAllPathsAndHashes()
+{
+	TMap<FString, FString> Result;
+	if (!IsOpen()) return Result;
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("SELECT package_path, saved_hash FROM assets;"));
+
+	while (Stmt.Step() == ESQLitePreparedStatementStepResult::Row)
+	{
+		FString Path, Hash;
+		Stmt.GetColumnValueByIndex(0, Path);
+		Stmt.GetColumnValueByIndex(1, Hash);
+		Result.Add(MoveTemp(Path), MoveTemp(Hash));
+	}
+	return Result;
+}
+
+bool FMonolithIndexDatabase::DeleteAssetByPath(const FString& PackagePath)
+{
+	if (!IsOpen()) return false;
+
+	int64 AssetId = GetAssetId(PackagePath);
+	if (AssetId < 0) return false;
+
+	return DeleteAssetAndRelated(AssetId);
+}
+
+bool FMonolithIndexDatabase::UpdateAssetPath(const FString& OldPath, const FString& NewPath, const FString& NewAssetName)
+{
+	if (!IsOpen()) return false;
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("UPDATE assets SET package_path = ?, asset_name = COALESCE(NULLIF(?, ''), asset_name) WHERE package_path = ?;"));
+	Stmt.SetBindingValueByIndex(1, NewPath);
+	Stmt.SetBindingValueByIndex(2, NewAssetName);
+	Stmt.SetBindingValueByIndex(3, OldPath);
+
+	if (!Stmt.Execute()) return false;
+
+	// Check if a row was actually updated
+	// GetLastInsertRowId isn't useful for UPDATE; use changes count via a follow-up query
+	FSQLitePreparedStatement ChangesStmt;
+	ChangesStmt.Create(*Database, TEXT("SELECT changes();"));
+	if (ChangesStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+	{
+		int64 Changes = 0;
+		ChangesStmt.GetColumnValueByIndex(0, Changes);
+		return Changes > 0;
+	}
+	return false;
+}
+
+bool FMonolithIndexDatabase::UpdateAssetMetadata(const FIndexedAsset& Asset)
+{
+	if (!IsOpen()) return false;
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("UPDATE assets SET asset_name = ?, asset_class = ?, module_name = ?, description = ?, file_size_bytes = ?, last_modified = ?, saved_hash = ?, indexed_at = datetime('now') WHERE package_path = ?;"));
+	Stmt.SetBindingValueByIndex(1, Asset.AssetName);
+	Stmt.SetBindingValueByIndex(2, Asset.AssetClass);
+	Stmt.SetBindingValueByIndex(3, Asset.ModuleName);
+	Stmt.SetBindingValueByIndex(4, Asset.Description);
+	Stmt.SetBindingValueByIndex(5, Asset.FileSizeBytes);
+	Stmt.SetBindingValueByIndex(6, Asset.LastModified);
+	Stmt.SetBindingValueByIndex(7, Asset.SavedHash);
+	Stmt.SetBindingValueByIndex(8, Asset.PackagePath);
+
+	if (!Stmt.Execute()) return false;
+
+	FSQLitePreparedStatement ChangesStmt;
+	ChangesStmt.Create(*Database, TEXT("SELECT changes();"));
+	if (ChangesStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+	{
+		int64 Changes = 0;
+		ChangesStmt.GetColumnValueByIndex(0, Changes);
+		return Changes > 0;
+	}
+	return false;
+}
+
+// Deletes per-asset child data that deep indexing repopulates (nodes, variables, parameters, datatable_rows).
+// Does NOT delete: dependencies (DependencyIndexer sentinel), tag_references (GameplayTagIndexer sentinel),
+// actors (LevelIndexer sentinel). Those are scoped separately.
+bool FMonolithIndexDatabase::DeleteChildDataForAsset(int64 AssetId)
+{
+	if (!IsOpen()) return false;
+
+	bool bSuccess = true;
+
+	FSQLitePreparedStatement Stmt1;
+	Stmt1.Create(*Database, TEXT("DELETE FROM nodes WHERE asset_id = ?;"));
+	Stmt1.SetBindingValueByIndex(1, AssetId);
+	bSuccess &= Stmt1.Execute();
+
+	FSQLitePreparedStatement Stmt2;
+	Stmt2.Create(*Database, TEXT("DELETE FROM variables WHERE asset_id = ?;"));
+	Stmt2.SetBindingValueByIndex(1, AssetId);
+	bSuccess &= Stmt2.Execute();
+
+	FSQLitePreparedStatement Stmt3;
+	Stmt3.Create(*Database, TEXT("DELETE FROM parameters WHERE asset_id = ?;"));
+	Stmt3.SetBindingValueByIndex(1, AssetId);
+	bSuccess &= Stmt3.Execute();
+
+	FSQLitePreparedStatement Stmt4;
+	Stmt4.Create(*Database, TEXT("DELETE FROM datatable_rows WHERE asset_id = ?;"));
+	Stmt4.SetBindingValueByIndex(1, AssetId);
+	bSuccess &= Stmt4.Execute();
+
+	return bSuccess;
+}
+
+bool FMonolithIndexDatabase::UpdateSavedHash(const FString& PackagePath, const FString& HashHex)
+{
+	if (!IsOpen()) return false;
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("UPDATE assets SET saved_hash = ? WHERE package_path = ?;"));
+	Stmt.SetBindingValueByIndex(1, HashHex);
+	Stmt.SetBindingValueByIndex(2, PackagePath);
+
+	if (!Stmt.Execute()) return false;
+
+	FSQLitePreparedStatement ChangesStmt;
+	ChangesStmt.Create(*Database, TEXT("SELECT changes();"));
+	if (ChangesStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+	{
+		int64 Changes = 0;
+		ChangesStmt.GetColumnValueByIndex(0, Changes);
+		return Changes > 0;
+	}
+	return false;
+}
+
 // ============================================================
 // FTS5 Full-text search
 // ============================================================
@@ -998,7 +1225,7 @@ TArray<FIndexedAsset> FMonolithIndexDatabase::FindByType(const FString& AssetCla
 	if (!IsOpen()) return Result;
 
 	FSQLitePreparedStatement Stmt;
-	Stmt.Create(*Database, TEXT("SELECT id, package_path, asset_name, asset_class, module_name, description, file_size_bytes, last_modified, indexed_at FROM assets WHERE asset_class = ? LIMIT ? OFFSET ?;"));
+	Stmt.Create(*Database, TEXT("SELECT id, package_path, asset_name, asset_class, module_name, description, file_size_bytes, last_modified, saved_hash, indexed_at FROM assets WHERE asset_class = ? LIMIT ? OFFSET ?;"));
 	Stmt.SetBindingValueByIndex(1, AssetClass);
 	Stmt.SetBindingValueByIndex(2, static_cast<int64>(Limit));
 	Stmt.SetBindingValueByIndex(3, static_cast<int64>(Offset));
@@ -1014,7 +1241,8 @@ TArray<FIndexedAsset> FMonolithIndexDatabase::FindByType(const FString& AssetCla
 		Stmt.GetColumnValueByIndex(5, Asset.Description);
 		Stmt.GetColumnValueByIndex(6, Asset.FileSizeBytes);
 		Stmt.GetColumnValueByIndex(7, Asset.LastModified);
-		Stmt.GetColumnValueByIndex(8, Asset.IndexedAt);
+		Stmt.GetColumnValueByIndex(8, Asset.SavedHash);
+		Stmt.GetColumnValueByIndex(9, Asset.IndexedAt);
 		Result.Add(MoveTemp(Asset));
 	}
 	return Result;

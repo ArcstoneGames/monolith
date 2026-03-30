@@ -17,6 +17,7 @@ public:
 
 	virtual bool IndexAsset(const FAssetData& AssetData, UObject* LoadedAsset, FMonolithIndexDatabase& DB, int64 AssetId) override;
 	virtual FString GetName() const override { return TEXT("AnimationIndexer"); }
+	virtual bool IsSentinel() const override { return true; }
 
 	// Public wrappers for SEH-safe dispatch (called from free function via void* context)
 	void IndexAnimSequencePublic(class UAnimSequence* A, FMonolithIndexDatabase& DB, int64 Id) { IndexAnimSequence(A, DB, Id); }

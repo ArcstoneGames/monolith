@@ -1,4 +1,5 @@
 #include "MonolithNiagaraActions.h"
+#include "MonolithNiagaraLayoutActions.h"
 #include "MonolithAssetUtils.h"
 #include "MonolithJsonUtils.h"
 #include "MonolithParamSchema.h"
@@ -4980,6 +4981,8 @@ FMonolithActionResult FMonolithNiagaraActions::HandleBatchExecute(const TSharedP
 		else if (OpName == TEXT("get_module_graph")) SubResult = HandleGetModuleGraph(SubParams);
 		else if (OpName == TEXT("get_di_functions")) SubResult = HandleGetDIFunctions(SubParams);
 		else if (OpName == TEXT("get_compiled_gpu_hlsl")) SubResult = HandleGetCompiledGPUHLSL(SubParams);
+		// Layout (Phase 3b)
+		else if (OpName == TEXT("auto_layout")) SubResult = FMonolithNiagaraLayoutActions::HandleAutoLayout(SubParams);
 
 		RO->SetBoolField(TEXT("success"), SubResult.bSuccess);
 		if (!SubResult.bSuccess) RO->SetStringField(TEXT("error"), SubResult.ErrorMessage);

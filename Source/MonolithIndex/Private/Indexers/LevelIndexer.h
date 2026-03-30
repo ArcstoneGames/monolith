@@ -18,6 +18,7 @@ public:
 
 	virtual bool IndexAsset(const FAssetData& AssetData, UObject* LoadedAsset, FMonolithIndexDatabase& DB, int64 AssetId) override;
 	virtual FString GetName() const override { return TEXT("LevelIndexer"); }
+	virtual bool IsSentinel() const override { return true; }
 
 	/** Set of valid path prefixes for indexing */
 	TArray<FName> IndexedPaths;

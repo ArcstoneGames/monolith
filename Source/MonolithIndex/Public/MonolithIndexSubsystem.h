@@ -10,6 +10,21 @@
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnIndexingProgress, int32 /*Current*/, int32 /*Total*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnIndexingComplete, bool /*bSuccess*/);
 
+enum class EIndexChangeType : uint8
+{
+    Added,
+    Removed,
+    Renamed,
+    Updated
+};
+
+struct FPendingIndexChange
+{
+    EIndexChangeType Type;
+    FAssetData AssetData;
+    FString OldObjectPath; // Only for Renamed
+};
+
 /** Info about an indexed plugin */
 struct FIndexedPluginInfo
 {
@@ -36,6 +51,14 @@ public:
 	/** Trigger a full re-index (wipes DB, re-scans everything) */
 	UFUNCTION()
 	void StartFullIndex();
+
+	/** Trigger an incremental catch-up index (delta engine) */
+	UFUNCTION()
+	void StartIncrementalIndex();
+
+	/** Can we do an incremental index? (requires schema v2+ and a prior full index) */
+	UFUNCTION()
+	bool CanDoIncrementalIndex() const;
 
 	/** Is indexing currently in progress? */
 	bool IsIndexing() const { return bIsIndexing; }
@@ -91,6 +114,35 @@ private:
 
 	/** Gather mount paths for enabled marketplace plugins */
 	TArray<FIndexedPluginInfo> GatherMarketplacePluginPaths() const;
+
+	/** Deep-index a set of asset paths (stub — implemented in Task 5) */
+	void ProcessDeepIndexQueue(const TSet<FString>& PathsToIndex);
+
+	/** Run scoped sentinel indexers for changed/removed paths (stub — implemented in Task 6) */
+	void RunScopedSentinels(const TSet<FString>& ChangedPaths, const TSet<FString>& RemovedPaths);
+
+	/** Register live AR callbacks for real-time tracking (stub — implemented in Task 4) */
+	void RegisterLiveCallbacks();
+
+	/** Unregister live AR callbacks (stub — implemented in Task 4) */
+	void UnregisterLiveCallbacks();
+
+	// --- Live AR callback handlers ---
+	void OnAssetsAddedCallback(TConstArrayView<FAssetData> Assets);
+	void OnAssetsRemovedCallback(TConstArrayView<FAssetData> Assets);
+	void OnAssetRenamedCallback(const FAssetData& AssetData, const FString& OldObjectPath);
+	void OnAssetsUpdatedOnDiskCallback(TConstArrayView<FAssetData> Assets);
+	void ProcessPendingChanges();
+
+	// --- Live incremental tracking ---
+	TArray<FPendingIndexChange> PendingChanges;
+	FTimerHandle LiveIndexTimerHandle;
+
+	// AR delegate handles
+	FDelegateHandle OnAssetsAddedHandle;
+	FDelegateHandle OnAssetsRemovedHandle;
+	FDelegateHandle OnAssetRenamedHandle;
+	FDelegateHandle OnAssetsUpdatedOnDiskHandle;
 
 	/** Cached list of plugin paths being indexed (set during StartFullIndex) */
 	TArray<FIndexedPluginInfo> IndexedPlugins;

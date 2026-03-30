@@ -1,6 +1,182 @@
 # Monolith — TODO
 
-Last updated: 2026-03-25
+Last updated: 2026-03-28
+
+---
+
+### MonolithMesh Module — 241 Actions, ALL 22 PHASES COMPLETE + Proc Geo Overhaul + Procedural Town Generator + Fix Plan v2 (2026-03-28)
+
+- [x] Phase 0-12 — Original 111 actions compiled and tested.
+- [x] Phase 13-22 — Expansion 76 actions compiled (lights, volumes, horror intel, tech art, sublevels, context props, proc geo, presets, encounters, polish).
+- [x] Proc Geo Overhaul — 5 new actions (list_cached_meshes, clear_cache, validate_cache, get_cache_stats, create_blueprint_prefab). Sweep-based thin walls, auto-collision, collision-aware prop placement, proc mesh caching, blueprint prefabs, door trim frames, floor-aware spawning, human-scale defaults. 187 → 192 actions.
+- [x] Procedural Town Generator — 45 new actions across 11 sub-projects (SP1-SP10). Grid-based buildings, floor plans, facades, roofs, city blocks, spatial registry, auto-volumes, terrain adaptation, architectural features, debug views, room furnishing. 195 → 240 mesh actions, 638 → 683 total.
+- [x] Fix Plan v2 — 20 fixes across 3 phases (geometry, floor plan, integration). Stair angles, switchbacks, corridor/door widths, per-floor assignment, aspect ratios, footprint validation, exterior entrance guarantee, building_context/wall_openings on arch features, validate_building action. 240 → 241 mesh actions, 683 → 684 total.
+
+#### Procedural Town Generator — Fix Plan v2 Follow-Up (2026-03-28)
+
+- [ ] **Door mesh placement** — Place closed door meshes in doorways for horror pacing (doors block sightlines, create tension before opening)
+- [ ] **Interior lighting policy** — Define per-room-type lighting defaults for generated buildings (e.g., flickering fluorescent in corridors, warm lamp in bedrooms, no light in storage). Wire into `furnish_room` or separate `light_building` action
+- [ ] **Per-building retry in orchestrator** — When `generate_floor_plan` fails for one building in a `create_city_block` call, retry that building with adjusted params instead of failing the entire block
+- [ ] **Multiple entrances for large buildings** — Buildings above a size threshold should have 2+ exterior entrances (front + back door, or front + fire exit). Currently only one entrance guaranteed
+- [ ] **Batch validation action** — `validate_block` to run `validate_building` across all buildings in a block and return aggregate results
+
+#### Procedural Town Generator — Follow-Up (2026-03-28)
+
+- [ ] **Integration test: full city block** — Generate a complete city block with `create_city_block({buildings: 4, genre: "horror", seed: 42})` and verify all SPs work together end-to-end (SP1 grid → SP2 floor plan → SP3 facade → SP4 roof → SP5 orchestrator → SP6 registry → SP7 volumes → SP10 furnishing)
+- [ ] **Performance profiling on 4-8 building blocks** — Profile generation time, mesh actor count, volume count, navmesh build time against the performance budget (target: <30s for 4 buildings, <50 mesh actors, <100 volumes)
+- [ ] **Additional building archetypes** — mansion, warehouse, church, school. Add to `Saved/Monolith/BuildingArchetypes/`
+- [ ] **Additional facade styles** — Art Deco, Industrial, Modern. Add to `Saved/Monolith/FacadeStyles/`
+- [ ] **SP11: Street network generation** — Connecting multiple blocks into a coherent street grid. Road hierarchy (main street, side street, alley), intersections, traffic flow patterns. Would enable full neighborhood-scale generation
+
+#### MonolithMesh — Release / Wiki TODO
+
+- [ ] **Wiki major update** — All 192 mesh actions need wiki documentation. Current wiki covers original modules only.
+- [ ] **Genre Preset Authoring Guide** — Dedicated wiki page (or `PRESET_AUTHORING.md`) explaining how LLMs/users create presets for OTHER genres (fantasy, sci-fi, detective, cozy). Include:
+  - Room template JSON format with examples
+  - Storytelling pattern format (element types, radial distribution)
+  - Acoustic profile format (surface absorption/transmission/loudness)
+  - Tension profile format (factor weights, threshold mappings)
+  - Prop kit format (items, relative positions, spawn_chance)
+  - Step-by-step: "How to create a Fantasy Dungeon preset pack"
+  - How to test presets via MCP before distributing
+  - How to export/import/share preset packs
+- [ ] **SPEC.md MonolithMesh section** — Full 241-action reference with param schemas (currently has Phase 1-4 section + proc geo overhaul + Procedural Town Generator SP1-SP10 + validate_building)
+- [ ] **MCP.md mesh_query docs** — Tool reference for mesh_query namespace
+- [ ] **README update** — Feature highlight for MonolithMesh in the plugin README
+
+#### MonolithMesh — Known Issues / Polish
+
+- [x] **Placement overlap warnings:** DONE — `create_primitive`, `_batch`, `import_layout`, `scatter_props` warn when overlapping existing actors
+- [ ] **BP_MonolithBlockoutVolume** — Construction Script for per-RoomType wireframe colors (cosmetic polish)
+- [ ] **Discover workflow hints** — Add workflow metadata to `monolith_discover("mesh")` response
+- [ ] **Tier-based discover filtering** — `monolith_discover("mesh", {"tier": "audio"})` to reduce token usage
+
+#### MonolithMesh — Context-Aware Prop Placement (NEW)
+
+- [ ] **Surface-aware scatter (`scatter_on_surface`)** — Place props ON specific surfaces, not just floors. Detect shelf tops, table tops, cabinet interiors, wall surfaces via downward/directional traces from the surface actor's bounds. "Place 5 books on this shelf" should work.
+- [ ] **Disturbance levels (`set_room_disturbance`)** — Apply a disturbance level to placed props in a volume:
+  - `"orderly"` — aligned, evenly spaced, upright
+  - `"slightly_messy"` — small random offsets, some tilted 5-15 degrees
+  - `"ransacked"` — large random offsets, many tipped over (60-90 degree rotations), some on floor
+  - `"abandoned"` — like ransacked + props pushed to edges (simulating years of settling)
+  Implementation: iterate placed actors in volume, apply progressive random transforms based on disturbance level. Single undo transaction.
+- [ ] **Physics prop sleep state (`configure_physics_props`)** — Set SimulatePhysics=true + bStartAwake=false on designated actors. They sit in their placed position until bumped by player or woken by gameplay event. Essential for interactive horror (knock over a stack of cans, send bottles rolling).
+- [ ] **Gravity-settle placement (`settle_props`)** — For each prop: enable physics, simulate for N frames (or until velocity < threshold), capture settled transform, disable physics. Gives organic "someone dropped this here" look. UE5 has `UPhysicsSimulationComponent` or we can use `FPhysicsInterface::Simulate()`.
+- [ ] **Themed prop kits** — JSON definitions like room templates but for prop sets: "office_desk_clutter" (papers, pens, mug, monitor, keyboard), "hospital_tray" (syringe, bandages, clipboard). Each kit defines items with relative positions to an anchor point. `place_prop_kit` action.
+- [ ] **Wall/ceiling scatter** — Extend `scatter_props` with `surface` param: "floor" (current), "wall" (horizontal trace outward, align to wall normal), "ceiling" (upward trace), "shelf" (trace to named actor's top surface). Paintings, clocks, chains, cables.
+
+#### MonolithMesh — Procedural Geometry (Overhaul COMPLETE 2026-03-28)
+
+See `Docs/plans/2026-03-28-procedural-geometry-wishlist.md` for original wishlist.
+- [x] `create_parametric_mesh` — chair, table, shelf, door_frame, stairs, etc. (~15 types). Human-scale defaults (stairs 90/28/18cm, doors 90cm, floor 3cm)
+- [x] `create_structure` — room, corridor, L-corridor, T-junction, stairwell, vent. Sweep-based thin walls, door/window/vent trim frames
+- [x] `create_building_shell` — multi-story from 2D footprint polygon
+- [x] `create_maze` — recursive backtracker, Prim's, Eller's, binary tree
+- [x] `create_pipe_network` — sweep circle along path with elbow joints
+- [x] `create_fragments` — Voronoi fracture for destruction
+- [x] `create_terrain_patch` — Perlin/simplex noise heightmap
+- [x] `create_horror_prop` — barricade, debris pile, cage, coffin, broken wall
+- [x] Proc mesh caching system — hash-based manifest, `use_cache`/`auto_save` on all proc gen actions, 4 cache management actions (list_cached_meshes, clear_cache, validate_cache, get_cache_stats)
+- [x] `create_blueprint_prefab` — dialog-free Blueprint creation from placed actors (replaces create_prefab for MCP workflows)
+- [x] Auto-collision on all saved meshes (collision param: auto/box/convex/complex_as_simple/none)
+- [x] Collision-aware prop placement (collision_mode: none/warn/reject/adjust on scatter actions)
+- [x] Floor-aware spawning (snap_to_floor param, SweepSingle box traces)
+
+#### MonolithMesh — Unified Wishlist from 3 Perspectives (Level Design + Horror + Tech Art)
+
+**P0 — Would use EVERY session (~15 actions, ~80 hours)**
+
+Level Design:
+- [ ] `place_light` / `set_light_properties` — spawn + modify lights directly. Lighting IS horror. `suggest_light_placement` advises but can't act
+- [ ] `find_replace_mesh` — swap every instance of mesh X with mesh Y across level. Blockout→art pass essential
+- [ ] `spawn_volume` — trigger/kill/pain/blocking/nav_modifier/audio/post_process volumes. Can't build a functional level without these
+- [ ] `get_actor_properties` / `copy_actor_properties` — read arbitrary component properties, copy settings between actors
+
+Horror Design:
+- [ ] `predict_player_paths` — THE multiplier. Auto-generate weighted paths (shortest/safest/curious/cautious) so every horror action works without manual path input
+- [ ] `evaluate_spawn_point` — composite score: visibility delay, audio cover, lighting, escape proximity, path commitment
+- [ ] `suggest_scare_positions` — optimal locations for scripted events along a path. Scores anticipation, visibility, timing, player agency
+- [ ] `evaluate_encounter_pacing` — check spacing/intensity across multiple encounters. Flag back-to-back with no breather
+
+Tech Art:
+- [ ] `set_actor_material` / `swap_material_in_level` — assign materials to placed actors. Bridges mesh + material systems
+- [ ] `analyze_texel_density` / `compare_texel_density_in_region` — texels/cm consistency. #1 visual quality issue
+- [ ] `find_instancing_candidates` / `convert_to_hism` — "SM_Pipe appears 47 times, convert to HISM, save 46 draw calls"
+- [ ] `auto_generate_lods` + `set_lod_screen_sizes` — one-shot LOD pipeline for meshes
+
+**P1 — High value, weekly use (~20 actions, ~100 hours)**
+
+Level Design:
+- [ ] `build_navmesh` — horror analysis depends on navmesh but we can't trigger a rebuild
+- [ ] `manage_sublevel` — create/load/unload/move_actors_to. Horror streaming needs this
+- [ ] `place_blueprint_actor` — spawn BP actors with exposed properties ("locked door needing ward key")
+- [ ] `select_actors` — control editor selection, focus camera. AI↔human handoff
+- [ ] `snap_to_surface` — drop actors onto geometry with normal alignment
+
+Horror Design:
+- [ ] `design_encounter` — compose spawn + patrol + exits + sightline breaks + audio zones in one call
+- [ ] `suggest_patrol_route` — generate navmesh routes per AI archetype (stalker/patrol/ambusher)
+- [ ] `analyze_ai_territory` — score region as AI territory: hiding spots, patrol options, ambush positions
+- [ ] `evaluate_safe_room` — score a room: defensible entrance? good lighting? sound isolation?
+- [ ] `analyze_level_pacing_structure` — macro tension→release→tension rhythm across entire level
+
+Tech Art:
+- [ ] `import_mesh` — FBX/glTF import with settings. Every mesh enters the project here
+- [ ] `analyze_material_cost_in_region` — cross-module: mesh placement × material instruction counts
+- [ ] `fix_mesh_quality` — auto-fix: remove degenerate tris, weld verts, fix normals (extends analyze_mesh_quality)
+- [ ] `set_mesh_collision` / `auto_collision` — write collision back to assets
+- [ ] `analyze_lightmap_density` — lightmap texel density + resolution management
+
+**P2 — Workflow accelerators (~15 actions, ~60 hours)**
+
+- [ ] `randomize_transforms` — variation pass on rotation/scale/offset for organic feel
+- [ ] `place_spline` — mesh/cable splines for pipes, cables, railings
+- [ ] `get_level_actors` — filtered enumeration (class, tag, sublevel, mesh wildcard)
+- [ ] `measure_distance` — quick measurement between actors or points
+- [x] `create_blueprint_prefab` — replaces `create_prefab` for MCP workflows (dialog-free via HarvestBlueprintFromActors). DONE 2026-03-28
+- [ ] `generate_scare_sequence` — procedural scare events with variety + escalation
+- [ ] `analyze_framing` — camera composition scoring (leading lines, focal points)
+- [ ] `evaluate_monster_reveal` — score reveal quality: silhouette, backlight, distance, partial visibility
+- [ ] `validate_horror_intensity` — cap tension for hospice mode, remove jump scares
+- [ ] `generate_hospice_report` — full level audit: intensity caps, rest spacing, cognitive load, one-handed play
+
+**P3 — Quality of life + future (~10 actions)**
+
+- [ ] `validate_naming_conventions` / `batch_rename_assets`
+- [ ] `generate_proxy_mesh` / `setup_hlod`
+- [ ] `analyze_texture_budget` — texture streaming pool analysis
+- [ ] GeometryScript expansions: `mesh_extrude`, `mesh_subdivide`, `mesh_combine`, `mesh_separate_by_material`, `compute_ao`
+- [ ] Integration hooks: AI Director data feed, GAS tension effects, telemetry feedback loop
+
+#### MonolithMesh — Genre Preset System (NEW — Extensibility)
+
+The mesh module ships horror defaults (storytelling patterns, room templates, acoustic profiles, tension scoring). But the SYSTEMS are genre-agnostic. Other LLMs or users should be able to create their own presets for fantasy, sci-fi, detective noir, cozy sim, etc.
+
+**Authoring actions:**
+- [ ] `list_storytelling_patterns` — List all available patterns (built-in + user-created)
+- [ ] `create_storytelling_pattern` — Author a new pattern JSON: element types, radial distribution, size ranges, spawn chance. Save to `Saved/Monolith/Patterns/`. Example: fantasy "tavern_brawl" (overturned chairs, spilled mead puddles, broken mug fragments)
+- [ ] `list_acoustic_profiles` — List available surface acoustic profiles
+- [ ] `create_acoustic_profile` — Author a new acoustic property set for a genre. Fantasy: stone_dungeon, wooden_tavern, crystal_cave. Sci-fi: metal_hull, glass_viewport, organic_hive
+- [ ] `create_tension_profile` — Define what tension factors mean for a genre. Horror: short sightlines = dread. Fantasy: open vistas = wonder, narrow caves = claustrophobia. Different scoring weights per genre
+- [ ] `list_prop_kits` — List available themed prop kits
+- [ ] `create_prop_kit` — Author a themed prop kit JSON: items with relative positions, size ranges, spawn chances. "tavern_table_setting" (plates, mugs, candles, food), "sci-fi_console" (screens, buttons, cables)
+
+**Preset packs (JSON bundles in Saved/Monolith/Presets/):**
+- [ ] `export_genre_preset` — Bundle all templates + patterns + acoustic profiles + tension config + prop kits into a single distributable JSON/ZIP
+- [ ] `import_genre_preset` — Load a genre preset pack, merging with existing presets
+- [ ] Ship starter packs: `horror_default` (current), document format for community presets
+
+**Documentation for preset authors:**
+- [ ] Write a `PRESET_AUTHORING.md` guide explaining:
+  - Room template JSON format (furniture entries, position_pct, size_range)
+  - Storytelling pattern JSON format (elements, radial distribution, intensity scaling)
+  - Acoustic profile JSON format (surface types, absorption, transmission, loudness)
+  - Tension profile JSON format (factor weights, threshold mappings)
+  - Prop kit JSON format (items, relative positions, spawn_chance)
+  - How to test presets via MCP before distributing
+  - Examples for fantasy, sci-fi, detective, cozy genres
+
+**Why this matters:** Monolith becomes not just a tool but a PLATFORM. Horror is Leviathan's genre, but the open-source plugin serves everyone. LLMs working on fantasy games load a fantasy preset pack and immediately have genre-appropriate spatial awareness, environmental storytelling, and room templates. Community-driven expansion without touching C++.
 
 ---
 
@@ -105,6 +281,12 @@ Last updated: 2026-03-25
 
 - [ ] **Mac/Linux support** — DEFERRED (Windows-only project). All build-related actions are `#if PLATFORM_WINDOWS` guarded. Live Coding is Windows-only. Update system is Windows-only.
 
+### MonolithIndex — Incremental Indexer Remaining Work
+
+- [ ] **Implement IndexScoped() for individual sentinels** — DependencyIndexer, AnimationIndexer, and other sentinels currently fall back to per-asset `IndexAsset()`. Implement proper `IndexScoped()` for batch efficiency.
+- [ ] **Batched frame-budget deep indexing for >10 assets** — When more than 10 assets need deep indexing, spread work across frames with a per-frame time budget to avoid hitches.
+- [ ] **External file deletion detection (FDirectoryWatcherModule)** — AR callbacks don't fire for files deleted outside the editor. Hook `FDirectoryWatcherModule` to detect and reconcile external deletions.
+
 ### Niagara Module — Improvements
 
 - [ ] **`FindEmitterHandleIndex` should accept numeric index** — `list_emitters` returns `"index"` for each emitter. Allow passing `"0"`, `"1"` etc. as emitter identifier for convenient fallback.
@@ -135,7 +317,7 @@ Priority features identified for future waves:
 ## Completed
 
 - [x] Core infrastructure (HTTP server, registry, settings, JSON utils, asset utils)
-- [x] All 10 domain modules compiling clean on UE 5.7
+- [x] All 11 domain modules compiling clean on UE 5.7
 - [x] SQLite FTS5 project indexer with 14 indexers (Blueprint, Material, Generic, Dependency, Animation, Niagara, DataTable, Level, GameplayTag, Config, Cpp, UserDefinedEnum, UserDefinedStruct, InputAction)
 - [x] Python tree-sitter engine source indexer
 - [x] Auto-updater via GitHub Releases
@@ -270,3 +452,9 @@ Priority features identified for future waves:
 - [x] **Blueprint module upgrade: 6 → 46 actions** — IMPLEMENTED (2026-03-13). Added 40 new write actions across 5 categories: Variable CRUD (7), Component CRUD (6), Graph Management (9), Node & Pin Operations (6), Compile & Create (5). Also expanded Read Actions to 13 (added get_components, get_component_details, get_functions, get_event_dispatchers, get_parent_class, get_interfaces, get_construction_script). Total plugin actions: 177 → 217.
 - [x] **Offline CLI (`monolith_offline.py`)** — IMPLEMENTED (2026-03-13). Pure Python (stdlib only) CLI that queries `EngineSource.db` and `ProjectIndex.db` directly without the editor running. 14 actions across 2 namespaces: `source` (9 actions, mirrors `source_query`) and `project` (5 actions, mirrors `project_query`). Read-only, zero footprint, zero dependencies. Fallback for when MCP/editor is unavailable. Location: `Saved/monolith_offline.py`.
 - [x] **NEW: MonolithUI module** — IMPLEMENTED (2026-03-22). New module at `Source/MonolithUI/`. 42 actions in `ui` namespace (`ui_query` tool). 8 action classes: FMonolithUIActions (7), FMonolithUISlotActions (3), FMonolithUITemplateActions (8), FMonolithUIStylingActions (6), FMonolithUIAnimationActions (5), FMonolithUIBindingActions (4), FMonolithUISettingsActions (5), FMonolithUIAccessibilityActions (4).
+- [x] **NEW: MonolithMesh module** — IMPLEMENTED (2026-03-27). New module at `Source/MonolithMesh/`. 46 actions in `mesh` namespace (`mesh_query` tool). 4 action classes: FMonolithMeshInspectionActions (12), FMonolithMeshSceneActions (8), FMonolithMeshSpatialActions (11), FMonolithMeshBlockoutActions (15). MeshCatalogIndexer added to MonolithIndex.
+- [x] **Incremental indexer (3-layer architecture)** — IMPLEMENTED (2026-03-28). Startup hash-based delta engine, live AR callbacks on 2s timer, forced full reindex fallback. <1s startup with no changes, ~14K assets hashed in ~20ms.
+- [x] **Schema v2 migration** — IMPLEMENTED (2026-03-28). Added `saved_hash` column (Blake3 FIoHash hex) to assets table, `schema_version` meta key. Auto-migrates via `PRAGMA table_info` check + `ALTER TABLE`.
+- [x] **Live AR callbacks** — IMPLEMENTED (2026-03-28). Batched Asset Registry delegates (OnAssetsAdded, OnAssetsRemoved, OnAssetRenamed, OnAssetsUpdatedOnDisk) drained on 2s timer with dedup and transactional apply.
+- [x] **Plugin content scope fix (bInstalled filter)** — FIXED (2026-03-28). Replaced `bInstalled` filter with explicit path enumeration. DrawCallReducer and NiagaraDestructionDriver now indexed. MeshCatalogIndexer paths corrected.
+- [x] **MCP reindex action (incremental default + force param)** — IMPLEMENTED (2026-03-28). `monolith_reindex()` defaults to incremental mode; `force=true` triggers full wipe-and-rebuild.

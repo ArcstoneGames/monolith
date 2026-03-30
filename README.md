@@ -68,7 +68,7 @@ Most MCP integrations register every action as a separate tool, which floods the
 > **Platform:** Windows only. Mac and Linux support is coming soon.
 
 - **Claude Code, Cursor, or another MCP client** — Any tool that supports the Model Context Protocol
-- **(Optional) Python 3.10+** — Only needed if you want to index your own project's C++ source. Engine source indexing is built-in and needs no Python.
+- **(Optional) Python 3.8+** — Recommended for Claude Code users (enables the auto-reconnect proxy that survives editor restarts). Also needed to index your own project's C++ source. Engine source indexing is built-in and needs no Python.
 
 ### Step 1: Drop Monolith into your project
 
@@ -114,6 +114,28 @@ YourProject/
     Monolith/
 ```
 
+**For Claude Code (recommended: auto-reconnect proxy)**
+
+Monolith ships with a stdio-to-HTTP proxy that keeps your MCP session alive when the Unreal Editor restarts. No manual reconnection needed. Requires Python 3.8+ ([python.org](https://python.org)).
+
+```json
+{
+  "mcpServers": {
+    "monolith": {
+      "command": "Plugins/Monolith/Scripts/monolith_proxy.bat",
+      "args": []
+    }
+  }
+}
+```
+
+Or copy the template: `cp Plugins/Monolith/Templates/.mcp.json.proxy.example .mcp.json`
+
+> **No Python?** Use direct HTTP instead — you'll just need to restart Claude Code each time the editor restarts:
+> ```json
+> {"mcpServers": {"monolith": {"type": "http", "url": "http://localhost:9316/mcp"}}}
+> ```
+
 **For Cursor / Cline:**
 
 ```json
@@ -127,26 +149,7 @@ YourProject/
 }
 ```
 
-**For Claude Code:**
-
-```json
-{
-  "mcpServers": {
-    "monolith": {
-      "type": "http",
-      "url": "http://localhost:9316/mcp"
-    }
-  }
-}
-```
-
-> **Heads up:** Claude Code uses `"http"`, Cursor and Cline use `"streamableHttp"`. Wrong type = connection failure. It's a common gotcha.
-
-Or just copy the template that ships with Monolith:
-
-```bash
-cp Plugins/Monolith/Templates/.mcp.json.example .mcp.json
-```
+> Cursor and Cline handle server restarts natively — the proxy isn't needed.
 
 ### Step 3: Open the editor
 
