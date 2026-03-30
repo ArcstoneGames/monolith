@@ -285,22 +285,37 @@ FMonolithActionResult FMonolithGASASCActions::HandleAddASCToActor(const TSharedP
 		// We proceed and add the component — the caller is responsible for passing the right BP.
 	}
 
+	// Pre-flight: check for broken SCS nodes (missing component classes from removed plugins)
+	for (USCS_Node* Node : BP->SimpleConstructionScript->GetAllNodes())
+	{
+		if (Node && !Node->ComponentClass)
+		{
+			return FMonolithActionResult::Error(
+				FString::Printf(TEXT("Blueprint has a broken SCS node '%s' with missing ComponentClass. "
+					"Fix the Blueprint first (remove the broken component in the editor)."),
+					*Node->GetVariableName().ToString()));
+		}
+	}
+
+	// Suppress synchronous skeleton regen during SCS modification.
+	// ASC's FFastArraySerializer containers (ActiveGameplayEffects, ActivatableAbilities)
+	// crash during serialization on a template with no valid owner actor.
+	const EBlueprintStatus SavedStatus = BP->Status;
+	BP->Status = BS_BeingCreated;
+
 	// Create the SCS node
 	USCS_Node* NewNode = BP->SimpleConstructionScript->CreateNode(ASCClass, FName(TEXT("AbilitySystemComponent")));
 	if (!NewNode)
 	{
+		BP->Status = SavedStatus;
 		return FMonolithActionResult::Error(TEXT("Failed to create ASC SCS node"));
 	}
 
 	// Add as root-level component
 	BP->SimpleConstructionScript->AddNode(NewNode);
 
-	// Set IsReplicated on the component template
-	if (UAbilitySystemComponent* ASCTemplate = Cast<UAbilitySystemComponent>(NewNode->ComponentTemplate))
-	{
-		ASCTemplate->SetIsReplicated(true);
-	}
-
+	// Restore status and mark modified (deferred compile, no synchronous skeleton regen)
+	BP->Status = SavedStatus;
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 
 	// Build result
