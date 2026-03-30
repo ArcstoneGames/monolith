@@ -59,6 +59,12 @@ private:
 		Any
 	};
 
+	enum class EPlacementType : uint8
+	{
+		Floor,       // Default — placed on floor
+		WallMount,   // Mounted on wall at mount_height
+	};
+
 	/** Parsed furniture item from preset JSON */
 	struct FFurnitureItem
 	{
@@ -75,6 +81,8 @@ private:
 		bool bStretchToWall = false;
 		int32 MaterialSlot = -1;
 		FString NearItem;      // For EPlacementZone::Near — name of item to be near
+		EPlacementType PlacementType = EPlacementType::Floor;
+		float MountHeight = 0.0f;  // For WallMount: center Z offset from floor (cm)
 	};
 
 	/** Room wall geometry computed from bounds */

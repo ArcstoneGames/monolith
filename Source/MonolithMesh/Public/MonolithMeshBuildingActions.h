@@ -64,7 +64,8 @@ private:
 	/** Generate wall geometry for all segments on one floor */
 	static void GenerateWallGeometry(UDynamicMesh* Mesh, const TArray<FWallSegment>& Segments,
 		float CellSize, float FloorHeight, float FloorZ, float ExteriorT, float InteriorT,
-		TArray<FExteriorFaceDef>& OutExteriorFaces, int32 FloorIndex, bool bOmitExteriorWalls = false);
+		TArray<FExteriorFaceDef>& OutExteriorFaces, int32 FloorIndex,
+		const TArray<FRoomDef>& Rooms, bool bOmitExteriorWalls = false);
 
 	/** Generate floor/ceiling slabs per room, skipping stairwell cells */
 	static void GenerateSlabs(UDynamicMesh* Mesh, const TArray<TArray<int32>>& Grid, int32 GridW, int32 GridH,

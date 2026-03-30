@@ -168,6 +168,15 @@ struct FStairwellDef
 	}
 };
 
+/** Room span within a merged exterior face — tracks which room is behind each segment */
+struct FRoomSpan
+{
+	float StartOffset;  // Offset from merged face WorldOrigin along width axis
+	float Width;        // Width of this span
+	FString RoomType;   // Room type for window density rules
+	int32 RoomId = -1;
+};
+
 /** Exterior face descriptor — consumed by SP3 (Facades) */
 struct FExteriorFaceDef
 {
@@ -177,6 +186,15 @@ struct FExteriorFaceDef
 	FVector Normal = FVector::ZeroVector;
 	float Width = 0.0f;
 	float Height = 0.0f;
+
+	/** Room type behind this wall segment (for window density rules) */
+	FString RoomType;
+
+	/** Room ID behind this wall segment */
+	int32 RoomId = -1;
+
+	/** Per-room spans for merged faces (populated after MergeExteriorFaces) */
+	TArray<FRoomSpan> RoomSpans;
 
 	TSharedPtr<FJsonObject> ToJson() const
 	{

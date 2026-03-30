@@ -194,7 +194,8 @@ public:
 	/** Select a template from the given category that fits the requested footprint.
 	 *  Returns template name (empty on failure). Weighted random from top candidates. */
 	static FString SelectTemplate(const FString& Category, float FootprintW, float FootprintH,
-		FRandomStream& Rng, FString& OutError);
+		FRandomStream& Rng, FString& OutError,
+		const TSet<FString>& ExcludeTemplates = TSet<FString>());
 
 	/** Scale a template grid to fit a different footprint size.
 	 *  Uses nearest-neighbor cell scaling. Recomputes door positions and room cells.

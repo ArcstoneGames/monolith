@@ -1,6 +1,6 @@
 # Monolith — Technical Specification
 
-**Version:** 0.9.0 (Beta)
+**Version:** 0.11.0 (Beta)
 **Wiki:** https://github.com/tumourlove/monolith/wiki
 **Engine:** Unreal Engine 5.7+
 **Platform:** Windows, macOS, Linux
@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 14 MCP tools (684 total actions across 11 domains), cutting AI assistant context consumption by ~95%.
+Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 15 MCP tools (815 total actions across 12 domains; 770 active by default — 45 experimental town gen actions disabled), cutting AI assistant context consumption by ~95%.
 
 ### What It Replaces
 
@@ -44,13 +44,14 @@ Monolith.uplugin
   MonolithIndex         — SQLite FTS5 deep project indexer, 14 internal indexers (7 MCP actions)
   MonolithSource        — Engine source + API lookup (11 actions)
   MonolithUI            — Widget blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility (42 actions)
-  MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript ops, horror/accessibility, lighting, audio/acoustics, performance, decals, level design, tech art, context props, procedural geometry (sweep walls, auto-collision, proc mesh caching, blueprint prefabs), genre presets, encounter design, hospice reports, procedural town generator (241 actions)
+  MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript ops, horror/accessibility, lighting, audio/acoustics, performance, decals, level design, tech art, context props, procedural geometry (sweep walls, auto-collision, proc mesh caching, blueprint prefabs), genre presets, encounter design, accessibility reports (197 core actions) + EXPERIMENTAL procedural town generator (45 actions, disabled by default via bEnableProceduralTownGen) = 242 total
+  MonolithGAS           — Gameplay Ability System integration: abilities, attributes, effects, ASC, tags, cues, targets, input, inspection, scaffolding (130 actions). Conditional on #if WITH_GBA
   MonolithBABridge      — Optional IModularFeatures bridge for Blueprint Assist integration. Exposes IMonolithGraphFormatter; enables BA-powered auto_layout across blueprint, material, animation, and niagara modules when Blueprint Assist is present (0 MCP actions — integration only)
 ```
 
 ### Discovery/Dispatch Pattern
 
-All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone.
+All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone. Conditional modules (e.g. MonolithGAS) gate registration on compile-time defines (`#if WITH_GBA`).
 
 ### MCP Protocol
 
@@ -66,7 +67,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | Module | Loading Phase | Type |
 |--------|--------------|------|
 | MonolithCore | PostEngineInit | Editor |
-| All others (10) | Default | Editor |
+| All others (11) | Default | Editor |
 | MonolithBABridge | Default | Editor (optional) |
 
 ### Plugin Dependencies
@@ -80,6 +81,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 - ControlRig
 - RigVM
 - GeometryScripting (optional — enables Tier 5 mesh operations)
+- GameplayAbilities (optional — enables MonolithGAS module; `#if WITH_GBA` compile guard)
 
 ---
 
@@ -98,7 +100,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | `FMonolithToolRegistry` | Central singleton action registry. `TMap<FString, FRegisteredAction>` keyed by "namespace.action". Thread-safe — releases lock before executing handlers. Validates required params from schema before dispatch (skips `asset_path` — `GetAssetPath()` handles aliases itself). Returns descriptive error listing missing + provided keys |
 | `FMonolithJsonUtils` | Static JSON-RPC 2.0 helpers. Standard error codes (-32700 through -32603). Declares `LogMonolith` category |
 | `FMonolithAssetUtils` | Asset loading with 4-tier fallback: StaticLoadObject(resolved) -> PackageName.ObjectName -> FindObject+_C suffix -> ForEachObjectWithPackage |
-| `UMonolithSettings` | UDeveloperSettings (config=Monolith). ServerPort, bAutoUpdateEnabled, DatabasePathOverride, EngineSourceDBPathOverride, EngineSourcePath, 9 module enable toggles (functional — checked at registration time), LogVerbosity. Settings UI customized via `FMonolithSettingsCustomization` (IDetailCustomization) with re-index buttons for project and source databases |
+| `UMonolithSettings` | UDeveloperSettings (config=Monolith). ServerPort, bAutoUpdateEnabled, DatabasePathOverride, EngineSourceDBPathOverride, EngineSourcePath, 10 module enable toggles + `bEnableProceduralTownGen` (experimental, default false) (functional — checked at registration time), LogVerbosity. Settings UI customized via `FMonolithSettingsCustomization` (IDetailCustomization) with re-index buttons for project and source databases |
 | `UMonolithUpdateSubsystem` | UEditorSubsystem. GitHub Releases auto-updater. Shows dialog window with full release notes on update detection. Downloads zip, cross-platform extraction (PowerShell on Windows, unzip on Mac/Linux). Stages to Saved/Monolith/Staging/, hot-swaps on editor exit via FCoreDelegates::OnPreExit. Current version always from compiled MONOLITH_VERSION (version.json only stores pending/staging state). Release zips include pre-compiled DLLs. |
 | `FMonolithCoreTools` | Registers 4 core actions |
 
@@ -888,7 +890,7 @@ The `bInstalled` filter on plugin content paths was replaced with explicit path 
 
 | Class | Responsibility |
 |-------|---------------|
-| `FMonolithMeshModule` | Registers 240 mesh actions across 30+ action classes (+ GeometryScript ops conditional) |
+| `FMonolithMeshModule` | Registers 197 core mesh actions across 30+ action classes (+ GeometryScript ops conditional). 45 additional experimental town gen actions registered only when `bEnableProceduralTownGen = true` (default: false). Total: 242 |
 | `FMonolithMeshInspectionActions` | Mesh asset inspection: geometry stats, LODs, UVs, materials, collision, quality analysis, catalog (12 actions) |
 | `FMonolithMeshSceneActions` | Scene actor manipulation: spawn, move, duplicate, delete, group, batch execute (8 actions) |
 | `FMonolithMeshSpatialActions` | Spatial queries: raycasts, sweeps, overlaps, nearest, line of sight, navmesh, scene bounds/stats (11 actions) |
@@ -911,9 +913,9 @@ The `bInstalled` filter on plugin content paths was replaced with explicit path 
 | `FMonolithMeshCatalog` | Mesh catalog database for search_meshes_by_size and get_mesh_catalog_stats |
 | `FMonolithMeshUtils` | Shared helpers for mesh loading, bounds calculation, actor queries |
 
-#### Actions (241 — namespace: "mesh")
+#### Actions (242 — namespace: "mesh")
 
-> **Note:** 195 original actions (Phases 1-22 + Proc Geo Overhaul) + 46 Procedural Town Generator actions (SP1-SP10 + `validate_building`).
+> **Note:** 197 core actions (Phases 1-22 + Proc Geo Overhaul) always registered + 45 experimental Procedural Town Generator actions (SP1-SP10 + `validate_building`) registered only when `bEnableProceduralTownGen = true` (default: false). Town gen has known geometry issues (wall misalignment, room separation) — very much a work-in-progress. Unless you're willing to dig in and help improve it, it's best left alone for now. Fix Plans v2-v5 addressed 27+ issues but fundamental geometry problems remain.
 
 **Inspection (12)**
 | Action | Params | Description |
@@ -992,7 +994,9 @@ The `bInstalled` filter on plugin content paths was replaced with explicit path 
 
 > **Procedural Geometry Overhaul (2026-03-28):** The proc gen actions (`create_parametric_mesh`, `create_structure`, `create_horror_prop`, etc.) now feature sweep-based thin walls (`wall_mode: "sweep"` default), auto snap-to-floor (`snap_to_floor` param), auto-collision on all saved meshes (`collision: auto/box/convex/complex_as_simple/none`), human-scale defaults (stairs 90/28/18cm, doors 90cm, floor 3cm), door/window/vent trim frames (`add_trim` param), and vent openings via `create_structure`. Collision-aware prop placement uses `collision_mode: none/warn/reject/adjust` on scatter actions with SweepSingle box traces for floor finding. All proc gen actions support `use_cache` and `auto_save` params for the caching system.
 
-#### Procedural Town Generator (46 actions — 11 sub-projects)
+#### Procedural Town Generator (45 gated + 1 always-registered actions — 11 sub-projects) — WORK-IN-PROGRESS
+
+> **Status:** Work-in-progress, disabled by default (`bEnableProceduralTownGen = false`). Fix Plans v2-v5 addressed 27+ issues but fundamental geometry problems remain (wall misalignment, room separation). Very much a WIP — unless you're willing to dig in and help improve it, it's best left alone for now.
 
 Procedural city block generation from a single MCP call. 11 sub-projects composing into a pipeline: grid-based buildings with connected rooms, roofs, facades, furniture, lighting, horror dressing, navmesh, and volumes, all adaptive to terrain. The critical interface is the **Building Descriptor** — a JSON contract that SP1 outputs and SP2-SP10 consume. All building specs are generated server-side (not sent over MCP wire).
 
@@ -1016,7 +1020,7 @@ SP1's `create_building_from_grid` returns a JSON descriptor consumed by all down
 **SP2: Automatic Floor Plan Generation (3 actions)**
 | Action | Params | Description |
 |--------|--------|-------------|
-| `generate_floor_plan` | `archetype`, `width`, `depth`, `floors`?, `hospice_mode`? | Building archetype + footprint → grid + rooms + doors. Squarified treemap with per-floor room assignment, aspect ratio enforcement, footprint boundary validation, and guaranteed exterior entrance on ground floor. Corridor width min 120cm, door width min 90cm. Hospice mode: 100cm doors, 180cm corridors, rest alcoves |
+| `generate_floor_plan` | `archetype`, `width`, `depth`, `floors`?, `hospice_mode`? | Building archetype + footprint → grid + rooms + doors. Squarified treemap with per-floor room assignment, aspect ratio enforcement, footprint boundary validation, and guaranteed exterior entrance on ground floor. Corridor width min 120cm, door width min 90cm. Accessibility mode (`hospice_mode`): 100cm doors, 180cm corridors, rest alcoves |
 | `list_building_archetypes` | none | List available archetype definitions (residential, clinic, police_station, apartment, etc.) |
 | `get_building_archetype` | `archetype` | Get archetype JSON: room types, sizes, adjacency requirements |
 
@@ -1066,7 +1070,7 @@ SP1's `create_building_from_grid` returns a JSON descriptor consumed by all down
 |--------|--------|-------------|
 | `sample_terrain_grid` | `origin`, `extent`, `resolution` | Sample NxM height grid via downward traces |
 | `analyze_building_site` | `footprint`, `terrain_grid` | Analyze site slope and recommend foundation strategy (Flat/CutAndFill/Stepped/Piers/WalkoutBasement) |
-| `create_foundation` | `building_descriptor`, `strategy`?, `hospice_mode`? | Generate foundation geometry. ADA-compliant ramps in hospice mode (1:12 slope, 76cm max rise, 150cm landings) |
+| `create_foundation` | `building_descriptor`, `strategy`?, `hospice_mode`? | Generate foundation geometry. ADA-compliant ramps when `hospice_mode` is enabled (1:12 slope, 76cm max rise, 150cm landings) |
 | `create_retaining_wall` | `path`, `height`, `material`? | Generate retaining wall geometry along a path |
 | `place_building_on_terrain` | `building_descriptor`, `terrain_grid` | Adapt a building to uneven terrain with auto-selected foundation |
 
@@ -1207,6 +1211,36 @@ All four `auto_layout` actions accept an optional `formatter` param:
 | `bEnableBlueprintAssist` | True | When false, MonolithBABridge skips `IModularFeatures` registration even if Blueprint Assist is present. `formatter: "auto"` will fall back to built-in; `formatter: "blueprint_assist"` will error |
 
 **Config key:** `bEnableBlueprintAssist` in `[/Script/MonolithCore.MonolithSettings]`
+
+### 3.13 MonolithGAS
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore, GameplayAbilities, GameplayTags
+**Namespace:** `gas` | **Tool:** `gas_query(action, params)` | **Actions:** 130
+**Conditional:** GBA (Blueprint Attributes) features wrapped in `#if WITH_GBA`. Core GAS engine modules (GameplayAbilities, GameplayTags, GameplayTasks) are always available. When GBA is absent, Blueprint AttributeSet creation is disabled but all 130 actions still register and compile cleanly. When `bEnableGAS` is disabled in settings, 0 actions registered.
+**Settings toggle:** `bEnableGAS` (default: True)
+
+MonolithGAS provides full MCP coverage of the Gameplay Ability System. It covers ability CRUD, attribute set management, gameplay effect authoring, ASC (Ability System Component) inspection and manipulation, gameplay tag operations, gameplay cue management, target data, input binding, runtime inspection, and scaffolding of common GAS patterns.
+
+#### Action Categories
+
+| Category | Actions | Description |
+|----------|---------|-------------|
+| Abilities | 28 | Create, edit, delete, list, grant, activate, cancel, query gameplay abilities. Includes spec handles, instancing policy, tags, costs, cooldowns |
+| Attributes | 20 | Create/edit attribute sets, get/set attribute values, define derived attributes, attribute initialization, clamping, replication config |
+| Effects | 26 | Create/edit gameplay effects, duration policies, modifiers, executions, stacking, conditional application, period, tags granted/removed |
+| ASC | 14 | Inspect/configure Ability System Components, list granted abilities, active effects, attribute values, owned tags, replication mode |
+| Tags | 10 | Query gameplay tag hierarchy, check tag matches, add/remove loose tags, tag containers, tag queries |
+| Cues | 10 | Create/edit gameplay cue notifies (static and actor), cue tags, cue parameters, handler lookup |
+| Targets | 5 | Target data handles, target actor selection, target data confirmation, custom target data types |
+| Input | 5 | Bind abilities to Enhanced Input actions, input tag mapping, activation on input |
+| Inspect | 6 | Runtime inspection of active abilities, applied effects, attribute snapshots, ability task state, prediction keys |
+| Scaffold | 6 | Scaffold common GAS setups: init_attribute_set, init_asc_actor, init_ability_set, init_damage_pipeline, init_cooldown_system, init_stacking_effect |
+
+#### Notes
+
+> **Runtime actions (Inspect category) require PIE.** These actions query live game state and return errors if called outside a Play-In-Editor session.
+>
+> **GBA conditional support:** The `WITH_GBA` define is set automatically by the module's `Build.cs` when GameplayAbilities is found. Projects without GAS get zero compile overhead — the entire module compiles to an empty stub.
 
 ---
 
@@ -1366,6 +1400,9 @@ All skills follow a common structure: YAML frontmatter, Discovery section, Asset
 | bIndexEnabled | True | Enable Index module |
 | bSourceEnabled | True | Enable Source module |
 | bUIEnabled | True | Enable UI module |
+| bMeshEnabled | True | Enable Mesh module (core actions) |
+| bGASEnabled | True | Enable GAS module (requires GameplayAbilities plugin; no-op if `WITH_GBA=0`) |
+| bEnableProceduralTownGen | **False** | Enable Procedural Town Generator actions (45 actions). Requires `bMeshEnabled`. **Work-in-progress** — known geometry issues, disabled by default. Unless you're willing to dig in and help improve it, best left alone |
 | bEnableBlueprintAssist | True | Allow MonolithBABridge to register IMonolithGraphFormatter when Blueprint Assist is present. Set false to force built-in layout for all auto_layout calls |
 | LogVerbosity | 3 (Log) | 0=Silent, 1=Error, 2=Warning, 3=Log, 4=Verbose |
 
@@ -1432,6 +1469,7 @@ YourProject/Plugins/Monolith/
     MonolithIndex/                 (12+ source files)
     MonolithSource/                (8 source files)
     MonolithUI/                    (17 source files — 9 .cpp + 8 .h)
+    MonolithGAS/                   (conditional on WITH_GBA — abilities, attributes, effects, ASC, tags, cues, targets, input, inspect, scaffold)
   Saved/
     .gitkeep
     monolith_offline.py              (Offline CLI — query DBs without the editor)
@@ -1503,13 +1541,14 @@ See `TODO.md` for the full list. Key architectural constraints:
 | MonolithMaterial | material | 57 |
 | MonolithAnimation | animation | 115 |
 | MonolithNiagara | niagara | 96 |
-| MonolithMesh | mesh | 240 |
+| MonolithMesh | mesh | 242 (197 core + 45 experimental town gen) |
 | MonolithEditor | editor | 19 |
 | MonolithConfig | config | 6 |
 | MonolithIndex | project | 7 |
 | MonolithSource | source | 11 |
 | MonolithUI | ui | 42 |
+| MonolithGAS | gas | 130 |
 | MonolithBABridge | — | 0 (integration only) |
-| **Total** | | **683** |
+| **Total** | | **815** (770 active by default) |
 
-**Note:** MonolithMesh includes all 22 expansion phases (195 original actions) plus 45 Procedural Town Generator actions (SP1-SP10). MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 14 MCP tools with namespaced actions.
+**Note:** MonolithMesh includes 197 core actions (always registered) plus 45 experimental Procedural Town Generator actions (registered only when `bEnableProceduralTownGen = true`, default: false — known geometry issues). MonolithGAS is conditional on `#if WITH_GBA` — projects without GameplayAbilities register 0 GAS actions. MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 15 MCP tools with namespaced actions.

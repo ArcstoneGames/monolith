@@ -480,7 +480,7 @@ TArray<FMonolithMeshBuildingActions::FWallSegment> FMonolithMeshBuildingActions:
 void FMonolithMeshBuildingActions::GenerateWallGeometry(UDynamicMesh* Mesh,
 	const TArray<FWallSegment>& Segments, float CellSize, float FloorHeight, float FloorZ,
 	float ExteriorT, float InteriorT, TArray<FExteriorFaceDef>& OutExteriorFaces, int32 FloorIndex,
-	bool bOmitExteriorWalls)
+	const TArray<FRoomDef>& Rooms, bool bOmitExteriorWalls)
 {
 	FGeometryScriptPrimitiveOptions Opts;
 
@@ -531,6 +531,13 @@ void FMonolithMeshBuildingActions::GenerateWallGeometry(UDynamicMesh* Mesh,
 				Face.WorldOrigin = FVector(WallX, static_cast<float>(Seg.RunStart) * CellSize, FloorZ);
 				Face.Width = RunLen;
 				Face.Height = FloorHeight;
+
+				// Populate room type from the interior side
+				int32 InteriorRoomId = (Seg.LeftId == -1) ? Seg.RightId : Seg.LeftId;
+				Face.RoomId = InteriorRoomId;
+				if (InteriorRoomId >= 0 && InteriorRoomId < Rooms.Num())
+					Face.RoomType = Rooms[InteriorRoomId].RoomType;
+
 				OutExteriorFaces.Add(Face);
 			}
 		}
@@ -571,6 +578,13 @@ void FMonolithMeshBuildingActions::GenerateWallGeometry(UDynamicMesh* Mesh,
 				Face.WorldOrigin = FVector(static_cast<float>(Seg.RunStart) * CellSize, WallY, FloorZ);
 				Face.Width = RunLen;
 				Face.Height = FloorHeight;
+
+				// Populate room type from the interior side
+				int32 InteriorRoomId = (Seg.LeftId == -1) ? Seg.RightId : Seg.LeftId;
+				Face.RoomId = InteriorRoomId;
+				if (InteriorRoomId >= 0 && InteriorRoomId < Rooms.Num())
+					Face.RoomType = Rooms[InteriorRoomId].RoomType;
+
 				OutExteriorFaces.Add(Face);
 			}
 		}
@@ -1355,6 +1369,67 @@ TArray<FVector2D> FMonolithMeshBuildingActions::ComputeFootprint(
 }
 
 // ============================================================================
+// Merge Exterior Faces — combine per-segment faces into per-wall-side faces
+// ============================================================================
+
+static TArray<FExteriorFaceDef> MergeExteriorFaces(const TArray<FExteriorFaceDef>& Faces)
+{
+	TMap<FString, TArray<const FExteriorFaceDef*>> Groups;
+	for (const FExteriorFaceDef& F : Faces)
+	{
+		FString Key = FString::Printf(TEXT("%s_%d"), *F.Wall, F.FloorIndex);
+		Groups.FindOrAdd(Key).Add(&F);
+	}
+
+	TArray<FExteriorFaceDef> Merged;
+	for (auto& Pair : Groups)
+	{
+		TArray<const FExteriorFaceDef*>& Group = Pair.Value;
+		if (Group.Num() == 0) continue;
+
+		bool bVertical = (Group[0]->Wall == TEXT("east") || Group[0]->Wall == TEXT("west"));
+		Algo::Sort(Group, [bVertical](const FExteriorFaceDef* A, const FExteriorFaceDef* B)
+		{
+			return bVertical ? A->WorldOrigin.Y < B->WorldOrigin.Y
+			                 : A->WorldOrigin.X < B->WorldOrigin.X;
+		});
+
+		FExteriorFaceDef Current = *Group[0];
+		TArray<FRoomSpan> Spans;
+		Spans.Add({ 0.0f, Current.Width, Current.RoomType, Current.RoomId });
+		float RunningWidth = Current.Width;
+
+		for (int32 i = 1; i < Group.Num(); ++i)
+		{
+			const FExteriorFaceDef* Next = Group[i];
+			float NextPos = bVertical ? Next->WorldOrigin.Y : Next->WorldOrigin.X;
+			float CurrentEnd = (bVertical ? Current.WorldOrigin.Y : Current.WorldOrigin.X) + RunningWidth;
+			float Gap = NextPos - CurrentEnd;
+
+			if (FMath::Abs(Gap) < 1.0f)
+			{
+				Spans.Add({ RunningWidth, Next->Width, Next->RoomType, Next->RoomId });
+				RunningWidth += Next->Width;
+			}
+			else
+			{
+				Current.Width = RunningWidth;
+				Current.RoomSpans = Spans;
+				Merged.Add(Current);
+				Current = *Next;
+				Spans.Reset();
+				Spans.Add({ 0.0f, Next->Width, Next->RoomType, Next->RoomId });
+				RunningWidth = Next->Width;
+			}
+		}
+		Current.Width = RunningWidth;
+		Current.RoomSpans = Spans;
+		Merged.Add(Current);
+	}
+	return Merged;
+}
+
+// ============================================================================
 // Integrated Facade Generation — v3 Single-Pass Architecture
 // ============================================================================
 
@@ -1383,7 +1458,7 @@ void FMonolithMeshBuildingActions::GenerateIntegratedFacade(UDynamicMesh* Mesh,
 	for (const FExteriorFaceDef& Face : ExteriorFaces)
 	{
 		bool bIsGroundFloor = (Face.FloorIndex == 0);
-		float MinSpacing = Style.WindowWidth * 0.6f;
+		float MinSpacing = FMath::Max(Style.WindowWidth * 0.6f, 100.0f); // At least 100cm between windows
 		float Margin = Style.FrameWidth + Style.CornerWidth;
 
 		// 1. Wall slab is built internally by CutOpeningsSelectionInset
@@ -1413,6 +1488,33 @@ void FMonolithMeshBuildingActions::GenerateIntegratedFacade(UDynamicMesh* Mesh,
 			}
 		}
 
+		// 2.5. Density cap: max ~1 window per 3 meters of wall
+		{
+			int32 MaxWindows = FMath::Max(1, FMath::FloorToInt32(Face.Width / 300.0f));
+			if (WinXPositions.Num() > MaxWindows)
+			{
+				if (MaxWindows == 1)
+				{
+					// Keep the center-most window
+					int32 MidIdx = WinXPositions.Num() / 2;
+					float Mid = WinXPositions[MidIdx];
+					WinXPositions.Reset();
+					WinXPositions.Add(Mid);
+				}
+				else
+				{
+					TArray<float> Capped;
+					float Step = static_cast<float>(WinXPositions.Num() - 1) / static_cast<float>(MaxWindows - 1);
+					for (int32 i = 0; i < MaxWindows; ++i)
+					{
+						int32 Idx = FMath::Clamp(FMath::RoundToInt32(i * Step), 0, WinXPositions.Num() - 1);
+						Capped.Add(WinXPositions[Idx]);
+					}
+					WinXPositions = Capped;
+				}
+			}
+		}
+
 		// 3. Build window placements
 		TArray<FWindowPlacement> Windows;
 		for (float XPos : WinXPositions)
@@ -1425,6 +1527,34 @@ void FMonolithMeshBuildingActions::GenerateIntegratedFacade(UDynamicMesh* Mesh,
 			Win.FloorIndex = Face.FloorIndex;
 			Win.bIsGroundFloor = bIsGroundFloor;
 			Windows.Add(Win);
+		}
+
+		// 3.5. Room-type-aware window filtering (skip windows behind corridors, closets, etc.)
+		if (Face.RoomSpans.Num() > 0)
+		{
+			TArray<FWindowPlacement> FilteredWindows;
+			for (const FWindowPlacement& Win : Windows)
+			{
+				// Convert from center-relative to start-relative offset
+				float WinOffset = Win.CenterX + Face.Width * 0.5f;
+				FString SpanRoomType;
+				for (const FRoomSpan& Span : Face.RoomSpans)
+				{
+					if (WinOffset >= Span.StartOffset && WinOffset < Span.StartOffset + Span.Width)
+					{
+						SpanRoomType = Span.RoomType;
+						break;
+					}
+				}
+				// Skip windows for rooms that shouldn't have them
+				if (SpanRoomType == TEXT("corridor") || SpanRoomType == TEXT("closet") ||
+				    SpanRoomType == TEXT("utility") || SpanRoomType == TEXT("stairwell") ||
+				    SpanRoomType == TEXT("walkway") || SpanRoomType == TEXT("supply_room") ||
+				    SpanRoomType == TEXT("supply"))
+					continue;
+				FilteredWindows.Add(Win);
+			}
+			Windows = FilteredWindows;
 		}
 
 		// 4. Build door placements (ground floor only, if face is wide enough)
@@ -1441,8 +1571,9 @@ void FMonolithMeshBuildingActions::GenerateIntegratedFacade(UDynamicMesh* Mesh,
 				Door.bStorefront = false;
 				Doors.Add(Door);
 
-				// Remove windows that overlap with the door
-				float DoorHalfW = Style.DoorWidth * 0.5f + Style.FrameWidth;
+				// Remove windows that overlap with the door (60cm minimum edge-to-edge clearance)
+				float MinClearance = 60.0f;
+				float DoorHalfW = Style.DoorWidth * 0.5f + MinClearance + Style.WindowWidth * 0.5f;
 				Windows.RemoveAll([DoorHalfW](const FWindowPlacement& W)
 				{
 					return FMath::Abs(W.CenterX) < DoorHalfW;
@@ -1705,7 +1836,7 @@ FMonolithActionResult FMonolithMeshBuildingActions::CreateBuildingFromGrid(const
 		// 2. Generate wall geometry (respects omit_exterior_walls flag)
 		TArray<FExteriorFaceDef> ExteriorFaces;
 		GenerateWallGeometry(Mesh, WallSegments, CellSize, FloorHeight, FloorZ + FloorThick,
-			ExteriorT, InteriorT, ExteriorFaces, FloorIdx, bOmitExteriorWalls);
+			ExteriorT, InteriorT, ExteriorFaces, FloorIdx, Rooms, bOmitExteriorWalls);
 
 		// 3. Generate floor slab (skip stairwell cells — now properly propagated to upper floors)
 		GenerateSlabs(Mesh, FloorGrid, GridW, GridH, CellSize, FloorThick, FloorZ, 2, true);
@@ -1713,6 +1844,18 @@ FMonolithActionResult FMonolithMeshBuildingActions::CreateBuildingFromGrid(const
 		// 4. Generate ceiling slab (skip stairwell cells)
 		GenerateSlabs(Mesh, FloorGrid, GridW, GridH, CellSize, FloorThick,
 			FloorZ + FloorThick + FloorHeight, 2, true);
+
+		// 4.5 Merge exterior faces by wall direction for sane window density
+		// (segments broken by room boundaries get merged into per-building-side faces)
+		TArray<FExteriorFaceDef> MergedFaces = MergeExteriorFaces(ExteriorFaces);
+
+		// Generate integrated facade with merged faces BEFORE door booleans
+		// so that CutDoorOpenings can cut through the facade exterior walls.
+		if (bHasFacadeStyle && MergedFaces.Num() > 0)
+		{
+			GenerateIntegratedFacade(Mesh, MergedFaces, ExteriorT,
+				FacadeStyleName, FacadeSeed, NumFloors - 1, Descriptor, bHadBooleans);
+		}
 
 		// 5. Boolean-subtract door openings
 		CutDoorOpenings(Mesh, *FloorDoors, CellSize, FloorZ + FloorThick,
@@ -1734,15 +1877,6 @@ FMonolithActionResult FMonolithMeshBuildingActions::CreateBuildingFromGrid(const
 		float ActualStairWidth = CellSize;
 		GenerateStairGeometry(Mesh, *FloorStairwells, CellSize, FloorHeight + FloorThick,
 			FloorZ + FloorThick, ActualStairWidth);
-
-		// 7.5 Generate integrated facade (walls + windows) for this floor's exterior faces
-		// This runs AFTER interior walls/slabs/doors and BEFORE Location offset is applied.
-		// ExteriorFaces are in local mesh space — facade geometry is appended in the same space.
-		if (bHasFacadeStyle && ExteriorFaces.Num() > 0)
-		{
-			GenerateIntegratedFacade(Mesh, ExteriorFaces, ExteriorT,
-				FacadeStyleName, FacadeSeed, NumFloors - 1, Descriptor, bHadBooleans);
-		}
 
 		// 8. Compute room bounds and door positions for descriptor
 		ComputeRoomBounds(*FloorRooms, CellSize, FloorHeight, FloorZ + FloorThick, Location);

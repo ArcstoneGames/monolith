@@ -4,6 +4,8 @@
 #include "HttpRouteHandle.h"
 #include "IHttpRouter.h"
 
+class FJsonObject;
+class FJsonValue;
 class FMonolithToolRegistry;
 
 /**

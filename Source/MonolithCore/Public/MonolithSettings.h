@@ -85,6 +85,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category="Indexing|Deep Indexers")
 	bool bIndexDataAssets = true;
 
+	/** Enable Gameplay Ability System indexing (abilities, effects, attribute sets, cues) */
+	UPROPERTY(config, EditAnywhere, Category="Indexing|Deep Indexers")
+	bool bIndexGAS = true;
+
 	/** Enable dependency graph indexing */
 	UPROPERTY(config, EditAnywhere, Category="Indexing|Post-Pass Indexers")
 	bool bIndexDependencies = true;
@@ -160,7 +164,18 @@ public:
 			  ToolTip="When enabled and Blueprint Assist is installed, provides enhanced graph formatting via the IMonolithGraphFormatter bridge."))
 	bool bEnableBlueprintAssist = true;
 
+	UPROPERTY(config, EditAnywhere, Category="Modules|Optional",
+		meta=(DisplayName="Enable GAS Integration",
+			  ToolTip="When enabled, registers gas_query actions for Gameplay Ability System manipulation. Requires GameplayAbilities plugin (engine-bundled)."))
+	bool bEnableGAS = true;
+
 	// --- Modules|Mesh ---
+
+	UPROPERTY(config, EditAnywhere, Category="Modules|Mesh",
+		DisplayName="Enable Procedural Town Generation (Experimental)",
+		Meta=(EditCondition="bEnableMesh",
+			  ToolTip="Registers town gen actions (city blocks, buildings, facades, roofs, floor plans, furnishing, terrain, spatial registry, debug views). EXPERIMENTAL — known geometry issues. Disable to hide these actions from MCP."))
+	bool bEnableProceduralTownGen = false;
 
 	UPROPERTY(config, EditAnywhere, Category="Modules|Mesh", DisplayName="Handle Pool Timeout (seconds)",
 		Meta=(ClampMin="10.0", ClampMax="3600.0", EditCondition="bEnableMesh"))

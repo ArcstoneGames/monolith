@@ -29,6 +29,7 @@
 #include "Indexers/InputActionIndexer.h"
 #include "Indexers/DataAssetIndexer.h"
 #include "Indexers/MeshCatalogIndexer.h"
+#include "Indexers/GASIndexer.h"
 
 void UMonolithIndexSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -179,6 +180,8 @@ void UMonolithIndexSubsystem::RegisterDefaultIndexers()
 		RegisterIndexer(MakeShared<FDataAssetIndexer>());
 	if (Settings->bIndexMeshCatalog)
 		RegisterIndexer(MakeShared<FMeshCatalogIndexer>());
+	if (Settings->bIndexGAS)
+		RegisterIndexer(MakeShared<FGASIndexer>());
 
 	UE_LOG(LogMonolithIndex, Log, TEXT("Registered %d indexers"), Indexers.Num());
 }

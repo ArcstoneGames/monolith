@@ -262,11 +262,22 @@ TArray<FString> FMonolithMeshCityBlockActions::GetGenreArchetypes(const FString&
 	}
 	else // "horror" or default
 	{
-		// Mix of residential + restaurant for variety (restaurant replaces non-existent commercial_shop)
-		TArray<FString> ArchPool = { TEXT("residential_house"), TEXT("residential_house"), TEXT("restaurant"), TEXT("small_house") };
+		// Horror: diverse archetypes matching horror templates
+		TArray<FString> ArchPool = {
+			TEXT("abandoned_hospital"), TEXT("motel"), TEXT("church"),
+			TEXT("victorian_mansion"), TEXT("abandoned_school"),
+			TEXT("residential_house"), TEXT("warehouse"), TEXT("underground_bunker")
+		};
+		// Fisher-Yates shuffle for unique picks
+		TArray<FString> Shuffled = ArchPool;
+		for (int32 i = Shuffled.Num() - 1; i > 0; --i)
+		{
+			int32 j = Rng.RandRange(0, i);
+			Shuffled.Swap(i, j);
+		}
 		for (int32 i = 0; i < BuildingCount; ++i)
 		{
-			Archetypes.Add(ArchPool[Rng.RandRange(0, ArchPool.Num() - 1)]);
+			Archetypes.Add(Shuffled[i % Shuffled.Num()]);
 		}
 	}
 
@@ -1294,6 +1305,9 @@ FMonolithActionResult FMonolithMeshCityBlockActions::CreateCityBlock(const TShar
 	int32 BuildingsPassed = 0;
 	double ValidationScoreSum = 0.0;
 
+	// Template dedup tracking — avoid repeating the same template within a block
+	TSet<FString> UsedTemplates;
+
 	for (int32 i = 0; i < LotsArr->Num() && i < BuildingCount; ++i)
 	{
 		const TSharedPtr<FJsonObject>* LotObj = nullptr;
@@ -1364,9 +1378,29 @@ FMonolithActionResult FMonolithMeshCityBlockActions::CreateCityBlock(const TShar
 			FloorPlanParams->SetStringField(TEXT("template_category"), TEXT("horror"));
 		}
 
+		// Inject exclude_templates for dedup within the city block
+		if (UsedTemplates.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> ExcludeArr;
+			for (const FString& T : UsedTemplates)
+				ExcludeArr.Add(MakeShared<FJsonValueString>(T));
+			FloorPlanParams->SetArrayField(TEXT("exclude_templates"), ExcludeArr);
+		}
+
 		TSharedPtr<FJsonObject> FloorPlanResult;
 		FString FloorPlanError;
 		bool bHasFloorPlan = TryExecuteAction(TEXT("generate_floor_plan"), FloorPlanParams, FloorPlanResult, FloorPlanError);
+
+		// Track chosen template for dedup
+		if (bHasFloorPlan && FloorPlanResult.IsValid())
+		{
+			FString ChosenTemplate;
+			if (FloorPlanResult->TryGetStringField(TEXT("template_name"), ChosenTemplate))
+				UsedTemplates.Add(ChosenTemplate);
+			// Safety: if approaching template exhaustion, reset to avoid zero-candidate failures
+			if (UsedTemplates.Num() >= 8)
+				UsedTemplates.Reset();
+		}
 
 		if (!bHasFloorPlan)
 		{

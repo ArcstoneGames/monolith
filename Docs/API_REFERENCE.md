@@ -1,10 +1,10 @@
 # Monolith API Reference
 
-**Total Actions: 443** across 10 namespaces
+**Total Actions: 815** across 12 namespaces (13 modules; MonolithBABridge is integration-only with 0 MCP actions)
 
 > Auto-generated from action registration code. Each action is called via HTTP POST to `http://localhost:<port>` with JSON body `{ "namespace": "<ns>", "action": "<action>", "params": { ... } }`.
 >
-> **Note:** This reference covers all action signatures as of v0.10.0. Some sections below still use the detailed per-action format from earlier versions. For the most current param schemas, call `monolith_discover("namespace")` at runtime -- it returns live schemas directly from the plugin.
+> **Note:** This reference covers all action signatures as of v0.11.0. Some sections below still use the detailed per-action format from earlier versions. For the most current param schemas, call `monolith_discover("namespace")` at runtime -- it returns live schemas directly from the plugin.
 
 ---
 
@@ -21,7 +21,9 @@
 | [config](#config) | 6 | INI config file inspection and search |
 | [project](#project) | 7 | Project-wide asset index (SQLite + FTS5) |
 | [source](#source) | 11 | Unreal Engine C++ source code navigation |
+| [mesh](#mesh) | 242 | Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript, procedural geometry, lighting, audio, performance, town gen (experimental) |
 | [ui](#ui) | 42 | UI widget Blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility |
+| [gas](#gas) | 130 | Gameplay Ability System: abilities, attributes, effects, ASC, tags, cues, targeting, input, inspect, scaffold |
 
 ---
 
@@ -33,7 +35,7 @@ Core server management and introspection tools.
 
 List available tool namespaces and their actions. Pass namespace to filter.
 
-> `discover` returns per-action param schemas for all 443 actions. AI clients also receive these schemas in `tools/list` at session start, so full param documentation is available without calling `discover` first.
+> `discover` returns per-action param schemas for all 815 actions. AI clients also receive these schemas in `tools/list` at session start, so full param documentation is available without calling `discover` first.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -2929,8 +2931,50 @@ Trigger Python indexer to rebuild the engine source DB.
 
 UI widget Blueprint CRUD, templates, styling, animation, settings scaffolding, and accessibility. 42 actions covering the full UMG widget pipeline.
 
-> **New in v0.9.0.** For full param schemas, call `monolith_discover("ui")` at runtime.
+> For full param schemas, call `monolith_discover("ui")` at runtime.
 
 The UI module provides actions for creating and editing Widget Blueprints, managing widget hierarchies, configuring styling and animations, scaffolding settings menus, and implementing accessibility features. Actions include widget CRUD, slot configuration, brush/style management, widget animation keyframing, settings generation from config, and accessibility annotation.
 
 Use `monolith_discover("ui")` for the complete action list with parameter schemas.
+
+---
+
+## mesh
+
+Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript operations, horror/accessibility features, lighting, audio/acoustics, performance, decals, level design, tech art, context-aware props, procedural geometry, blueprint prefabs, genre presets, encounter design, and accessibility reports. **242 actions total** (197 core + 45 experimental town gen).
+
+> **New in v0.11.0.** For full param schemas, call `monolith_discover("mesh")` at runtime.
+
+The mesh module is the largest in Monolith, covering the full level authoring pipeline from blockout primitives to furnished interiors. Core actions (197) are always registered. The 45 experimental Procedural Town Generator actions (floor plans, facades, roofs, city blocks, spatial registry, terrain adaptation, room furnishing, debug views) are disabled by default via `bEnableProceduralTownGen` in Editor Preferences — known geometry issues with wall alignment and room separation.
+
+**Action categories (core):** mesh inspection, primitive creation, batch operations, import/export, scene hierarchy, spatial queries, level blockout, GeometryScript ops, lighting (point/spot/rect/sky/HDRI), audio/acoustics (emitters, attenuation, reverb, occlusion), performance (HLOD, Nanite, LOD, draw call), decals, level design (volumes, sublevels, streaming), tech art (import, LOD config, texel density, collision), context-aware props (surface scatter, disturbance, physics), procedural geometry (parametric furniture, structures, mazes, terrain, sweep walls, auto-collision, proc mesh caching), blueprint prefabs, genre presets (horror, survival), encounter design, accessibility reports.
+
+**Action categories (experimental town gen):** `generate_floor_plan`, `create_building_from_grid`, `generate_facade`, `generate_roof`, `create_city_block`, `register_building`, `query_spatial_registry`, `create_auto_volumes`, `adapt_terrain`, `generate_arch_features`, `furnish_room`, `validate_building`, debug views, and more.
+
+Use `monolith_discover("mesh")` for the complete action list with parameter schemas.
+
+---
+
+## gas
+
+Gameplay Ability System integration. **130 actions** across 10 categories covering the full GAS authoring pipeline. Conditional on `#if WITH_GBA` — requires GameplayAbilities plugin.
+
+> **New in v0.11.0.** For full param schemas, call `monolith_discover("gas")` at runtime.
+
+The GAS module provides complete CRUD and configuration for all GAS asset types, plus runtime inspection in PIE. Categories:
+
+| Category | Actions | Description |
+|----------|---------|-------------|
+| Scaffold | 6 | Bootstrap GAS foundation, validate setup, scaffold tag hierarchies, scaffold damage pipeline |
+| Attributes | 20 | Attribute set CRUD (Blueprint + C++ modes), templates, get/list/add attributes, clamping, validation |
+| Effects | 26 | Gameplay Effect CRUD, modifiers, components, templates, stacking, duration, period, validate, duplicate |
+| Abilities | 28 | Gameplay Ability CRUD, tags, activation policy, costs, cooldowns, info, compile, templates, find by tag |
+| Graph Building | — | Add commit/end flow, ability task nodes, effect application, get ability graph flow |
+| ASC | 14 | Add ASC to actor, configure ASC, validate ASC setup, granted abilities, active effects, replication mode |
+| Cues | 10 | Create gameplay cue notify (static + actor), link cue to effect, validate cue coverage, cue params |
+| Tags | 10 | Add gameplay tags, search tag usage, validate tag consistency, rename tag, tag hierarchy/matching |
+| Targeting | 5 | Target data handles, actor selection, confirmation |
+| Input | 5 | Enhanced Input binding, input tags |
+| Inspect (PIE) | 6 | Runtime inspection: get all ASCs, ASC snapshot, GAS state snapshot, get/set attribute value, apply effect |
+
+Use `monolith_discover("gas")` for the complete action list with parameter schemas.

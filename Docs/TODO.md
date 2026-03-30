@@ -1,16 +1,42 @@
 # Monolith — TODO
 
-Last updated: 2026-03-28
+Last updated: 2026-03-30
 
 ---
 
-### MonolithMesh Module — 241 Actions, ALL 22 PHASES COMPLETE + Proc Geo Overhaul + Procedural Town Generator + Fix Plan v2 (2026-03-28)
+### MonolithGAS Module — 130 Actions, Phases 1-4 COMPLETE (2026-03-29)
+
+- [x] Phase 1 — Abilities (28 actions): CRUD, grant, activate, cancel, spec handles, instancing, tags, costs, cooldowns.
+- [x] Phase 2 — Attributes (20) + Effects (26): Attribute sets, get/set values, derived attributes, init/clamping/replication. GE authoring, duration, modifiers, executions, stacking, period, conditional application.
+- [x] Phase 3 — ASC (14) + Tags (10) + Cues (10): ASC inspection/config, granted abilities, active effects, owned tags, replication mode. Tag hierarchy, matching, loose tags, containers, queries. Cue notify CRUD (static + actor), cue params, handler lookup.
+- [x] Phase 4 — Targets (5) + Input (5) + Inspect (6) + Scaffold (6): Target data handles, actor selection, confirmation. Enhanced Input binding, input tags. Runtime inspection (PIE-only). Common pattern scaffolding.
+- [x] Conditional compilation — `#if WITH_GBA` wraps entire module. Compiles clean with WITH_GBA=1 and WITH_GBA=0.
+- [x] Settings toggle — `bEnableGAS` in UMonolithSettings.
+
+#### MonolithGAS — Testing Complete (2026-03-30)
+
+- [x] **Functional testing** — 53/53 tests PASS, 0 FAIL. 12 bugs found and fixed during testing. 8 git commits (32c86d7 through 5639dda). PIE runtime tests all passing. Key fixes: IGameplayTagsEditorModule API for tags, three-tier EnsureAssetPathFree guard, BS_BeingCreated suppression for ASC SCS, AR pre-filter on all GetAsset calls, GAS deep indexer in MonolithIndex.
+- [x] **GAS deep indexer** — GASIndexer added to MonolithIndex. `project_query("search")` surfaces GAS assets with rich metadata.
+- [x] **Skill file** — `unreal-gas` skill created in `.claude/skills/` and `Plugins/Monolith/Skills/`. 130 actions, 10 categories, workflow examples.
+
+#### MonolithGAS — Remaining Work
+
+- [ ] **Template gaps** — `init_player_stats` and `init_enemy_stats` scaffold templates not yet implemented. Should generate attribute sets + initialization GEs for common game archetypes.
+- [ ] **Helper deduplication** — Several helper functions are duplicated across action classes (tag container utilities, effect spec builders). Consolidate into shared `MonolithGASHelpers`.
+- [ ] **Type-safe reflection** — Attribute set property access uses string-based reflection. Investigate `FGameplayAttribute` direct property pointer for safer access.
+- [ ] **Discover enhancement** — `monolith_discover("gas")` should include GAS-specific workflow hints and category groupings in the response metadata.
+
+---
+
+### MonolithMesh Module — 242 Actions (197 core + 45 experimental town gen), ALL 22 PHASES COMPLETE + Proc Geo Overhaul + Procedural Town Generator + Fix Plans v2-v5 (2026-03-30)
 
 - [x] Phase 0-12 — Original 111 actions compiled and tested.
 - [x] Phase 13-22 — Expansion 76 actions compiled (lights, volumes, horror intel, tech art, sublevels, context props, proc geo, presets, encounters, polish).
 - [x] Proc Geo Overhaul — 5 new actions (list_cached_meshes, clear_cache, validate_cache, get_cache_stats, create_blueprint_prefab). Sweep-based thin walls, auto-collision, collision-aware prop placement, proc mesh caching, blueprint prefabs, door trim frames, floor-aware spawning, human-scale defaults. 187 → 192 actions.
-- [x] Procedural Town Generator — 45 new actions across 11 sub-projects (SP1-SP10). Grid-based buildings, floor plans, facades, roofs, city blocks, spatial registry, auto-volumes, terrain adaptation, architectural features, debug views, room furnishing. 195 → 240 mesh actions, 638 → 683 total.
-- [x] Fix Plan v2 — 20 fixes across 3 phases (geometry, floor plan, integration). Stair angles, switchbacks, corridor/door widths, per-floor assignment, aspect ratios, footprint validation, exterior entrance guarantee, building_context/wall_openings on arch features, validate_building action. 240 → 241 mesh actions, 683 → 684 total.
+- [x] Procedural Town Generator — 45 new actions across 11 sub-projects (SP1-SP10). Grid-based buildings, floor plans, facades, roofs, city blocks, spatial registry, auto-volumes, terrain adaptation, architectural features, debug views, room furnishing. 196 → 241 mesh actions, 639 → 684 total.
+- [x] Fix Plan v2 — 20 fixes across 3 phases (geometry, floor plan, integration). Stair angles, switchbacks, corridor/door widths, per-floor assignment, aspect ratios, footprint validation, exterior entrance guarantee, building_context/wall_openings on arch features, validate_building action. 241 → 242 mesh actions, 684 → 685 total.
+- [x] Fix Plan v5 — 7 fixes (2026-03-30): facade reorder, boolean isolation, wall alignment, door clamp, window density, template variety, furniture placement. Town gen still has fundamental geometry issues (wall misalignment, room separation).
+- [x] **Town gen marked EXPERIMENTAL** (2026-03-30) — `bEnableProceduralTownGen = false` by default in UMonolithSettings. 45 town gen actions only registered when enabled. Core mesh actions (197) always available.
 
 #### Procedural Town Generator — Fix Plan v2 Follow-Up (2026-03-28)
 
@@ -137,8 +163,8 @@ Tech Art:
 - [ ] `generate_scare_sequence` — procedural scare events with variety + escalation
 - [ ] `analyze_framing` — camera composition scoring (leading lines, focal points)
 - [ ] `evaluate_monster_reveal` — score reveal quality: silhouette, backlight, distance, partial visibility
-- [ ] `validate_horror_intensity` — cap tension for hospice mode, remove jump scares
-- [ ] `generate_hospice_report` — full level audit: intensity caps, rest spacing, cognitive load, one-handed play
+- [ ] `validate_horror_intensity` — cap tension for accessibility mode, remove jump scares
+- [ ] `generate_hospice_report` — full level audit: intensity caps, rest spacing, cognitive load, one-handed playability
 
 **P3 — Quality of life + future (~10 actions)**
 
@@ -458,3 +484,4 @@ Priority features identified for future waves:
 - [x] **Live AR callbacks** — IMPLEMENTED (2026-03-28). Batched Asset Registry delegates (OnAssetsAdded, OnAssetsRemoved, OnAssetRenamed, OnAssetsUpdatedOnDisk) drained on 2s timer with dedup and transactional apply.
 - [x] **Plugin content scope fix (bInstalled filter)** — FIXED (2026-03-28). Replaced `bInstalled` filter with explicit path enumeration. DrawCallReducer and NiagaraDestructionDriver now indexed. MeshCatalogIndexer paths corrected.
 - [x] **MCP reindex action (incremental default + force param)** — IMPLEMENTED (2026-03-28). `monolith_reindex()` defaults to incremental mode; `force=true` triggers full wipe-and-rebuild.
+- [x] **NEW: MonolithGAS module** — IMPLEMENTED (2026-03-29), TESTED (2026-03-30). 130 actions in `gas` namespace (`gas_query` tool). 53/53 tests PASS, 12 bugs fixed (8 commits: 32c86d7-5639dda). Key fixes: IGameplayTagsEditorModule API, EnsureAssetPathFree 3-tier guard, BS_BeingCreated suppression, AR pre-filter, GAS deep indexer. Conditional on `#if WITH_GBA`. Total plugin: 685 → 815 actions, 11 → 12 domains, 14 → 15 MCP tools.

@@ -18,7 +18,7 @@ It works with **Claude Code**, **Cursor**, or any MCP-compatible client. If your
 
 ## Why Monolith?
 
-Most MCP integrations register every action as a separate tool, which floods the AI's context window and buries the actually useful stuff. Monolith uses a **namespace dispatch pattern** instead: each domain exposes a single `{namespace}_query(action, params)` tool, and a central `monolith_discover()` call lists everything available. Small tool list (13 tools), massive capability (443 actions across ten domains). The AI gets oriented fast and spends its context on your actual problem.
+Most MCP integrations register every action as a separate tool, which floods the AI's context window and buries the actually useful stuff. Monolith uses a **namespace dispatch pattern** instead: each domain exposes a single `{namespace}_query(action, params)` tool, and a central `monolith_discover()` call lists everything available. Small tool list (15 tools), massive capability (815 actions across 13 modules). The AI gets oriented fast and spends its context on your actual problem.
 
 ## What Can It Actually Do?
 
@@ -40,6 +40,10 @@ Most MCP integrations register every action as a separate tool, which floods the
 
 **Project (7 actions)** — SQLite FTS5 full-text search across every indexed asset in your project. Find assets by name, type, path, or content. Trace references between assets. Search gameplay tags. Get detailed asset metadata. The index updates live as assets change and covers marketplace/Fab plugin content too — 15 deep indexers registered including DataAsset subclasses.
 
+**Mesh (242 actions)** — The biggest module by far. 197 core actions across 22 capability tiers, plus 45 procedural town generation actions (work-in-progress -- disabled by default, and unless you're willing to dig in and help improve it, best left alone for now). Mesh inspection and comparison. Full actor CRUD with scene manipulation. Physics-based spatial queries (raycasts, sweeps, overlaps) that work in-editor without PIE. Level blockout workflow with auto-matching and atomic replacement. GeometryScript mesh operations (boolean, simplify, remesh, LOD gen, UV projection). Horror spatial analysis — sightlines, hiding spots, ambush points, zone tension, pacing curves (WIP). Accessibility validation with A-F grading. Lighting analysis (WIP), audio/acoustics with Sabine RT60 and stealth maps (WIP), performance budgeting (WIP). Decal placement with storytelling presets. Level design tools for lights, volumes, sublevels, prefabs, HISM instancing. Tech art pipeline for mesh import, LOD gen, texel density, collision authoring. Context-aware prop scatter on any surface. Procedural geometry — parametric furniture (15 types), horror props (7 types), architectural structures, mazes, pipes, terrain. Genre preset system for any game type. Encounter design with patrol routes, safe room evaluation, and scare sequence generation. Full accessibility reporting.
+
+**GAS (130 actions)** — Complete Gameplay Ability System integration. Create and manage Gameplay Abilities with activation policies, cooldowns, costs, and tags. Full AttributeSet CRUD — both C++ and Blueprint-based (via optional GBA plugin). Gameplay Effect authoring with modifiers, duration policies, stacking, period, and conditional application. Ability System Component (ASC) management — grant/revoke abilities, apply/remove effects, query active abilities and effects. Gameplay Tag utilities. Gameplay Cue management — create, trigger, inspect cues for audio/visual feedback. Target data generation and targeting tasks. Input binding for ability activation. Runtime inspection and debugging tools. Scaffolding actions that generate complete GAS setups from templates. Accessibility-focused infinite-duration GEs for reduced difficulty modes.
+
 ---
 
 ## Features
@@ -48,13 +52,17 @@ Most MCP integrations register every action as a separate tool, which floods the
 - **Material authoring (57 actions)** — Programmatic PBR graph building, custom HLSL, material functions, texture import, batch operations, preview rendering, compilation stats
 - **Animation (115 actions)** — Sequences, montages, blend spaces, Animation Blueprint graph writing (add states, transitions, rules, wire nodes), PoseSearch, Control Rig, Physics Assets, IK Rigs, Retargeters, skeleton management
 - **Niagara VFX (96 actions)** — System/emitter lifecycle, dynamic inputs, event handlers, sim stages, Parameter Collections, Effect Types, renderer presets, data interfaces, system diffing, batch execute
-- **UI (42 actions)** *(new module)* — Widget Blueprint CRUD, pre-built templates (HUDs, menus, settings, inventory, save slots), styling, animation, game system scaffolding (save/load, audio, input remapping), accessibility audit, colorblind modes, text scaling
+- **Mesh (242 actions)** — 22 capability tiers: mesh inspection, scene manipulation, spatial queries, blockout-to-production, GeometryScript ops, horror spatial analysis (WIP), accessibility validation (A-F grading), lighting (WIP), audio/acoustics (WIP), performance budgeting (WIP), decals, level design, tech art pipeline, context-aware props, procedural geometry (furniture, horror props, structures, mazes, terrain), genre presets, encounter design, accessibility reports. +45 town gen actions (work-in-progress, disabled by default)
+- **GAS (130 actions)** — Full Gameplay Ability System: abilities, AttributeSets (C++ and Blueprint via optional GBA), Gameplay Effects, ASC management, tags, cues, targeting, input binding, runtime inspection, scaffolding templates, accessibility-focused infinite-duration GEs
+- **UI (42 actions)** — Widget Blueprint CRUD, pre-built templates (HUDs, menus, settings, inventory, save slots), styling, animation, game system scaffolding (save/load, audio, input remapping), accessibility audit, colorblind modes, text scaling
 - **Editor control (19 actions)** — UBT builds, Live Coding, error diagnosis, log search, scene capture, texture import, crash context
 - **Config intelligence (6 actions)** — Full INI resolution chain, explain, diff, search across all config files
 - **Project search (7 actions)** — SQLite FTS5 across all indexed assets including marketplace/Fab content, reference tracing, 15 deep indexers
 - **Engine source (11 actions)** — Native C++ indexer over 1M+ symbols, call graphs, class hierarchy, offline — no Python required
 - **Auto-updater** — Checks GitHub Releases on editor startup, downloads and stages updates, auto-swaps on exit
-- **Claude Code skills** — 9 domain-specific workflow guides bundled with the plugin
+- **MCP auto-reconnect proxy** — stdio-to-HTTP proxy keeps Claude Code sessions alive across editor restarts, zero manual intervention
+- **Optional module system** — Extend Monolith with new MCP namespaces for third-party plugins (GeometryScripting, BlueprintAssist, GBA) without breaking the build for users who don't own them
+- **Claude Code skills** — 12 domain-specific workflow guides bundled with the plugin
 - **Pure C++** — Direct UE API access, embedded Streamable HTTP server, zero external dependencies
 
 ---
@@ -211,14 +219,17 @@ Monolith.uplugin
   MonolithMaterial      — Material inspection + graph editing + CRUD + material functions (57 actions)
   MonolithAnimation     — Animation sequences, montages, ABPs, PoseSearch, IKRig, Control Rig (115 actions)
   MonolithNiagara       — Niagara particle systems, dynamic inputs, event handlers, sim stages, NPC (96 actions)
+  MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, blockout, procedural geometry, horror/accessibility (242 actions)
   MonolithEditor        — Build triggers, log capture, compile output, crash context (19 actions)
   MonolithConfig        — Config/INI resolution and search (6 actions)
   MonolithIndex         — SQLite FTS5 deep project indexer, marketplace content, 15 asset indexers (7 actions)
   MonolithSource        — Native C++ engine source indexer, call graphs, class hierarchy (11 actions)
   MonolithUI            — UI widget Blueprint CRUD, templates, styling, animation (42 actions)
+  MonolithGAS           — Gameplay Ability System: abilities, effects, attributes, ASC, tags, cues, targeting (130 actions)
+  MonolithBABridge      — Blueprint Assist integration bridge (0 MCP actions — IModularFeatures only)
 ```
 
-**443 actions total across 10 modules, exposed through 13 MCP tools.**
+**815 actions total across 13 modules, exposed through 15 MCP tools.**
 
 ### Tool Reference
 
@@ -237,6 +248,8 @@ Monolith.uplugin
 | `project` | `project_query` | 7 | Deep project search — FTS5 across all indexed assets including marketplace plugins |
 | `source` | `source_query` | 11 | Native C++ engine source lookup, call graphs, class hierarchy, project reindex |
 | `ui` | `ui_query` | 42 | UI widget Blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility |
+| `mesh` | `mesh_query` | 242 | Mesh inspection, scene manipulation, spatial queries, blockout, GeometryScript, horror analysis, lighting, audio, performance, procedural geometry, encounter design |
+| `gas` | `gas_query` | 130 | Gameplay Ability System — abilities, effects, attributes, ASC, tags, cues, targeting, input, inspect, scaffold |
 
 ---
 
@@ -280,12 +293,15 @@ Settings live at **Editor Preferences > Plugins > Monolith**:
 | Index Marketplace Plugins | `On` | Index content from installed marketplace/Fab plugins |
 | Index Data Assets | `On` | Deep-index DataAsset subclasses (15 indexers) |
 | Additional Content Paths | `[]` | Extra content paths to include in the project index |
+| Enable Procedural Town Gen | `Off` | **Work-in-progress** — 45 additional mesh actions for procedural building/town generation. Very much a WIP; unless you're willing to dig in and help improve it, best left alone for now |
+| Enable GAS | `On` | Gameplay Ability System integration (130 actions, requires GameplayAbilities plugin) |
+| Enable Blueprint Assist | `On` | Blueprint Assist integration for enhanced auto_layout (requires BA marketplace plugin) |
 
 ---
 
 ## Skills
 
-Monolith bundles 9 Claude Code skills in `Skills/` — domain-specific workflow guides that give your AI the right mental model for each area:
+Monolith bundles 12 Claude Code skills in `Skills/` — domain-specific workflow guides that give your AI the right mental model for each area:
 
 | Skill | Description |
 |-------|-------------|
@@ -293,6 +309,9 @@ Monolith bundles 9 Claude Code skills in `Skills/` — domain-specific workflow 
 | `unreal-materials` | PBR setup, graph building, validation |
 | `unreal-animation` | Montages, ABP state machines, blend spaces |
 | `unreal-niagara` | Particle system creation, HLSL modules, scalability |
+| `unreal-mesh` | Mesh inspection, spatial queries, blockout, procedural geometry, horror/accessibility |
+| `unreal-ui` | Widget Blueprint CRUD, templates, styling, accessibility |
+| `unreal-gas` | Gameplay Ability System — abilities, effects, attributes, ASC, tags, cues |
 | `unreal-debugging` | Build errors, log search, crash context |
 | `unreal-performance` | Config auditing, shader stats, INI tuning |
 | `unreal-project-search` | FTS5 search syntax, reference tracing |

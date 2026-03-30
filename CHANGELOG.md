@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-03-30
+
+Massive expansion: +372 actions (443 → 815). Three new modules (MonolithMesh, MonolithGAS, MonolithUI) plus MonolithBABridge integration. MCP auto-reconnect proxy for Claude Code. Optional module system for third-party plugin integrations. Automated release builds with MONOLITH_RELEASE_BUILD env var. 12 skills (up from 9).
+
 ### Added
 
 **MCP Auto-Reconnect Proxy**
@@ -39,6 +43,59 @@ Requires Python 3.8+ (stdlib only, no pip install). The `.bat` launcher auto-fin
 - `Scripts/monolith_proxy.py` — stdio-to-HTTP proxy (pure Python, zero dependencies)
 - `Scripts/monolith_proxy.bat` — Windows launcher that auto-detects Python
 - `Templates/.mcp.json.proxy.example` — ready-to-copy config template
+
+**MonolithMesh (242 actions — 197 core + 45 experimental town gen)**
+
+The biggest module in Monolith. 22 capability tiers covering the entire spatial side of Unreal level design:
+
+- **Core (197 actions):** Mesh inspection and comparison. Full actor CRUD with scene manipulation. Physics-based spatial queries (raycasts, sweeps, overlaps, navmesh) that work in-editor without PIE. Level blockout workflow with auto-matching and atomic replacement. GeometryScript mesh operations (boolean, simplify, remesh, LOD gen, UV projection, mirroring). Horror spatial analysis — sightlines, hiding spots, ambush points, choke points, zone tension, pacing curves, dead-end detection. Accessibility validation with A-F grading. Lighting analysis with dark corner detection and mood-based placement suggestions. Audio/acoustics with Sabine RT60 reverb estimation, stealth maps, quiet path routing, AI hearing simulation. Performance budgeting with region analysis, overdraw detection, shadow cost analysis. Decal placement with Catmull-Rom paths and 5 horror storytelling presets. Level design tools for lights, volumes, sublevels, prefabs, splines, HISM instancing. Tech art pipeline for mesh import, LOD gen, texel density, collision authoring, lightmap analysis. Context-aware prop scatter on any surface (floors, shelves, tables, walls, ceilings) with room disturbance levels. Procedural geometry — parametric furniture (15 types), horror props (7 types), architectural structures, multi-story buildings, mazes (3 algorithms), pipes, mesh fragmentation, terrain patches. Genre preset system (storytelling patterns, acoustic profiles, tension profiles) for any game type. Encounter design with patrol routes, safe room evaluation, scare sequence generation, and accessibility intensity validation. Quality and polish tools including naming conventions, batch rename, proxy mesh generation, HLOD, texture budgets, composition framing, and monster reveal scoring.
+- **Town Gen (45 actions) — Work-in-progress:** Procedural floor plans, building facades, roofs, city blocks, spatial registry, auto-volumes, terrain/foundations, architectural features, room furnishing, debug views. Disabled by default (`bEnableProceduralTownGen` in Editor Preferences). Known geometry issues — wall misalignment, room separation. Very much a WIP; unless you're willing to dig in and help improve it, it's best left alone for now.
+
+**MonolithGAS (130 actions)**
+
+Complete Gameplay Ability System integration across 10 categories. All 4 implementation phases complete, 53/53 tests PASS.
+
+- **Abilities (14):** Create, grant, revoke, activate, inspect, list, configure activation policies, cooldowns, costs, tags
+- **Attributes (16):** AttributeSet CRUD for both C++ and Blueprint-based sets (Blueprint mode requires optional GBA plugin). Define attributes with min/max clamping, initialize from DataTables
+- **Effects (18):** Gameplay Effect authoring with modifiers, duration policies, stacking, period, conditional application, granted abilities, immunity
+- **ASC (12):** Ability System Component management — grant/revoke abilities, apply/remove effects, query active abilities and effects, initialize from DataTables
+- **Tags (10):** Gameplay Tag utilities — query, add, remove, check tag containers, hierarchical queries
+- **Cues (10):** Gameplay Cue management — create, trigger, inspect cues for audio/visual feedback
+- **Targeting (12):** Target data generation, targeting tasks, trace-based and actor-based targeting
+- **Input (8):** Input binding for ability activation via Enhanced Input
+- **Inspect (16):** Runtime debugging — query active effects, ability states, attribute values, cooldown status, blocking tags
+- **Scaffold (14):** Generate complete GAS setups from templates — character ability sets, attribute configurations, effect libraries, common gameplay patterns. Accessibility-focused infinite-duration GEs for reduced difficulty modes
+
+**MonolithUI (42 actions)**
+
+Widget Blueprint CRUD with a template system that scaffolds complete, functional UI. Pre-built templates for HUDs, main menus, settings screens, dialog boxes, loading screens, inventory grids, save/load menus, and toast notifications. Styling system for consistent theming. Widget animation support. Game-level scaffolding for settings, save systems, audio managers, input rebinding, and accessibility configurations. Built-in accessibility audit with colorblind modes and text scaling.
+
+**Optional Module System**
+
+- **MonolithBABridge** — Blueprint Assist integration via IModularFeatures bridge pattern. `auto_layout` action optionally delegates to BA's superior formatter when the marketplace plugin is installed. Compiles as empty shell when BA is absent — zero impact on users who don't own it.
+- **Conditional GBA support** — MonolithGAS detects the GBA (Blueprint Attributes) plugin at compile time. Blueprint AttributeSet creation requires GBA; all other 130 GAS actions work without it.
+- **`Build.cs` probe pattern** — Optional dependencies detected via `Directory.Exists()` at build time. `WITH_FOO=1` or `=0` preprocessor defines. No DLL load failures, no error dialogs. Full tutorial on [[Optional Modules]] wiki page.
+
+**Skills (+3)**
+
+- `unreal-mesh` — Mesh inspection, spatial queries, blockout, procedural geometry, horror/accessibility workflows
+- `unreal-ui` — Widget Blueprint CRUD, templates, styling, accessibility workflows
+- `unreal-gas` — Gameplay Ability System workflows: abilities, effects, attributes, ASC, tags, cues
+
+### Changed
+
+- **Total** — Action count 443 -> 815 (across 13 modules, exposed through 15 MCP tools)
+- **Skills** — 9 -> 12 Claude Code skills bundled with plugin
+- **Modules** — 10 -> 13 (added MonolithMesh, MonolithGAS, MonolithBABridge)
+
+### Fixed
+
+- SQLite multi-statement DDL was silently only executing the first statement, leaving source index schema incomplete (thanks @fp12 / ArcstoneGames)
+- Plugin path resolution now uses `IPluginManager` instead of hardcoded `Plugins/Monolith/` — works for nested install paths like `Plugins/Marketplace/Monolith/` (thanks @fp12 / ArcstoneGames)
+
+### Contributors
+
+Thanks to **@fp12** (ArcstoneGames) for two solid PRs this release — real bugs caught and clean fixes shipped.
 
 ## [0.10.0] - 2026-03-25
 

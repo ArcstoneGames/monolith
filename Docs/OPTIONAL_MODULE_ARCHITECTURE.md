@@ -1,6 +1,6 @@
 # Optional Module Architecture Specification
 
-**Status:** Approved Design | **Date:** 2026-03-27 | **Plugin:** Monolith v0.10.0+ | **Engine:** UE 5.7
+**Status:** Approved Design | **Date:** 2026-03-27 | **Plugin:** Monolith v0.11.0+ | **Engine:** UE 5.7
 
 ---
 
@@ -279,7 +279,7 @@ MonolithComboGraph/                 # Another satellite
 {
     "FileVersion": 3,
     "Version": 1,
-    "VersionName": "0.10.0",
+    "VersionName": "0.11.0",
     "FriendlyName": "Monolith GBA Integration",
     "Description": "Adds GAS Blueprint Attributes (GBA) support to Monolith MCP. Requires both Monolith and GBAPlugin.",
     "Category": "Editor",
@@ -356,7 +356,7 @@ The C++ source is identical. Only `Build.cs` differs: no `Directory.Exists()` ch
 ### 4.4 Directory Layout for Release Zip
 
 ```
-Monolith-v0.10.0.zip
+Monolith-v0.11.0.zip
     Monolith/
         Monolith.uplugin
         Binaries/

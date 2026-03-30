@@ -274,8 +274,9 @@ void FMonolithMeshFacadeActions::BuildWallSlab(UDynamicMesh* Mesh,
 	FVector WidthAxis = GetFaceWidthAxis(Face);
 	FVector Normal = Face.Normal.GetSafeNormal();
 
-	// Wall center: origin is at the start of the face, we center along width and place at face origin
-	FVector Center = Face.WorldOrigin + WidthAxis * (Face.Width * 0.5f) + Normal * (WallThickness * 0.5f);
+	// Wall straddles the grid boundary (no Normal offset).
+	// WorldOrigin is at the grid line; the wall extends WallThickness/2 on each side.
+	FVector Center = Face.WorldOrigin + WidthAxis * (Face.Width * 0.5f);
 
 	// Determine box dimensions based on face orientation
 	// AppendBox takes (DimX, DimY, DimZ) in world-aligned coords
@@ -322,7 +323,7 @@ void FMonolithMeshFacadeActions::CutOpenings(UDynamicMesh* Mesh,
 	for (const FWindowPlacement& Win : Windows)
 	{
 		// CenterX is relative to face center along width axis
-		FVector WinCenter = FaceCenter + WidthAxis * Win.CenterX + Normal * (WallThickness * 0.5f);
+		FVector WinCenter = FaceCenter + WidthAxis * Win.CenterX;
 		WinCenter.Z = Face.WorldOrigin.Z + Win.SillZ;
 
 		float CutW, CutD;
@@ -347,7 +348,7 @@ void FMonolithMeshFacadeActions::CutOpenings(UDynamicMesh* Mesh,
 
 	for (const FDoorPlacement& Door : Doors)
 	{
-		FVector DoorCenter = FaceCenter + WidthAxis * Door.CenterX + Normal * (WallThickness * 0.5f);
+		FVector DoorCenter = FaceCenter + WidthAxis * Door.CenterX;
 		DoorCenter.Z = Face.WorldOrigin.Z;
 
 		float CutW, CutD;
@@ -396,11 +397,16 @@ void FMonolithMeshFacadeActions::CutOpeningsSelectionInset(UDynamicMesh* Mesh,
 		return;
 	}
 
-	// Fallback to boolean subtract if requested
+	// Fallback to boolean subtract — isolate wall in temp mesh for clean boolean
 	if (!bUseSelectionInset)
 	{
-		BuildWallSlab(Mesh, Face, WallThickness, 0);
-		CutOpenings(Mesh, Face, Windows, Doors, WallThickness, bHadBooleans);
+		UDynamicMesh* WallMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+		BuildWallSlab(WallMesh, Face, WallThickness, 0);
+		CutOpenings(WallMesh, Face, Windows, Doors, WallThickness, bHadBooleans);
+		// Append the cleanly-cut wall to the main mesh
+		UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
+			Mesh, WallMesh, FTransform::Identity, true);
+		WallMesh->MarkAsGarbage(); // Ensure GC cleanup
 		return;
 	}
 

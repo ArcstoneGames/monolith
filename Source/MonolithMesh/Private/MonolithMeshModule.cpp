@@ -72,12 +72,16 @@ void FMonolithMeshModule::StartupModule()
 	FMonolithMeshPresetActions::RegisterActions(FMonolithToolRegistry::Get());
 	FMonolithMeshEncounterActions::RegisterActions(FMonolithToolRegistry::Get());
 	FMonolithMeshQualityActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshFloorPlanGenerator::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshSpatialRegistry::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshAutoVolumeActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshFurnishingActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshDebugViewActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshBuildingValidationActions::RegisterActions(FMonolithToolRegistry::Get());
+	// --- Procedural Town Generation (experimental, off by default) ---
+	if (GetDefault<UMonolithSettings>()->bEnableProceduralTownGen)
+	{
+		FMonolithMeshFloorPlanGenerator::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshSpatialRegistry::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshAutoVolumeActions::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshFurnishingActions::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshDebugViewActions::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshBuildingValidationActions::RegisterActions(FMonolithToolRegistry::Get());
+	}
 
 #if WITH_GEOMETRYSCRIPT
 	HandlePool = NewObject<UMonolithMeshHandlePool>();
@@ -87,18 +91,24 @@ void FMonolithMeshModule::StartupModule()
 	FMonolithMeshOperationActions::RegisterActions(FMonolithToolRegistry::Get());
 	FMonolithMeshProceduralActions::SetHandlePool(HandlePool);
 	FMonolithMeshProceduralActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshBuildingActions::SetHandlePool(HandlePool);
-	FMonolithMeshBuildingActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshFacadeActions::SetHandlePool(HandlePool);
-	FMonolithMeshFacadeActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshRoofActions::SetHandlePool(HandlePool);
-	FMonolithMeshRoofActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshCityBlockActions::SetHandlePool(HandlePool);
-	FMonolithMeshCityBlockActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshTerrainActions::SetHandlePool(HandlePool);
-	FMonolithMeshTerrainActions::RegisterActions(FMonolithToolRegistry::Get());
-	FMonolithMeshArchFeatureActions::SetHandlePool(HandlePool);
-	FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry::Get());
+
+	// --- Town gen GeometryScript actions (experimental, off by default) ---
+	if (GetDefault<UMonolithSettings>()->bEnableProceduralTownGen)
+	{
+		FMonolithMeshBuildingActions::SetHandlePool(HandlePool);
+		FMonolithMeshBuildingActions::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshFacadeActions::SetHandlePool(HandlePool);
+		FMonolithMeshFacadeActions::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshRoofActions::SetHandlePool(HandlePool);
+		FMonolithMeshRoofActions::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshCityBlockActions::SetHandlePool(HandlePool);
+		FMonolithMeshCityBlockActions::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshTerrainActions::SetHandlePool(HandlePool);
+		FMonolithMeshTerrainActions::RegisterActions(FMonolithToolRegistry::Get());
+		FMonolithMeshArchFeatureActions::SetHandlePool(HandlePool);
+		FMonolithMeshArchFeatureActions::RegisterActions(FMonolithToolRegistry::Get());
+	}
+
 	FMonolithMeshTechArtActions::SetHandlePool(HandlePool);
 
 	// Clean up handle pool on PreExit — before GC destroys UObjects.

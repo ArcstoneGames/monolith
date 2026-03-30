@@ -222,6 +222,17 @@ FMonolithMeshFurnishingActions::FFurnitureItem FMonolithMeshFurnishingActions::P
 
 	ItemJson->TryGetStringField(TEXT("near"), Item.NearItem);
 
+	// Placement type (floor vs wall_mount)
+	FString PlacementTypeStr;
+	if (ItemJson->TryGetStringField(TEXT("placement_type"), PlacementTypeStr))
+	{
+		if (PlacementTypeStr == TEXT("wall_mount"))
+			Item.PlacementType = EPlacementType::WallMount;
+	}
+	double MountHeightVal = 0.0;
+	if (ItemJson->TryGetNumberField(TEXT("mount_height"), MountHeightVal))
+		Item.MountHeight = static_cast<float>(MountHeightVal);
+
 	return Item;
 }
 
@@ -405,20 +416,51 @@ bool FMonolithMeshFurnishingActions::ComputePlacement(
 			OutDimensions.X = WallInfo.Length - GWallOffset * 2.0f;
 		}
 
-		// Position: wall center, offset inward by depth/2 + wall offset
-		FVector WallCenter = WallInfo.Center;
-		WallCenter.Z = Walls.RoomMin.Z; // Floor level
-
-		// Offset from wall: half depth + margin
-		FVector InwardOffset = WallInfo.Normal * (OutDimensions.Y * 0.5f + GWallOffset);
-		OutPosition = WallCenter + InwardOffset;
-
 		// Rotation: face away from wall (furniture back against wall)
 		// Normal points inward, so rotation faces the normal direction
 		if (WallIdx == 0)      OutRotation = FRotator(0, 0, 0);     // South wall, face north
 		else if (WallIdx == 1) OutRotation = FRotator(0, 180, 0);   // North wall, face south
 		else if (WallIdx == 2) OutRotation = FRotator(0, 90, 0);    // West wall, face east
 		else if (WallIdx == 3) OutRotation = FRotator(0, -90, 0);   // East wall, face west
+
+		// --- WallMount: position flush against wall at mount height ---
+		if (Item.PlacementType == EPlacementType::WallMount)
+		{
+			FVector WallCenter = WallInfo.Center;
+			// Position flush against wall
+			OutPosition = WallCenter + WallInfo.Normal * (OutDimensions.Y * 0.5f + 1.0f);
+			// Height: use mount_height or default to wall midpoint
+			OutPosition.Z = (Item.MountHeight > 0.0f)
+				? Walls.RoomMin.Z + Item.MountHeight
+				: Walls.RoomMin.Z + Walls.RoomHeight * 0.5f;
+
+			// Center along wall axis
+			if (WallIdx <= 1)
+				OutPosition.X = WallCenter.X;
+			else
+				OutPosition.Y = WallCenter.Y;
+
+			// Spread wall-mounted items along wall to avoid stacking
+			FVector WallDir = (WallInfo.End - WallInfo.Start).GetSafeNormal();
+			float WallLength = WallInfo.Length - 2.0f * GWallOffset;
+			float ItemW = OutDimensions.X;
+			if (!Item.bStretchToWall && WallLength > ItemW)
+			{
+				uint32 NameHash = GetTypeHash(Item.Name);
+				float Offset = (static_cast<float>(NameHash % 1000) / 1000.0f) * (WallLength - ItemW) - (WallLength - ItemW) * 0.5f;
+				OutPosition += WallDir * Offset;
+			}
+
+			break;
+		}
+
+		// --- Floor-level wall-aligned placement ---
+		FVector WallCenter = WallInfo.Center;
+		WallCenter.Z = Walls.RoomMin.Z; // Floor level
+
+		// Offset from wall: half depth + margin
+		FVector InwardOffset = WallInfo.Normal * (OutDimensions.Y * 0.5f + GWallOffset);
+		OutPosition = WallCenter + InwardOffset;
 
 		// For wall-aligned items on N/S walls, furniture width spans X; on E/W walls, spans Y
 		// Adjust position to wall center along the wall's axis
@@ -431,6 +473,17 @@ bool FMonolithMeshFurnishingActions::ComputePlacement(
 		{
 			// E/W wall — item centered along Y, swap width/depth for placement
 			OutPosition.Y = WallCenter.Y;
+		}
+
+		// Spread items along wall instead of all landing at center
+		FVector WallDir = (WallInfo.End - WallInfo.Start).GetSafeNormal();
+		float WallLength = WallInfo.Length - 2.0f * GWallOffset;
+		float ItemW = OutDimensions.X;
+		if (!Item.bStretchToWall && WallLength > ItemW)
+		{
+			uint32 NameHash = GetTypeHash(Item.Name);
+			float Offset = (static_cast<float>(NameHash % 1000) / 1000.0f) * (WallLength - ItemW) - (WallLength - ItemW) * 0.5f;
+			OutPosition += WallDir * Offset;
 		}
 
 		break;
@@ -825,12 +878,21 @@ FMonolithActionResult FMonolithMeshFurnishingActions::FurnishRoom(const TSharedP
 			FRotator Rotation;
 			FVector Dimensions;
 
-			bool bPlaced = ComputePlacement(Item, Walls, DoorPositions, OccupiedBoxes,
-				PlacedItemPositions, Position, Rotation, Dimensions, Rng);
+			static constexpr int32 MaxRetries = 4;
+			bool bPlaced = false;
+			for (int32 Retry = 0; Retry <= MaxRetries; ++Retry)
+			{
+				FRandomStream RetryRng(Rng.GetCurrentSeed() + Retry * 997);
+				bPlaced = ComputePlacement(Item, Walls, DoorPositions, OccupiedBoxes,
+					PlacedItemPositions, Position, Rotation, Dimensions,
+					(Retry == 0) ? Rng : RetryRng);
+				if (bPlaced)
+					break;
+			}
 
 			if (!bPlaced)
 			{
-				// Item skipped due to collision
+				// Item skipped after all retries due to collision
 				auto SkipObj = MakeShared<FJsonObject>();
 				SkipObj->SetStringField(TEXT("name"), Item.Name);
 				SkipObj->SetStringField(TEXT("type"), Item.Type);

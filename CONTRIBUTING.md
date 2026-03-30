@@ -22,7 +22,7 @@ git clone https://github.com/tumourlove/monolith.git Monolith
 git clone https://github.com/tumourlove/monolith.git C:\Projects\Monolith
 ```
 
-Generate project files and build from your UE project as usual. Monolith is an editor-only plugin — all 9 modules have `Type: "Editor"`.
+Generate project files and build from your UE project as usual. Monolith is an editor-only plugin — all 13 modules have `Type: "Editor"`.
 
 ### Development Workflow
 
@@ -36,19 +36,23 @@ YourProject/Plugins/Monolith/   — edit, build, commit, push from here
 
 ## Code Structure
 
-Monolith has 9 modules, each owning a specific domain:
+Monolith has 13 modules, each owning a specific domain:
 
 | Module | Namespace | Actions | What It Does |
 |--------|-----------|---------|--------------|
 | **MonolithCore** | `monolith` | 4 | HTTP server, tool registry, discovery, settings, auto-updater |
-| **MonolithBlueprint** | `blueprint` | 6 | Blueprint graph reading — topology, variables, execution flow, graph summary |
-| **MonolithMaterial** | `material` | 25 | Material inspection, graph editing, CRUD, instances, parameters, validation |
-| **MonolithAnimation** | `animation` | 67 | Montages, blend spaces, ABP state machines, bone tracks, curves, PoseSearch |
-| **MonolithNiagara** | `niagara` | 41 | Particle systems, modules, parameters, renderers, HLSL |
-| **MonolithEditor** | `editor` | 13 | Build triggers, live compile, log capture, crash context |
+| **MonolithBlueprint** | `blueprint` | 86 | Blueprint read/write, variable/component/graph CRUD, node operations, compile, auto-layout |
+| **MonolithMaterial** | `material` | 57 | Material graph editing, inspection, CRUD, instances, functions, HLSL |
+| **MonolithAnimation** | `animation` | 115 | Sequences, montages, ABPs, curves, notifies, skeletons, PoseSearch, IKRig, Control Rig |
+| **MonolithNiagara** | `niagara` | 96 | Particle systems, emitters, modules, renderers, HLSL, dynamic inputs, event handlers, sim stages |
+| **MonolithMesh** | `mesh` | 242 | Mesh inspection, scene manipulation, spatial queries, blockout, procedural geometry, lighting, audio, town gen (197 core + 45 experimental) |
+| **MonolithEditor** | `editor` | 19 | Build triggers, live compile, log capture, crash context, scene capture, texture import |
 | **MonolithConfig** | `config` | 6 | INI resolution, explain, diff, search |
-| **MonolithIndex** | `project` | 5 | SQLite FTS5 deep project indexer |
-| **MonolithSource** | `source` | 10 | Engine source lookup, call graphs, class hierarchy |
+| **MonolithIndex** | `project` | 7 | SQLite FTS5 deep project indexer |
+| **MonolithSource** | `source` | 11 | Engine source lookup, call graphs, class hierarchy |
+| **MonolithUI** | `ui` | 42 | Widget Blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility |
+| **MonolithGAS** | `gas` | 130 | Gameplay Ability System: abilities, attributes, effects, ASC, tags, cues, targeting, input, inspect, scaffold |
+| **MonolithBABridge** | — | 0 | Optional Blueprint Assist integration bridge (no MCP actions — integration only) |
 
 Each module follows the same file structure:
 
@@ -291,7 +295,7 @@ Then use Claude Code or any MCP-compatible client to interact with the tools.
 
 ## Architecture Notes
 
-- **Discovery/dispatch pattern** — Each domain exposes one `{namespace}_query(action, params)` MCP tool. The registry dispatches to the correct handler. This keeps AI context lean (12 tools instead of 177).
+- **Discovery/dispatch pattern** — Each domain exposes one `{namespace}_query(action, params)` MCP tool. The registry dispatches to the correct handler. This keeps AI context lean (15 tools instead of 815 individual endpoints).
 - **Thread safety** — `FMonolithToolRegistry` releases its lock before executing handlers. DB access uses `FCriticalSection`.
 - **Stateless server** — No session tracking. Every request is independent.
 - **MCP protocol version** — 2025-03-26, Streamable HTTP transport.

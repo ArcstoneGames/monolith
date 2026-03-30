@@ -2,10 +2,34 @@
 #include "MonolithCoreModule.h"
 #include "MonolithJsonUtils.h"
 #include "MonolithHttpServer.h"
+#include "MonolithSettings.h"
 #include "MonolithUpdateSubsystem.h"
 #include "EditorSubsystem.h"
 #include "Misc/App.h"
 #include "Editor.h"
+
+// Known optional modules — namespaces that may not have registered actions
+// depending on settings or missing plugin dependencies.
+struct FKnownOptionalModule
+{
+	FString Namespace;
+	FString SettingsField;   // bool property name on UMonolithSettings
+	FString ToolName;        // MCP tool name (namespace_query)
+	FString InstallHint;
+};
+
+static const TArray<FKnownOptionalModule>& GetKnownOptionalModules()
+{
+	static const TArray<FKnownOptionalModule> Modules = {
+		{
+			TEXT("gas"),
+			TEXT("bEnableGAS"),
+			TEXT("gas_query"),
+			TEXT("MonolithGAS module provides Gameplay Ability System tooling (attributes, abilities, effects, cues). Requires GameplayAbilities plugin (engine-bundled).")
+		}
+	};
+	return Modules;
+}
 
 void FMonolithCoreTools::RegisterAll()
 {
@@ -83,6 +107,52 @@ FMonolithActionResult FMonolithCoreTools::HandleDiscover(const TSharedPtr<FJsonO
 		TArray<FMonolithActionInfo> Actions = Registry.GetActions(FilterNamespace);
 		if (Actions.Num() == 0)
 		{
+			// Check if this is a known optional module
+			const TArray<FKnownOptionalModule>& OptionalModules = GetKnownOptionalModules();
+			const FKnownOptionalModule* Found = nullptr;
+			for (const FKnownOptionalModule& Mod : OptionalModules)
+			{
+				if (Mod.Namespace.Equals(FilterNamespace, ESearchCase::IgnoreCase))
+				{
+					Found = &Mod;
+					break;
+				}
+			}
+
+			if (Found)
+			{
+				// Determine disabled vs not_installed by checking the settings toggle
+				const UMonolithSettings* Settings = UMonolithSettings::Get();
+				bool bSettingEnabled = false;
+				if (Settings)
+				{
+					const FBoolProperty* Prop = CastField<FBoolProperty>(
+						UMonolithSettings::StaticClass()->FindPropertyByName(*Found->SettingsField));
+					if (Prop)
+					{
+						bSettingEnabled = Prop->GetPropertyValue_InContainer(Settings);
+					}
+				}
+
+				Result->SetStringField(TEXT("namespace"), Found->Namespace);
+				Result->SetNumberField(TEXT("actions"), 0);
+
+				if (!bSettingEnabled)
+				{
+					Result->SetStringField(TEXT("status"), TEXT("disabled"));
+					Result->SetStringField(TEXT("hint"),
+						FString::Printf(TEXT("Enable in Project Settings > Plugins > Monolith > Modules > Optional (%s), then restart the editor."),
+							*Found->SettingsField));
+				}
+				else
+				{
+					Result->SetStringField(TEXT("status"), TEXT("not_installed"));
+					Result->SetStringField(TEXT("hint"), Found->InstallHint);
+				}
+
+				return FMonolithActionResult::Success(Result);
+			}
+
 			return FMonolithActionResult::Error(
 				FString::Printf(TEXT("Unknown namespace: %s"), *FilterNamespace),
 				FMonolithJsonUtils::ErrInvalidParams
@@ -123,6 +193,47 @@ FMonolithActionResult FMonolithCoreTools::HandleDiscover(const TSharedPtr<FJsonO
 			NsObj->SetArrayField(TEXT("actions"), ActionNames);
 			NsArray.Add(MakeShared<FJsonValueObject>(NsObj));
 		}
+		// Append known optional modules that aren't already registered
+		const TArray<FKnownOptionalModule>& OptionalModules = GetKnownOptionalModules();
+		const UMonolithSettings* Settings = UMonolithSettings::Get();
+
+		TArray<TSharedPtr<FJsonValue>> OptionalArray;
+		for (const FKnownOptionalModule& Mod : OptionalModules)
+		{
+			// Skip if this namespace already has registered actions (it's active)
+			if (Namespaces.Contains(Mod.Namespace))
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> OptObj = MakeShared<FJsonObject>();
+			OptObj->SetStringField(TEXT("namespace"), Mod.Namespace);
+			OptObj->SetStringField(TEXT("tool"), Mod.ToolName);
+			OptObj->SetNumberField(TEXT("action_count"), 0);
+
+			bool bSettingEnabled = false;
+			if (Settings)
+			{
+				const FBoolProperty* Prop = CastField<FBoolProperty>(
+					UMonolithSettings::StaticClass()->FindPropertyByName(*Mod.SettingsField));
+				if (Prop)
+				{
+					bSettingEnabled = Prop->GetPropertyValue_InContainer(Settings);
+				}
+			}
+
+			OptObj->SetStringField(TEXT("status"), bSettingEnabled ? TEXT("not_installed") : TEXT("disabled"));
+			OptObj->SetStringField(TEXT("hint"), bSettingEnabled ? Mod.InstallHint
+				: FString::Printf(TEXT("Enable in Project Settings > Plugins > Monolith > Modules > Optional (%s), then restart the editor."), *Mod.SettingsField));
+
+			OptionalArray.Add(MakeShared<FJsonValueObject>(OptObj));
+		}
+
+		if (OptionalArray.Num() > 0)
+		{
+			Result->SetArrayField(TEXT("optional_modules"), OptionalArray);
+		}
+
 		Result->SetArrayField(TEXT("namespaces"), NsArray);
 		Result->SetNumberField(TEXT("total_actions"), Registry.GetActionCount());
 	}

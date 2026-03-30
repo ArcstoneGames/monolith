@@ -3004,7 +3004,8 @@ bool FMonolithMeshFloorPlanGenerator::LoadFloorPlanTemplate(
 
 FString FMonolithMeshFloorPlanGenerator::SelectTemplate(
 	const FString& Category, float FootprintW, float FootprintH,
-	FRandomStream& Rng, FString& OutError)
+	FRandomStream& Rng, FString& OutError,
+	const TSet<FString>& ExcludeTemplates)
 {
 	FString TemplateDir = FPaths::Combine(GetTemplateDirectory(), Category);
 
@@ -3029,6 +3030,11 @@ FString FMonolithMeshFloorPlanGenerator::SelectTemplate(
 	for (const FString& File : Files)
 	{
 		FString Name = FPaths::GetBaseFilename(File);
+
+		// Skip templates already used in this city block
+		if (ExcludeTemplates.Contains(Name))
+			continue;
+
 		FString FullPath = FPaths::Combine(TemplateDir, File);
 
 		// Load just the metadata (don't parse full grid)
@@ -3074,8 +3080,8 @@ FString FMonolithMeshFloorPlanGenerator::SelectTemplate(
 	// Sort by score (best first)
 	Candidates.Sort([](const FTemplateCandidate& A, const FTemplateCandidate& B) { return A.Score < B.Score; });
 
-	// Weighted random from top 3 (or fewer)
-	int32 PoolSize = FMath::Min(3, Candidates.Num());
+	// Weighted random from top 5 (or fewer)
+	int32 PoolSize = FMath::Min(5, Candidates.Num());
 
 	// Weight: inverse of score (better = higher weight). Use softmax-ish weighting.
 	TArray<float> Weights;
@@ -3161,10 +3167,10 @@ bool FMonolithMeshFloorPlanGenerator::ScaleTemplateGrid(
 	// Scale door positions
 	for (FDoorDef& Door : InOutDoors)
 	{
-		Door.EdgeStart.X = FMath::Clamp(FMath::RoundToInt32(Door.EdgeStart.X * ScaleX), 0, TargetGridW - 1);
-		Door.EdgeStart.Y = FMath::Clamp(FMath::RoundToInt32(Door.EdgeStart.Y * ScaleY), 0, TargetGridH - 1);
-		Door.EdgeEnd.X = FMath::Clamp(FMath::RoundToInt32(Door.EdgeEnd.X * ScaleX), 0, TargetGridW - 1);
-		Door.EdgeEnd.Y = FMath::Clamp(FMath::RoundToInt32(Door.EdgeEnd.Y * ScaleY), 0, TargetGridH - 1);
+		Door.EdgeStart.X = FMath::Clamp(FMath::RoundToInt32(Door.EdgeStart.X * ScaleX), 0, TargetGridW);
+		Door.EdgeStart.Y = FMath::Clamp(FMath::RoundToInt32(Door.EdgeStart.Y * ScaleY), 0, TargetGridH);
+		Door.EdgeEnd.X = FMath::Clamp(FMath::RoundToInt32(Door.EdgeEnd.X * ScaleX), 0, TargetGridW);
+		Door.EdgeEnd.Y = FMath::Clamp(FMath::RoundToInt32(Door.EdgeEnd.Y * ScaleY), 0, TargetGridH);
 
 		// Re-enforce axis alignment after scaling
 		if (Door.EdgeStart.X != Door.EdgeEnd.X && Door.EdgeStart.Y != Door.EdgeEnd.Y)
@@ -3335,6 +3341,15 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 	FString Genre;
 	Params->TryGetStringField(TEXT("genre"), Genre);
 
+	// Parse exclude_templates (dedup from orchestrator)
+	TSet<FString> ExcludeTemplates;
+	const TArray<TSharedPtr<FJsonValue>>* ExcludeArr;
+	if (Params->TryGetArrayField(TEXT("exclude_templates"), ExcludeArr))
+	{
+		for (const auto& Val : *ExcludeArr)
+			ExcludeTemplates.Add(Val->AsString());
+	}
+
 	// Genre override: horror genre forces horror template category
 	if (Genre.ToLower() == TEXT("horror") && TemplateCategory.IsEmpty())
 	{
@@ -3357,7 +3372,7 @@ FMonolithActionResult FMonolithMeshFloorPlanGenerator::GenerateFloorPlan(const T
 		// If no specific template, select one
 		if (ResolvedTemplate.IsEmpty() && !ResolvedCategory.IsEmpty())
 		{
-			ResolvedTemplate = SelectTemplate(ResolvedCategory, static_cast<float>(FootprintW), static_cast<float>(FootprintH), Rng, TemplateError);
+			ResolvedTemplate = SelectTemplate(ResolvedCategory, static_cast<float>(FootprintW), static_cast<float>(FootprintH), Rng, TemplateError, ExcludeTemplates);
 		}
 
 		// If we still don't have a category but have a template name, try common categories
