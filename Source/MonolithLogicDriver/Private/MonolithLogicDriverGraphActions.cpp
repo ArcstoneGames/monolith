@@ -588,31 +588,11 @@ namespace
 		return NewNode;
 	}
 
-	/** Try to set a node's name via common reflection property names. */
+	/** Try to set a node's name via NodeInstanceTemplate->NodeDescription.Name. */
 	void TrySetNodeName(UEdGraphNode* Node, const FString& Name)
 	{
 		if (Name.IsEmpty() || !Node) return;
-		// Logic Driver nodes typically expose a name via various properties
-		static const FName CandidateNames[] = {
-			TEXT("StateName"), TEXT("NodeName"), TEXT("Name"),
-			TEXT("ConduitName"), TEXT("StateMachineName")
-		};
-		for (const FName& PropName : CandidateNames)
-		{
-			if (SetPropertyByName(Node, PropName.ToString(), Name))
-			{
-				return;
-			}
-		}
-		// Fallback: OnRenameNode if available via UFunction
-		UFunction* RenameFunc = Node->GetClass()->FindFunctionByName(TEXT("OnRenameNode"));
-		if (RenameFunc)
-		{
-			// OnRenameNode(const FString& NewName) — common signature
-			struct { FString NewName; } Parms;
-			Parms.NewName = Name;
-			Node->ProcessEvent(RenameFunc, &Parms);
-		}
+		MonolithLD::SetNodeName(Node, Name);
 	}
 
 	/** Mark blueprint as structurally modified + dirty. */
@@ -1175,9 +1155,9 @@ FMonolithActionResult FMonolithLogicDriverGraphActions::HandleRenameNode(const T
 	UEdGraphNode* Node = MonolithLD::FindNodeByGuid(RootGraph, NodeGuid);
 	if (!Node) return FMonolithActionResult::Error(FString::Printf(TEXT("Node not found with GUID '%s'"), *NodeGuid));
 
-	FString OldName = Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+	FString OldName = MonolithLD::GetNodeName(Node);
 
-	TrySetNodeName(Node, NewName);
+	MonolithLD::SetNodeName(Node, NewName);
 
 	MarkModified(BP);
 

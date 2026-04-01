@@ -1,6 +1,6 @@
 # Monolith — TODO
 
-Last updated: 2026-03-30
+Last updated: 2026-04-01
 
 ---
 
@@ -25,6 +25,30 @@ Last updated: 2026-03-30
 - [ ] **Combo graph templates** — Preset templates for common combo patterns (3-hit light chain, heavy finisher, dodge cancel).
 - [ ] **Runtime inspection** — PIE-only actions to inspect active combo state on actors.
 - [ ] **Batch node operations** — `batch_add_nodes` for creating multiple nodes in one call.
+
+---
+
+### MonolithLogicDriver Module — 66 Actions, Phases 1-4 COMPLETE (2026-04-01)
+
+- [x] Phase 1 — Asset CRUD (8 actions): create_state_machine, list_state_machines, delete_state_machine, compile_state_machine, duplicate, rename.
+- [x] Phase 2 — Graph Read/Write (20) + Node Config (8): get_sm_structure, add/remove/connect states and transitions, get/set node properties, auto_arrange_graph. Node class config, transition rules, conduits, colors, entry points.
+- [x] Phase 3 — Runtime/PIE (7) + JSON/Spec (5) + Discovery (6): PIE start/stop/step, active state inspection, variable access. build_sm_from_spec (power action), export/import JSON, validate/diff specs. Overview, explain, compare, validate, search.
+- [x] Phase 4 — Scaffolding (7) + Component (3) + Text Graph (2): 7 scaffold templates (hello_world, horror_encounter, patrol, dialogue, health, interaction, quest). SM component add/configure/inspect. visualize_sm_as_text (Mermaid), export_sm_as_dot (Graphviz).
+- [x] Conditional compilation — `#if WITH_LOGICDRIVER` wraps entire module. 3-location Build.cs detection (project plugins, engine marketplace, engine plugins). Compiles clean with WITH_LOGICDRIVER=1 and WITH_LOGICDRIVER=0.
+- [x] Settings toggle — `bEnableLogicDriver` in UMonolithSettings (default: true).
+- [x] Reflection-only integration — uses UObject reflection, no direct C++ API linkage against Logic Driver Pro binaries.
+- [x] Skill file — `unreal-logicdriver` skill created in `.claude/skills/` and `Plugins/Monolith/Skills/`.
+
+#### MonolithLogicDriver — Testing Complete (2026-04-01)
+
+- [x] **Functional testing** — 17/17 tests PASS, 0 FAIL. 6 bugs found and fixed during testing. All 4 phases implemented.
+- [x] **Post-implementation polish** — Factory assertion crash fix, delete→re-create crash fix (CollectGarbage), root graph recursive search, initial state detection fix, state naming fix (OnRenameNode), names-lost-on-recompile fix.
+
+#### MonolithLogicDriver — Future Work
+
+- [ ] **Runtime variable templates** — Scaffold common SM variable patterns (health thresholds, timers, counters).
+- [ ] **Batch state operations** — `batch_add_states` for creating multiple states in one call.
+- [ ] **Cross-module integration** — Link SM transitions to GAS ability triggers, BT task integration.
 
 ---
 

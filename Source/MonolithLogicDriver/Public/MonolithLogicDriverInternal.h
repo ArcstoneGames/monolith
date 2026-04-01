@@ -23,8 +23,15 @@ namespace MonolithLD
 	UClass* GetSMNodeBlueprintFactoryClass();// "SMNodeBlueprintFactory"
 	UClass* GetSMInstanceClass();            // "SMInstance"
 	UClass* GetSMComponentClass();           // "SMStateMachineComponent"
+	UClass* GetSMEntryNodeClass();           // "SMGraphNode_StateMachineEntryNode"
 
 	// ── Helpers ──────────────────────────────────────────────────
+
+	/** Set display name on an SM graph node via its NodeInstanceTemplate */
+	bool SetNodeName(UEdGraphNode* Node, const FString& Name);
+
+	/** Get display name from an SM graph node via its NodeInstanceTemplate */
+	FString GetNodeName(UEdGraphNode* Node);
 
 	/** Load SM Blueprint from asset path. Returns UBlueprint* (verified as SMBlueprint via class check) */
 	UBlueprint* LoadSMBlueprint(const FString& AssetPath, FString& OutError);
@@ -63,6 +70,9 @@ namespace MonolithLD
 	bool GetBoolProperty(UObject* Obj, FName PropName, bool Default = false);
 	int32 GetIntProperty(UObject* Obj, FName PropName, int32 Default = 0);
 	float GetFloatProperty(UObject* Obj, FName PropName, float Default = 0.f);
+
+	/** 3-tier guard that asset path is free. MUST call AFTER CreatePackage+FullyLoad. */
+	bool EnsureAssetPathFree(UPackage* Package, const FString& PackagePath, const FString& AssetName, FString& OutError);
 }
 
 #endif // WITH_LOGICDRIVER

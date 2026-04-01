@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 16 MCP tools (827 total actions across 13 domains; 782 active by default — 45 experimental town gen actions disabled), cutting AI assistant context consumption by ~95%.
+Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 17 MCP tools (893 total actions across 14 domains; 848 active by default — 45 experimental town gen actions disabled), cutting AI assistant context consumption by ~95%.
 
 ### What It Replaces
 
@@ -47,12 +47,13 @@ Monolith.uplugin
   MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript ops, horror/accessibility, lighting, audio/acoustics, performance, decals, level design, tech art, context props, procedural geometry (sweep walls, auto-collision, proc mesh caching, blueprint prefabs), genre presets, encounter design, accessibility reports (197 core actions) + EXPERIMENTAL procedural town generator (45 actions, disabled by default via bEnableProceduralTownGen) = 242 total
   MonolithGAS           — Gameplay Ability System integration: abilities, attributes, effects, ASC, tags, cues, targets, input, inspection, scaffolding (130 actions). Conditional on #if WITH_GBA
   MonolithComboGraph    — ComboGraph plugin integration: combo graph CRUD, node/edge management, effects, cues, ability scaffolding (12 actions). Conditional on #if WITH_COMBOGRAPH
+  MonolithLogicDriver   — Logic Driver Pro integration: SM CRUD, graph read/write, node config, runtime/PIE, JSON spec, scaffolding, discovery, components, text graph (66 actions). Conditional on #if WITH_LOGICDRIVER
   MonolithBABridge      — Optional IModularFeatures bridge for Blueprint Assist integration. Exposes IMonolithGraphFormatter; enables BA-powered auto_layout across blueprint, material, animation, and niagara modules when Blueprint Assist is present (0 MCP actions — integration only)
 ```
 
 ### Discovery/Dispatch Pattern
 
-All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone. Conditional modules (e.g. MonolithGAS, MonolithComboGraph) gate registration on compile-time defines (`#if WITH_GBA`, `#if WITH_COMBOGRAPH`).
+All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone. Conditional modules (e.g. MonolithGAS, MonolithComboGraph, MonolithLogicDriver) gate registration on compile-time defines (`#if WITH_GBA`, `#if WITH_COMBOGRAPH`, `#if WITH_LOGICDRIVER`).
 
 ### MCP Protocol
 
@@ -1270,6 +1271,49 @@ MonolithComboGraph provides MCP coverage of the ComboGraph marketplace plugin. I
 
 ---
 
+### 3.15 MonolithLogicDriver
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore
+**Namespace:** `logicdriver` | **Tool:** `logicdriver_query(action, params)` | **Actions:** 66
+**Conditional:** Logic Driver Pro plugin features wrapped in `#if WITH_LOGICDRIVER`. When Logic Driver Pro is absent, the module compiles to an empty stub (0 actions registered). Uses UObject reflection only — no direct C++ API linkage against Logic Driver binaries. Build.cs detection at 3 locations (project plugins, engine marketplace, engine plugins).
+**Settings toggle:** `bEnableLogicDriver` (default: True)
+
+MonolithLogicDriver provides MCP coverage of the Logic Driver Pro marketplace plugin. It covers state machine asset CRUD, graph read/write, node configuration, runtime/PIE control, JSON spec-based generation, scaffolding templates, discovery, component management, and text-based graph visualization.
+
+#### Action Categories
+
+| Category | Actions | Description |
+|----------|---------|-------------|
+| Asset CRUD | 8 | Create, list, delete, compile, duplicate, rename state machines |
+| Graph Read/Write | 20 | Get structure, add/remove/connect states and transitions, get/set node properties, auto-arrange graph |
+| Node Config | 8 | Configure state classes, transition rules, conduits, node colors, entry points |
+| Runtime/PIE | 7 | Start/stop/step SM in PIE, get active states, set variables, inspect runtime context |
+| JSON/Spec | 5 | Build SM from JSON spec, export/import SM as JSON, validate spec, diff specs |
+| Scaffolding | 7 | scaffold_hello_world_sm, scaffold_horror_encounter_sm, scaffold_patrol_sm, scaffold_dialogue_sm, scaffold_health_sm, scaffold_interaction_sm, scaffold_quest_sm |
+| Discovery | 6 | get_sm_overview, list_state_machines, explain_state_machine, compare_state_machines, validate_state_machine, search_state_machines |
+| Component | 3 | Add SM component to actor, configure component, get component info |
+| Text Graph | 2 | visualize_sm_as_text (Mermaid output), export_sm_as_dot (Graphviz DOT) |
+
+#### Key Actions
+
+> **`build_sm_from_spec` (power action).** Creates a complete state machine from a JSON specification in a single call. The spec defines states, transitions, initial state, transition rules, and metadata. Handles EdGraph node creation, layout, and compilation automatically.
+>
+> **Scaffolding templates (7).** Pre-built SM patterns for common game scenarios: hello world (3-state tutorial), horror encounter (7-state with escape/lose-interest paths), patrol, dialogue, health management, interaction, and quest progression.
+>
+> **`visualize_sm_as_text`.** Generates Mermaid diagram syntax from an SM asset, including `[*]` initial state markers. Useful for documentation and debugging without opening the editor.
+>
+> **`auto_arrange_graph`.** Automatically lays out SM nodes in the editor graph for readability.
+
+#### Notes
+
+> **Precompiled plugin integration.** Logic Driver Pro is a marketplace plugin with precompiled binaries. MonolithLogicDriver uses UObject reflection (`FindPropertyByName`, `FProperty::GetValue_InContainer`) and factory classes discovered via reflection rather than linking against Logic Driver headers. The 3-location Build.cs detection finds SMSystem/SMSystemEditor modules whether installed as a project plugin, engine marketplace plugin, or engine plugin.
+>
+> **Reflection-only architecture.** All property access goes through `FindPropertyByName` + `GetValue_InContainer`. State/transition classes are resolved via `FindObject<UClass>`. This makes the integration version-agnostic as long as property names and class hierarchies are stable.
+>
+> **EdGraph sync.** State machine assets contain both runtime and editor graph representations. All write actions update both so changes are visible in the Logic Driver editor without manual refresh.
+
+---
+
 ## 4. Source Indexer
 
 ### 4.1 C++ Indexer (current)
@@ -1497,6 +1541,7 @@ YourProject/Plugins/Monolith/
     MonolithUI/                    (17 source files — 9 .cpp + 8 .h)
     MonolithGAS/                   (conditional on WITH_GBA — abilities, attributes, effects, ASC, tags, cues, targets, input, inspect, scaffold)
     MonolithComboGraph/            (conditional on WITH_COMBOGRAPH — combo graph CRUD, nodes, edges, effects, cues, ability scaffolding)
+    MonolithLogicDriver/           (conditional on WITH_LOGICDRIVER — SM CRUD, graph read/write, node config, runtime/PIE, JSON spec, scaffolding, discovery, components, text graph)
   Saved/
     .gitkeep
     monolith_offline.py              (Offline CLI — query DBs without the editor)
@@ -1576,7 +1621,8 @@ See `TODO.md` for the full list. Key architectural constraints:
 | MonolithUI | ui | 42 |
 | MonolithGAS | gas | 130 |
 | MonolithComboGraph | combograph | 12 |
+| MonolithLogicDriver | logicdriver | 66 |
 | MonolithBABridge | — | 0 (integration only) |
-| **Total** | | **827** (782 active by default) |
+| **Total** | | **893** (848 active by default) |
 
-**Note:** MonolithMesh includes 197 core actions (always registered) plus 45 experimental Procedural Town Generator actions (registered only when `bEnableProceduralTownGen = true`, default: false — known geometry issues). MonolithGAS is conditional on `#if WITH_GBA` — projects without GameplayAbilities register 0 GAS actions. MonolithComboGraph is conditional on `#if WITH_COMBOGRAPH` — projects without the ComboGraph plugin register 0 combograph actions. MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 16 MCP tools with namespaced actions.
+**Note:** MonolithMesh includes 197 core actions (always registered) plus 45 experimental Procedural Town Generator actions (registered only when `bEnableProceduralTownGen = true`, default: false — known geometry issues). MonolithGAS is conditional on `#if WITH_GBA` — projects without GameplayAbilities register 0 GAS actions. MonolithComboGraph is conditional on `#if WITH_COMBOGRAPH` — projects without the ComboGraph plugin register 0 combograph actions. MonolithLogicDriver is conditional on `#if WITH_LOGICDRIVER` — projects without Logic Driver Pro register 0 logicdriver actions. MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 17 MCP tools with namespaced actions.

@@ -14,6 +14,7 @@
 #include "Factories/Factory.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "EditorAssetLibrary.h"
+#include "UObject/GarbageCollection.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMonolithLDAsset, Log, All);
 
@@ -38,25 +39,6 @@ namespace
 			}
 		}
 		return AssetName;
-	}
-
-	bool EnsureAssetPathFree(const FString& PackagePath, const FString& AssetName, FString& OutError)
-	{
-		IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-		FString FullPath = PackagePath + TEXT(".") + AssetName;
-		FAssetData Existing = AR.GetAssetByObjectPath(FSoftObjectPath(FullPath));
-		if (Existing.IsValid())
-		{
-			OutError = FString::Printf(TEXT("Asset already exists at '%s'"), *FullPath);
-			return false;
-		}
-		UObject* InMemory = FindObject<UObject>(nullptr, *FullPath);
-		if (InMemory)
-		{
-			OutError = FString::Printf(TEXT("Asset already exists in memory at '%s'"), *FullPath);
-			return false;
-		}
-		return true;
 	}
 
 	bool SaveSMAsset(UObject* Asset)
@@ -170,13 +152,6 @@ FMonolithActionResult FMonolithLogicDriverAssetActions::HandleCreateStateMachine
 		return FMonolithActionResult::Error(TEXT("Could not determine asset name from save_path"));
 	}
 
-	// Check path is free
-	FString ExistError;
-	if (!EnsureAssetPathFree(SavePath, AssetName, ExistError))
-	{
-		return FMonolithActionResult::Error(ExistError);
-	}
-
 	// Find factory via FindFirstObject (hybrid approach — marketplace plugin may be precompiled)
 	UClass* FactoryClass = MonolithLD::GetSMBlueprintFactoryClass();
 	if (!FactoryClass)
@@ -217,6 +192,13 @@ FMonolithActionResult FMonolithLogicDriverAssetActions::HandleCreateStateMachine
 			FString::Printf(TEXT("Failed to create package at: %s"), *SavePath));
 	}
 	Package->FullyLoad();
+
+	// Guard AFTER FullyLoad (FullyLoad can re-populate package with stale content from disk)
+	FString ExistError;
+	if (!MonolithLD::EnsureAssetPathFree(Package, SavePath, AssetName, ExistError))
+	{
+		return FMonolithActionResult::Error(ExistError);
+	}
 
 	// Create the SM Blueprint via factory
 	UClass* SupportedClass = Factory->GetSupportedClass();
@@ -359,6 +341,11 @@ FMonolithActionResult FMonolithLogicDriverAssetActions::HandleDeleteStateMachine
 	// Use EditorAssetLibrary for clean deletion (handles references, etc.)
 	bool bDeleted = UEditorAssetLibrary::DeleteAsset(AssetPath);
 
+	if (bDeleted)
+	{
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS, true);
+	}
+
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetBoolField(TEXT("deleted"), bDeleted);
 	Result->SetStringField(TEXT("asset_path"), AssetPath);
@@ -401,12 +388,12 @@ FMonolithActionResult FMonolithLogicDriverAssetActions::HandleDuplicateStateMach
 		return FMonolithActionResult::Error(LoadError);
 	}
 
-	// Check dest is free
+	// Check dest is free (no package context needed for duplicate — EditorAssetLibrary handles it)
 	FString DestName = ExtractAssetName(DestPath);
-	FString ExistError;
-	if (!EnsureAssetPathFree(DestPath, DestName, ExistError))
+	FString DupExistError;
+	if (!MonolithLD::EnsureAssetPathFree(nullptr, DestPath, DestName, DupExistError))
 	{
-		return FMonolithActionResult::Error(ExistError);
+		return FMonolithActionResult::Error(DupExistError);
 	}
 
 	// Duplicate via EditorAssetLibrary
@@ -445,13 +432,6 @@ FMonolithActionResult FMonolithLogicDriverAssetActions::HandleCreateNodeBlueprin
 		&& NodeType != TEXT("conduit") && NodeType != TEXT("state_machine"))
 	{
 		return FMonolithActionResult::Error(TEXT("node_type must be: state, transition, conduit, state_machine"));
-	}
-
-	// Check path free
-	FString ExistError;
-	if (!EnsureAssetPathFree(SavePath, AssetName, ExistError))
-	{
-		return FMonolithActionResult::Error(ExistError);
 	}
 
 	// Get factory
@@ -500,6 +480,13 @@ FMonolithActionResult FMonolithLogicDriverAssetActions::HandleCreateNodeBlueprin
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create package at: %s"), *SavePath));
 	}
 	Package->FullyLoad();
+
+	// Guard AFTER FullyLoad (FullyLoad can re-populate package with stale content from disk)
+	FString ExistError;
+	if (!MonolithLD::EnsureAssetPathFree(Package, SavePath, AssetName, ExistError))
+	{
+		return FMonolithActionResult::Error(ExistError);
+	}
 
 	// Create via factory
 	UClass* SupportedClass = Factory->GetSupportedClass();

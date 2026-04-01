@@ -185,19 +185,19 @@ FMonolithActionResult FMonolithLogicDriverScaffoldActions::HandleScaffoldHelloWo
 		return FMonolithActionResult::Error(TEXT("Failed to create SMBlueprintFactory instance"));
 	}
 
-	// Guard: check no existing asset at this path (CreatePackage returns existing in-memory packages)
-	FString FullObjectPath = SavePath + TEXT(".") + AssetName;
-	if (FindObject<UObject>(nullptr, *FullObjectPath))
-	{
-		return FMonolithActionResult::Error(FString::Printf(TEXT("Asset already exists at '%s'"), *FullObjectPath));
-	}
-
 	UPackage* Package = CreatePackage(*SavePath);
 	if (!Package)
 	{
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create package at: %s"), *SavePath));
 	}
 	Package->FullyLoad();
+
+	// Guard AFTER FullyLoad (FullyLoad can re-populate package with stale content from disk)
+	FString ExistError;
+	if (!MonolithLD::EnsureAssetPathFree(Package, SavePath, AssetName, ExistError))
+	{
+		return FMonolithActionResult::Error(ExistError);
+	}
 
 	UClass* SupportedClass = Factory->GetSupportedClass();
 	if (!SupportedClass) SupportedClass = MonolithLD::GetSMBlueprintClass();
@@ -254,31 +254,6 @@ FMonolithActionResult FMonolithLogicDriverScaffoldActions::HandleScaffoldHelloWo
 		return FMonolithActionResult::Error(TEXT("Failed to create one or more state nodes"));
 	}
 
-	// Set state names via reflection (the property is typically "StateName" or we use OnRenameNode)
-	auto SetStateName = [](UEdGraphNode* Node, const FString& Name)
-	{
-		if (!Node) return;
-		// Try StateName property
-		FProperty* NameProp = Node->GetClass()->FindPropertyByName(TEXT("StateName"));
-		if (NameProp)
-		{
-			void* ValuePtr = NameProp->ContainerPtrToValuePtr<void>(Node);
-			NameProp->ImportText_Direct(*Name, ValuePtr, Node, PPF_None);
-			return;
-		}
-		// Fallback: try NodeName
-		NameProp = Node->GetClass()->FindPropertyByName(TEXT("NodeName"));
-		if (NameProp)
-		{
-			void* ValuePtr = NameProp->ContainerPtrToValuePtr<void>(Node);
-			NameProp->ImportText_Direct(*Name, ValuePtr, Node, PPF_None);
-		}
-	};
-
-	SetStateName(IdleNode, TEXT("Idle"));
-	SetStateName(ActiveNode, TEXT("Active"));
-	SetStateName(CompleteNode, TEXT("Complete"));
-
 	// Set Complete as end state
 	FBoolProperty* EndStateProp = CastField<FBoolProperty>(CompleteNode->GetClass()->FindPropertyByName(TEXT("bIsEndState")));
 	if (EndStateProp)
@@ -298,9 +273,16 @@ FMonolithActionResult FMonolithLogicDriverScaffoldActions::HandleScaffoldHelloWo
 	ConnectNodes(IdleNode, ActiveNode);
 	ConnectNodes(ActiveNode, CompleteNode);
 
-	// ── 4. Compile and save ──
+	// ── 4. Compile ──
 	FString CompileError;
 	bool bCompiled = MonolithLD::CompileSMBlueprint(SMBlueprint, CompileError);
+
+	// Set state names AFTER compile (NodeInstanceTemplate created during compilation)
+	MonolithLD::SetNodeName(IdleNode, TEXT("Idle"));
+	MonolithLD::SetNodeName(ActiveNode, TEXT("Active"));
+	MonolithLD::SetNodeName(CompleteNode, TEXT("Complete"));
+
+	// Save (do NOT recompile — recompilation reconstructs templates and loses name changes)
 	bool bSaved = SaveScaffoldAsset(NewAsset);
 
 	// ── 5. Build result ──
@@ -351,16 +333,16 @@ static FMonolithActionResult ScaffoldGeneric(
 	UFactory* Factory = NewObject<UFactory>(GetTransientPackage(), FactoryClass);
 	if (!Factory) return FMonolithActionResult::Error(TEXT("Failed to create SMBlueprintFactory instance"));
 
-	// Guard: check no existing asset (CreatePackage returns existing in-memory packages)
-	FString FullObjectPath = SavePath + TEXT(".") + AssetName;
-	if (FindObject<UObject>(nullptr, *FullObjectPath))
-	{
-		return FMonolithActionResult::Error(FString::Printf(TEXT("Asset already exists at '%s'"), *FullObjectPath));
-	}
-
 	UPackage* Package = CreatePackage(*SavePath);
 	if (!Package) return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create package at: %s"), *SavePath));
 	Package->FullyLoad();
+
+	// Guard AFTER FullyLoad (FullyLoad can re-populate package with stale content from disk)
+	FString ExistError;
+	if (!MonolithLD::EnsureAssetPathFree(Package, SavePath, AssetName, ExistError))
+	{
+		return FMonolithActionResult::Error(ExistError);
+	}
 
 	UClass* SupportedClass = Factory->GetSupportedClass();
 	if (!SupportedClass) SupportedClass = MonolithLD::GetSMBlueprintClass();
@@ -394,25 +376,6 @@ static FMonolithActionResult ScaffoldGeneric(
 		}
 	}
 
-	// Lambda to set state name
-	auto SetStateName = [](UEdGraphNode* Node, const FString& Name)
-	{
-		if (!Node) return;
-		FProperty* NameProp = Node->GetClass()->FindPropertyByName(TEXT("StateName"));
-		if (NameProp)
-		{
-			void* ValuePtr = NameProp->ContainerPtrToValuePtr<void>(Node);
-			NameProp->ImportText_Direct(*Name, ValuePtr, Node, PPF_None);
-			return;
-		}
-		NameProp = Node->GetClass()->FindPropertyByName(TEXT("NodeName"));
-		if (NameProp)
-		{
-			void* ValuePtr = NameProp->ContainerPtrToValuePtr<void>(Node);
-			NameProp->ImportText_Direct(*Name, ValuePtr, Node, PPF_None);
-		}
-	};
-
 	// 3. Create state nodes
 	TArray<UEdGraphNode*> StateNodes;
 	TSharedPtr<FJsonObject> NodeGuids = MakeShared<FJsonObject>();
@@ -421,8 +384,6 @@ static FMonolithActionResult ScaffoldGeneric(
 	{
 		UEdGraphNode* Node = CreateNodeOfClass(RootGraph, StateClass, Desc.PosX, Desc.PosY);
 		if (!Node) return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create state: %s"), *Desc.Name));
-
-		SetStateName(Node, Desc.Name);
 
 		if (Desc.bIsEndState)
 		{
@@ -452,9 +413,17 @@ static FMonolithActionResult ScaffoldGeneric(
 		}
 	}
 
-	// 6. Compile and save
+	// 6. Compile
 	FString CompileError;
 	bool bCompiled = MonolithLD::CompileSMBlueprint(SMBlueprint, CompileError);
+
+	// Set state names AFTER compile (NodeInstanceTemplate created during compilation)
+	for (int32 i = 0; i < StateDescs.Num() && i < StateNodes.Num(); ++i)
+	{
+		MonolithLD::SetNodeName(StateNodes[i], StateDescs[i].Name);
+	}
+
+	// Save (do NOT recompile — recompilation reconstructs templates and loses name changes)
 	bool bSaved = SaveScaffoldAsset(NewAsset);
 
 	// 7. Build result

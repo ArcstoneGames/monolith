@@ -190,16 +190,16 @@ FMonolithActionResult FMonolithLogicDriverSpecActions::HandleBuildSMFromSpec(con
 	// Derive asset name from save path
 	FString AssetName = FPackageName::GetShortName(SavePath);
 
-	// Guard: check no existing asset (CreatePackage returns existing in-memory packages)
-	FString FullObjectPath = SavePath + TEXT(".") + AssetName;
-	if (FindObject<UObject>(nullptr, *FullObjectPath))
-	{
-		return FMonolithActionResult::Error(FString::Printf(TEXT("Asset already exists at '%s'"), *FullObjectPath));
-	}
-
 	UPackage* Package = CreatePackage(*SavePath);
 	if (!Package) return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create package at: %s"), *SavePath));
 	Package->FullyLoad();
+
+	// Guard AFTER FullyLoad (FullyLoad can re-populate package with stale content from disk)
+	FString ExistError;
+	if (!MonolithLD::EnsureAssetPathFree(Package, SavePath, AssetName, ExistError))
+	{
+		return FMonolithActionResult::Error(ExistError);
+	}
 
 	UClass* SupportedClass = Factory->GetSupportedClass();
 	if (!SupportedClass) SupportedClass = MonolithLD::GetSMBlueprintClass();
@@ -234,8 +234,8 @@ FMonolithActionResult FMonolithLogicDriverSpecActions::HandleBuildSMFromSpec(con
 		}
 	}
 
-	// Lambda: create a node and set its name
-	auto CreateAndNameNode = [&](UClass* NodeClass, const FString& Name, int32 PosX, int32 PosY) -> UEdGraphNode*
+	// Lambda: create a node (naming happens after compile when NodeInstanceTemplate exists)
+	auto CreateNode = [&](UClass* NodeClass, int32 PosX, int32 PosY) -> UEdGraphNode*
 	{
 		if (!NodeClass) return nullptr;
 		UEdGraphNode* NewNode = NewObject<UEdGraphNode>(RootGraph, NodeClass);
@@ -245,15 +245,6 @@ FMonolithActionResult FMonolithLogicDriverSpecActions::HandleBuildSMFromSpec(con
 		RootGraph->AddNode(NewNode, false, false);
 		NewNode->PostPlacedNewNode();
 		NewNode->AllocateDefaultPins();
-
-		// Set name via reflection
-		FProperty* NameProp = NewNode->GetClass()->FindPropertyByName(TEXT("StateName"));
-		if (!NameProp) NameProp = NewNode->GetClass()->FindPropertyByName(TEXT("NodeName"));
-		if (NameProp)
-		{
-			void* ValuePtr = NameProp->ContainerPtrToValuePtr<void>(NewNode);
-			NameProp->ImportText_Direct(*Name, ValuePtr, NewNode, PPF_None);
-		}
 		return NewNode;
 	};
 
@@ -295,7 +286,7 @@ FMonolithActionResult FMonolithLogicDriverSpecActions::HandleBuildSMFromSpec(con
 			FString Name = StateObj->GetStringField(TEXT("name"));
 			if (Name.IsEmpty()) continue;
 
-			UEdGraphNode* StateNode = CreateAndNameNode(StateClass, Name, PosX, 0);
+			UEdGraphNode* StateNode = CreateNode(StateClass, PosX, 0);
 			PosX += 300;
 			if (!StateNode) continue;
 
@@ -328,7 +319,7 @@ FMonolithActionResult FMonolithLogicDriverSpecActions::HandleBuildSMFromSpec(con
 			FString Name = CO->GetStringField(TEXT("name"));
 			if (Name.IsEmpty()) continue;
 
-			UEdGraphNode* ConduitNode = CreateAndNameNode(ConduitClass, Name, PosX, 150);
+			UEdGraphNode* ConduitNode = CreateNode(ConduitClass, PosX, 150);
 			PosX += 300;
 			if (!ConduitNode) continue;
 
@@ -348,7 +339,7 @@ FMonolithActionResult FMonolithLogicDriverSpecActions::HandleBuildSMFromSpec(con
 			FString Name = NO->GetStringField(TEXT("name"));
 			if (Name.IsEmpty()) continue;
 
-			UEdGraphNode* SMNode = CreateAndNameNode(SMNodeClass, Name, PosX, -150);
+			UEdGraphNode* SMNode = CreateNode(SMNodeClass, PosX, -150);
 			PosX += 300;
 			if (!SMNode) continue;
 
@@ -398,9 +389,16 @@ FMonolithActionResult FMonolithLogicDriverSpecActions::HandleBuildSMFromSpec(con
 		}
 	}
 
-	// ── 6. Compile and save ──
+	// ── 6. Compile, set names, recompile, save ──
 	FString CompileError;
 	bool bCompiled = MonolithLD::CompileSMBlueprint(SMBlueprint, CompileError);
+
+	// Set names AFTER compile (NodeInstanceTemplate created during compilation)
+	// Do NOT recompile — recompilation reconstructs templates and loses name changes
+	for (auto& Pair : NameToNode)
+	{
+		MonolithLD::SetNodeName(Pair.Value, Pair.Key);
+	}
 
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		Package->GetName(), FPackageName::GetAssetPackageExtension());

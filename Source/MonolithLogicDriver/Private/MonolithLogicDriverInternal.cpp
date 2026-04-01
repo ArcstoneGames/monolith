@@ -9,6 +9,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMonolithLDInternal, Log, All);
 
@@ -40,6 +41,7 @@ UClass* GetSMBlueprintFactoryClass()    { static UClass* C = FindLDClass(TEXT("S
 UClass* GetSMNodeBlueprintFactoryClass(){ static UClass* C = FindLDClass(TEXT("SMNodeBlueprintFactory")); return C; }
 UClass* GetSMInstanceClass()            { static UClass* C = FindLDClass(TEXT("SMInstance")); return C; }
 UClass* GetSMComponentClass()           { static UClass* C = FindLDClass(TEXT("SMStateMachineComponent")); return C; }
+UClass* GetSMEntryNodeClass()           { static UClass* C = FindLDClass(TEXT("SMGraphNode_StateMachineEntryNode")); return C; }
 
 // ── Reflection utilities ─────────────────────────────────────────
 
@@ -199,6 +201,61 @@ bool CompileSMBlueprint(UBlueprint* Blueprint, FString& OutError)
 	return true;
 }
 
+bool SetNodeName(UEdGraphNode* Node, const FString& Name)
+{
+	if (!Node || Name.IsEmpty()) return false;
+
+	// Primary: use UEdGraphNode::OnRenameNode (engine virtual — LD overrides to set name properly)
+	Node->Modify();
+	Node->OnRenameNode(Name);
+
+	// Also set via template reflection as backup
+	UObject* Template = GetObjectProperty(Node, TEXT("NodeInstanceTemplate"));
+	if (Template)
+	{
+		FStructProperty* DescProp = CastField<FStructProperty>(Template->GetClass()->FindPropertyByName(TEXT("NodeDescription")));
+		if (DescProp)
+		{
+			void* DescPtr = DescProp->ContainerPtrToValuePtr<void>(Template);
+			FNameProperty* NameProp = CastField<FNameProperty>(DescProp->Struct->FindPropertyByName(TEXT("Name")));
+			if (NameProp)
+			{
+				Template->Modify();
+				NameProp->SetPropertyValue(NameProp->ContainerPtrToValuePtr<void>(DescPtr), FName(*Name));
+			}
+		}
+	}
+
+	return true;
+}
+
+FString GetNodeName(UEdGraphNode* Node)
+{
+	if (!Node) return FString();
+
+	UObject* Template = GetObjectProperty(Node, TEXT("NodeInstanceTemplate"));
+	if (Template)
+	{
+		FStructProperty* DescProp = CastField<FStructProperty>(Template->GetClass()->FindPropertyByName(TEXT("NodeDescription")));
+		if (DescProp)
+		{
+			void* DescPtr = DescProp->ContainerPtrToValuePtr<void>(Template);
+			FNameProperty* NameProp = CastField<FNameProperty>(DescProp->Struct->FindPropertyByName(TEXT("Name")));
+			if (NameProp)
+			{
+				FName FoundName = NameProp->GetPropertyValue(NameProp->ContainerPtrToValuePtr<void>(DescPtr));
+				if (FoundName != NAME_None)
+				{
+					return FoundName.ToString();
+				}
+			}
+		}
+	}
+
+	// Fallback to node title
+	return Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+}
+
 FString GetNodeType(UEdGraphNode* Node)
 {
 	if (!Node) return TEXT("unknown");
@@ -215,10 +272,12 @@ FString GetNodeType(UEdGraphNode* Node)
 		if (NodeClass->IsChildOf(SMNodeClass)) return TEXT("state_machine");
 	if (UClass* StateClass = GetSMGraphNodeStateClass())
 		if (NodeClass->IsChildOf(StateClass)) return TEXT("state");
+	if (UClass* EntryClass = GetSMEntryNodeClass())
+		if (NodeClass->IsChildOf(EntryClass)) return TEXT("entry");
 	if (UClass* BaseClass = GetSMGraphNodeBaseClass())
 		if (NodeClass->IsChildOf(BaseClass)) return TEXT("sm_node");  // Generic SM node
 
-	// Entry node or unknown — check class name for hints
+	// Fallback — check class name for hints
 	FString ClassName = NodeClass->GetName();
 	if (ClassName.Contains(TEXT("Entry"))) return TEXT("entry");
 	return TEXT("unknown");
@@ -230,7 +289,7 @@ TSharedPtr<FJsonObject> NodeToJson(UEdGraphNode* Node, bool bDetailed)
 	if (!Node) return Json;
 
 	Json->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
-	Json->SetStringField(TEXT("name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+	Json->SetStringField(TEXT("name"), GetNodeName(Node));
 	Json->SetNumberField(TEXT("position_x"), Node->NodePosX);
 	Json->SetNumberField(TEXT("position_y"), Node->NodePosY);
 
@@ -259,7 +318,7 @@ TSharedPtr<FJsonObject> NodeToJson(UEdGraphNode* Node, bool bDetailed)
 	{
 		// Check if initial state (connected from entry node)
 		bool bIsInitial = false;
-		UClass* BaseClass = GetSMGraphNodeBaseClass();
+		UClass* EntryClass = GetSMEntryNodeClass();
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
 			if (Pin && Pin->Direction == EGPD_Input)
@@ -269,8 +328,7 @@ TSharedPtr<FJsonObject> NodeToJson(UEdGraphNode* Node, bool bDetailed)
 					if (LinkedPin && LinkedPin->GetOwningNode())
 					{
 						UEdGraphNode* SourceNode = LinkedPin->GetOwningNode();
-						// Entry nodes are NOT subclasses of SMGraphNode_Base
-						if (!BaseClass || !SourceNode->GetClass()->IsChildOf(BaseClass))
+						if (EntryClass && SourceNode->GetClass()->IsChildOf(EntryClass))
 						{
 							bIsInitial = true;
 							break;
@@ -371,6 +429,41 @@ TSharedPtr<FJsonObject> SMStructureToJson(UBlueprint* Blueprint, int32 MaxDepth)
 	Json->SetNumberField(TEXT("transition_count"), TransitionCount);
 
 	return Json;
+}
+
+bool EnsureAssetPathFree(UPackage* Package, const FString& PackagePath, const FString& AssetName, FString& OutError)
+{
+	FString FullPath = PackagePath + TEXT(".") + AssetName;
+
+	// Tier 1: AssetRegistry
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	FAssetData Existing = AR.GetAssetByObjectPath(FSoftObjectPath(FullPath));
+	if (Existing.IsValid())
+	{
+		OutError = FString::Printf(TEXT("Asset already exists at '%s'"), *FullPath);
+		return false;
+	}
+
+	// Tier 2: Global in-memory search
+	UObject* InMemory = FindObject<UObject>(nullptr, *FullPath);
+	if (InMemory)
+	{
+		OutError = FString::Printf(TEXT("Asset '%s' exists in memory"), *FullPath);
+		return false;
+	}
+
+	// Tier 3: Package-scoped search (catches objects loaded by FullyLoad)
+	if (Package)
+	{
+		UObject* InPackage = FindObject<UObject>(Package, *AssetName);
+		if (InPackage)
+		{
+			OutError = FString::Printf(TEXT("Object '%s' already exists in package '%s' (stale from prior attempt — use a different path or restart editor)"), *AssetName, *PackagePath);
+			return false;
+		}
+	}
+
+	return true;
 }
 
 } // namespace MonolithLD
