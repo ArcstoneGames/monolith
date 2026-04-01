@@ -10,7 +10,7 @@
 
 ## What is Monolith?
 
-Monolith is an Unreal Engine editor plugin that gives your AI full read/write access to your project through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Install one plugin, point your AI client at one endpoint, and it can work with Blueprints, Materials, Animation, Niagara, project configuration, and more.
+Monolith is an Unreal Engine editor plugin that gives your AI full read/write access to your project through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Install one plugin, point your AI client at one endpoint, and it can work with Blueprints, Materials, Animation, Niagara, AI (Behavior Trees, State Trees, EQS, Smart Objects), Gameplay Ability System, Logic Driver state machines, project configuration, and more.
 
 It works with **Claude Code**, **Cursor**, or any MCP-compatible client. If your AI tool speaks MCP, it speaks Monolith.
 
@@ -18,11 +18,11 @@ It works with **Claude Code**, **Cursor**, or any MCP-compatible client. If your
 
 ## Why Monolith?
 
-Most MCP integrations register every action as a separate tool, which floods the AI's context window and buries the actually useful stuff. Monolith uses a **namespace dispatch pattern** instead: each domain exposes a single `{namespace}_query(action, params)` tool, and a central `monolith_discover()` call lists everything available. Small tool list (15 tools), massive capability (815 actions across 13 modules). The AI gets oriented fast and spends its context on your actual problem.
+Most MCP integrations register every action as a separate tool, which floods the AI's context window and buries the actually useful stuff. Monolith uses a **namespace dispatch pattern** instead: each domain exposes a single `{namespace}_query(action, params)` tool, and a central `monolith_discover()` call lists everything available. Small tool list (18 tools), massive capability (1125 actions across 15 modules). The AI gets oriented fast and spends its context on your actual problem.
 
 ## What Can It Actually Do?
 
-**Blueprint (86 actions)** — Full programmatic control of every Blueprint in your project. Create from any parent class, build entire node graphs from a JSON spec, add/remove/connect/disconnect nodes in bulk, manage variables, components, functions, macros, and event dispatchers. Implement interfaces, reparent hierarchies, edit construction scripts, read/write CDO properties on any Blueprint or DataAsset. The auto-layout engine uses a modified Sugiyama algorithm so AI-generated graphs actually look clean. Compare two Blueprints side-by-side, scaffold from templates, manage data tables, user defined structs and enums. Hand the AI a description and it builds the whole thing — or point it at an existing Blueprint and it'll surgically rewire what you need.
+**Blueprint (88 actions)** — Full programmatic control of every Blueprint in your project. Create from any parent class, build entire node graphs from a JSON spec, add/remove/connect/disconnect nodes in bulk, manage variables, components, functions, macros, and event dispatchers. Implement interfaces, reparent hierarchies, edit construction scripts, read/write CDO properties on any Blueprint or DataAsset. The auto-layout engine uses a modified Sugiyama algorithm so AI-generated graphs actually look clean. Compare two Blueprints side-by-side, scaffold from templates, manage data tables, user defined structs and enums. Hand the AI a description and it builds the whole thing — or point it at an existing Blueprint and it'll surgically rewire what you need.
 
 **Material (57 actions)** — Create materials, material instances, and material functions from scratch. Build entire PBR graphs programmatically — add expressions, connect pins, auto-layout, recompile. Drop in custom HLSL nodes. Import textures from disk and wire them directly into material slots. Batch-set properties across dozens of instances at once. Render material previews and thumbnails without leaving the AI session. Full material function support: create, build internal graphs, export/import between projects. Get compilation stats, validate for errors, inspect shader complexity. Covers the full material workflow from creation to validation.
 
@@ -44,25 +44,35 @@ Most MCP integrations register every action as a separate tool, which floods the
 
 **GAS (130 actions)** — Complete Gameplay Ability System integration. Create and manage Gameplay Abilities with activation policies, cooldowns, costs, and tags. Full AttributeSet CRUD — both C++ and Blueprint-based (via optional GBA plugin). Gameplay Effect authoring with modifiers, duration policies, stacking, period, and conditional application. Ability System Component (ASC) management — grant/revoke abilities, apply/remove effects, query active abilities and effects. Gameplay Tag utilities. Gameplay Cue management — create, trigger, inspect cues for audio/visual feedback. Target data generation and targeting tasks. Input binding for ability activation. Runtime inspection and debugging tools. Scaffolding actions that generate complete GAS setups from templates. Accessibility-focused infinite-duration GEs for reduced difficulty modes.
 
+**AI (229 actions)** — The most comprehensive AI tooling available through any MCP server. Full lifecycle management for Behavior Trees, Blackboards, State Trees, Environment Query System (EQS), Smart Objects, AI Controllers, AI Perception, Navigation, and runtime debugging. Crown jewel actions: `build_behavior_tree_from_spec` and `build_state_tree_from_spec` — hand the AI a JSON description of your desired AI behavior and it builds the entire asset programmatically. Create BT nodes (tasks, decorators, services), wire them into trees, configure blackboard keys, set up EQS queries with generators and tests, define Smart Object slots with behavior configs, configure perception senses (sight, hearing, damage, touch), manage navigation filters and query filters, inspect and debug AI at runtime during PIE. Scaffolding actions generate complete AI setups from templates — patrol AI, combat AI, companion AI, and more. 229 actions across 15 categories. Conditional on State Tree and Smart Objects plugins (both ship with UE). Optional Mass Entity and Zone Graph integration for large-scale AI.
+
+**Logic Driver (66 actions)** — Full integration with Logic Driver Pro, a marketplace state machine plugin. State machine CRUD — create, inspect, compile, delete. Graph read/write — add states, transitions, configure properties, set transition rules. Node configuration for state nodes, conduit nodes, and transition events. Runtime/PIE control — start, stop, query active states, trigger transitions. One-shot `build_sm_from_spec` builds complete state machines from a JSON specification. JSON spec import/export for templating and version control. Scaffolding actions generate common patterns (door controller, health system, AI patrol, dialogue system, elevator, puzzle, inventory). Component management — add/configure Logic Driver components on actors. Text graph visualization for debugging. Discovery actions list available node classes and templates. Reflection-only integration (no direct C++ API linkage) — works with any Logic Driver Pro version. Conditional on `#if WITH_LOGICDRIVER` — auto-detected at build time.
+
+**ComboGraph (13 actions)** — Integration with the ComboGraph marketplace plugin for visual combo tree editing. Graph CRUD — create, inspect, validate combo graphs. Node and edge management — add combo nodes with montage animations, wire them with edges, configure effects and cues. GAS cross-integration — scaffold combo abilities that bridge ComboGraph with Gameplay Ability System. Reflection-only integration, conditional on `#if WITH_COMBOGRAPH`.
+
 ---
 
 ## Features
 
-- **Blueprint (86 actions)** — Full CRUD, node graph manipulation, JSON-to-Blueprint building, auto-layout (Sugiyama), CDO property access, data tables, structs, enums, template system, Blueprint comparison. Works as a complete Blueprint co-pilot with any MCP client
+- **Blueprint (88 actions)** — Full CRUD, node graph manipulation, JSON-to-Blueprint building, auto-layout (Sugiyama), CDO property access, data tables, structs, enums, template system, Blueprint comparison. Works as a complete Blueprint co-pilot with any MCP client
 - **Material authoring (57 actions)** — Programmatic PBR graph building, custom HLSL, material functions, texture import, batch operations, preview rendering, compilation stats
 - **Animation (115 actions)** — Sequences, montages, blend spaces, Animation Blueprint graph writing (add states, transitions, rules, wire nodes), PoseSearch, Control Rig, Physics Assets, IK Rigs, Retargeters, skeleton management
 - **Niagara VFX (96 actions)** — System/emitter lifecycle, dynamic inputs, event handlers, sim stages, Parameter Collections, Effect Types, renderer presets, data interfaces, system diffing, batch execute
 - **Mesh (242 actions)** — 22 capability tiers: mesh inspection, scene manipulation, spatial queries, blockout-to-production, GeometryScript ops, horror spatial analysis (WIP), accessibility validation (A-F grading), lighting (WIP), audio/acoustics (WIP), performance budgeting (WIP), decals, level design, tech art pipeline, context-aware props, procedural geometry (furniture, horror props, structures, mazes, terrain), genre presets, encounter design, accessibility reports. +45 town gen actions (work-in-progress, disabled by default)
+- **AI (229 actions)** — Behavior Trees, Blackboards, State Trees, EQS, Smart Objects, AI Controllers, Perception, Navigation, runtime debugging, scaffolding. Crown jewels: `build_behavior_tree_from_spec` and `build_state_tree_from_spec`
 - **GAS (130 actions)** — Full Gameplay Ability System: abilities, AttributeSets (C++ and Blueprint via optional GBA), Gameplay Effects, ASC management, tags, cues, targeting, input binding, runtime inspection, scaffolding templates, accessibility-focused infinite-duration GEs
+- **Logic Driver (66 actions)** — Logic Driver Pro state machines: SM CRUD, graph read/write, node config, runtime/PIE, `build_sm_from_spec`, JSON spec, scaffolding (door, health, AI patrol, dialogue, elevator, puzzle, inventory), component management
+- **ComboGraph (13 actions)** — ComboGraph combo trees: graph CRUD, nodes, edges, effects, cues, GAS cross-integration, ability scaffolding
 - **UI (42 actions)** — Widget Blueprint CRUD, pre-built templates (HUDs, menus, settings, inventory, save slots), styling, animation, game system scaffolding (save/load, audio, input remapping), accessibility audit, colorblind modes, text scaling
 - **Editor control (19 actions)** — UBT builds, Live Coding, error diagnosis, log search, scene capture, texture import, crash context
 - **Config intelligence (6 actions)** — Full INI resolution chain, explain, diff, search across all config files
 - **Project search (7 actions)** — SQLite FTS5 across all indexed assets including marketplace/Fab content, reference tracing, 15 deep indexers
 - **Engine source (11 actions)** — Native C++ indexer over 1M+ symbols, call graphs, class hierarchy, offline — no Python required
+- **Standalone C++ tools** — `monolith_proxy.exe` (MCP proxy) and `monolith_query.exe` (offline DB queries) — zero Python, zero UE dependency, instant startup
 - **Auto-updater** — Checks GitHub Releases on editor startup, downloads and stages updates, auto-swaps on exit
-- **MCP auto-reconnect proxy** — stdio-to-HTTP proxy keeps Claude Code sessions alive across editor restarts, zero manual intervention
-- **Optional module system** — Extend Monolith with new MCP namespaces for third-party plugins (GeometryScripting, BlueprintAssist, GBA) without breaking the build for users who don't own them
-- **Claude Code skills** — 12 domain-specific workflow guides bundled with the plugin
+- **MCP auto-reconnect proxy** — stdio-to-HTTP proxy keeps Claude Code sessions alive across editor restarts. Available as native exe (zero dependencies) or Python script (fallback)
+- **Optional module system** — Extend Monolith with new MCP namespaces for third-party plugins (GeometryScripting, BlueprintAssist, GBA, ComboGraph, Logic Driver) without breaking the build for users who don't own them
+- **Claude Code skills** — 14 domain-specific workflow guides bundled with the plugin
 - **Pure C++** — Direct UE API access, embedded Streamable HTTP server, zero external dependencies
 
 ---
@@ -76,7 +86,7 @@ Most MCP integrations register every action as a separate tool, which floods the
 > **Platform:** Windows only. Mac and Linux support is coming soon.
 
 - **Claude Code, Cursor, or another MCP client** — Any tool that supports the Model Context Protocol
-- **(Optional) Python 3.8+** — Recommended for Claude Code users (enables the auto-reconnect proxy that survives editor restarts). Also needed to index your own project's C++ source. Engine source indexing is built-in and needs no Python.
+- **(Optional) Python 3.8+** — Only needed to index your own project's C++ source via `Scripts/index_project.py`. Engine source indexing is built-in and needs no Python. The MCP proxy and offline query tools are now standalone C++ executables — Python is no longer required for any core functionality.
 
 ### Step 1: Drop Monolith into your project
 
@@ -124,7 +134,24 @@ YourProject/
 
 **For Claude Code (recommended: auto-reconnect proxy)**
 
-Monolith ships with a stdio-to-HTTP proxy that keeps your MCP session alive when the Unreal Editor restarts. No manual reconnection needed. Requires Python 3.8+ ([python.org](https://python.org)).
+Monolith ships with a stdio-to-HTTP proxy that keeps your MCP session alive when the Unreal Editor restarts. No manual reconnection needed. The proxy is available as a **standalone C++ executable** (zero dependencies) or a Python script (fallback).
+
+**Option A: Native C++ proxy (recommended — no Python required)**
+
+```json
+{
+  "mcpServers": {
+    "monolith": {
+      "command": "Plugins/Monolith/Binaries/monolith_proxy.exe",
+      "args": []
+    }
+  }
+}
+```
+
+**Option B: Python proxy (fallback)**
+
+Requires Python 3.8+ ([python.org](https://python.org)).
 
 ```json
 {
@@ -137,9 +164,7 @@ Monolith ships with a stdio-to-HTTP proxy that keeps your MCP session alive when
 }
 ```
 
-Or copy the template: `cp Plugins/Monolith/Templates/.mcp.json.proxy.example .mcp.json`
-
-> **No Python?** Use direct HTTP instead — you'll just need to restart Claude Code each time the editor restarts:
+> **No proxy?** Use direct HTTP instead — you'll just need to restart Claude Code each time the editor restarts:
 > ```json
 > {"mcpServers": {"monolith": {"type": "http", "url": "http://localhost:9316/mcp"}}}
 > ```
@@ -177,7 +202,17 @@ When you see `Monolith MCP server listening on port 9316`, you're in business.
 
 You should get back a list of namespace tools (`blueprint_query`, `material_query`, etc.). If you do, everything's working.
 
-### Step 5: (Optional) Index your project's C++ source
+### Step 5: Add project instructions for your AI
+
+Copy `Templates/CLAUDE.md.example` to your project root as `CLAUDE.md` (for Claude Code) or adapt it for your LLM of choice. It lists all 18 tools, their action counts, and workflow tips that help the AI use Monolith effectively.
+
+```bash
+cp Plugins/Monolith/Templates/CLAUDE.md.example CLAUDE.md
+```
+
+> **Not using Claude?** The template is plain Markdown — the tool list and workflow section port directly to Cursor rules, Cline system prompts, or any LLM's instruction format. The content is what matters, not the filename.
+
+### Step 6: (Optional) Index your project's C++ source
 
 Engine source indexing is automatic — `source_query` works immediately with no setup.
 
@@ -215,21 +250,28 @@ cp -r Plugins/Monolith/Skills/* ~/.claude/skills/
 ```
 Monolith.uplugin
   MonolithCore          — HTTP server, tool registry, discovery, auto-updater (4 actions)
-  MonolithBlueprint     — Blueprint read/write, variable/component/graph CRUD, node operations, compile, CDO reader (86 actions)
+  MonolithBlueprint     — Blueprint read/write, variable/component/graph CRUD, node operations, compile, CDO reader (88 actions)
   MonolithMaterial      — Material inspection + graph editing + CRUD + material functions (57 actions)
   MonolithAnimation     — Animation sequences, montages, ABPs, PoseSearch, IKRig, Control Rig (115 actions)
   MonolithNiagara       — Niagara particle systems, dynamic inputs, event handlers, sim stages, NPC (96 actions)
   MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, blockout, procedural geometry, horror/accessibility (242 actions)
+  MonolithAI            — Behavior Trees, Blackboards, State Trees, EQS, Smart Objects, Controllers, Perception, Navigation (229 actions)
   MonolithEditor        — Build triggers, log capture, compile output, crash context (19 actions)
   MonolithConfig        — Config/INI resolution and search (6 actions)
   MonolithIndex         — SQLite FTS5 deep project indexer, marketplace content, 15 asset indexers (7 actions)
   MonolithSource        — Native C++ engine source indexer, call graphs, class hierarchy (11 actions)
   MonolithUI            — UI widget Blueprint CRUD, templates, styling, animation (42 actions)
   MonolithGAS           — Gameplay Ability System: abilities, effects, attributes, ASC, tags, cues, targeting (130 actions)
+  MonolithLogicDriver   — Logic Driver Pro state machines: SM CRUD, graph read/write, JSON spec, scaffolding (66 actions)
+  MonolithComboGraph    — ComboGraph combo trees: graph CRUD, nodes, edges, effects, cues (13 actions)
   MonolithBABridge      — Blueprint Assist integration bridge (0 MCP actions — IModularFeatures only)
+
+Standalone Tools (in Binaries/)
+  monolith_proxy.exe    — MCP stdio-to-HTTP proxy (473KB, WinHTTP + nlohmann/json, zero UE dependency)
+  monolith_query.exe    — Offline DB query tool (1.8MB, sqlite3 amalgamation, zero UE dependency)
 ```
 
-**815 actions total across 13 modules, exposed through 15 MCP tools.**
+**1125 actions total across 15 modules, exposed through 18 MCP tools.**
 
 ### Tool Reference
 
@@ -239,17 +281,90 @@ Monolith.uplugin
 | `monolith` | `monolith_status` | — | Server health, version, index status |
 | `monolith` | `monolith_reindex` | — | Trigger full project re-index |
 | `monolith` | `monolith_update` | — | Check or install updates |
-| `blueprint` | `blueprint_query` | 86 | Full Blueprint CRUD — read/write graphs, variables, components, functions, nodes, compile, CDO properties, auto-layout |
+| `blueprint` | `blueprint_query` | 88 | Full Blueprint CRUD — read/write graphs, variables, components, functions, nodes, compile, CDO properties, auto-layout |
 | `material` | `material_query` | 57 | Inspection, editing, graph building, material functions, previews, validation, CRUD |
 | `animation` | `animation_query` | 115 | Montages, blend spaces, ABPs, skeletons, bone tracks, PoseSearch, IKRig, Control Rig |
 | `niagara` | `niagara_query` | 96 | Systems, emitters, modules, parameters, renderers, HLSL, dynamic inputs, event handlers, sim stages, NPC, effect types |
+| `mesh` | `mesh_query` | 242 | Mesh inspection, scene manipulation, spatial queries, blockout, GeometryScript, horror analysis, lighting, audio, performance, procedural geometry, encounter design |
+| `ai` | `ai_query` | 229 | BT, BB, State Trees, EQS, Smart Objects, Controllers, Perception, Navigation, runtime debugging, scaffolding |
+| `gas` | `gas_query` | 130 | Gameplay Ability System — abilities, effects, attributes, ASC, tags, cues, targeting, input, inspect, scaffold |
+| `logicdriver` | `logicdriver_query` | 66 | Logic Driver Pro state machines — SM CRUD, graph read/write, JSON spec, scaffolding, components |
+| `combograph` | `combograph_query` | 13 | ComboGraph combo trees — graph CRUD, nodes, edges, effects, cues, ability scaffolding |
+| `ui` | `ui_query` | 42 | UI widget Blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility |
 | `editor` | `editor_query` | 19 | Build triggers, error logs, compile output, crash context, scene capture, texture import |
 | `config` | `config_query` | 6 | INI resolution, explain, diff, search |
 | `project` | `project_query` | 7 | Deep project search — FTS5 across all indexed assets including marketplace plugins |
 | `source` | `source_query` | 11 | Native C++ engine source lookup, call graphs, class hierarchy, project reindex |
-| `ui` | `ui_query` | 42 | UI widget Blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility |
-| `mesh` | `mesh_query` | 242 | Mesh inspection, scene manipulation, spatial queries, blockout, GeometryScript, horror analysis, lighting, audio, performance, procedural geometry, encounter design |
-| `gas` | `gas_query` | 130 | Gameplay Ability System — abilities, effects, attributes, ASC, tags, cues, targeting, input, inspect, scaffold |
+
+---
+
+## Standalone Tools
+
+Monolith ships two standalone C++ executables that work without the Unreal Editor, without Python, and without any external dependencies. Both are in `Binaries/` and included in every release.
+
+### monolith_proxy.exe — MCP Proxy (473KB)
+
+A stdio-to-HTTP proxy that keeps Claude Code MCP sessions alive across editor restarts. Full feature parity with the Python `monolith_proxy.py`:
+
+- JSON-RPC message handling with editor query splitting
+- Background health poll with `notifications/tools/list_changed`
+- Tool deduplication and action allowlist/denylist
+- Built with WinHTTP + nlohmann/json, zero UE dependency
+
+**Usage:** Set as the MCP command in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "monolith": {
+      "command": "Plugins/Monolith/Binaries/monolith_proxy.exe",
+      "args": []
+    }
+  }
+}
+```
+
+**Migrating from Python proxy:** Replace `{"command": "python", "args": ["Plugins/Monolith/Scripts/monolith_proxy.py"]}` with the config above. The Python scripts remain as deprecated fallbacks.
+
+**Source:** `Tools/MonolithProxy/monolith_proxy.cpp` (775 lines)
+
+### monolith_query.exe — Offline Query Tool (1.8MB)
+
+A standalone database query tool that replaces both `monolith_offline.py` and the old `MonolithQueryCommandlet`. Instant startup (no 6+ second UE engine load), queries `EngineSource.db` and `ProjectIndex.db` directly.
+
+**14 actions:** 9 source (search_source, read_source, find_callers, find_callees, find_references, get_class_hierarchy, get_module_info, get_symbol_context, read_file) + 5 project (search, find_by_type, find_references, get_stats, get_asset_details)
+
+**Usage:**
+
+```bash
+# Engine source queries
+Plugins/Monolith/Binaries/monolith_query.exe source search_source FCharacterMovementComponent --limit=5
+Plugins/Monolith/Binaries/monolith_query.exe source read_source ACharacter --max-lines=50
+Plugins/Monolith/Binaries/monolith_query.exe source get_class_hierarchy ACharacter --depth=3 --direction=down
+
+# Project asset queries (JSON output)
+Plugins/Monolith/Binaries/monolith_query.exe project search damage --limit=10
+Plugins/Monolith/Binaries/monolith_query.exe project find_by_type Blueprint --limit=20
+Plugins/Monolith/Binaries/monolith_query.exe project get_stats
+```
+
+Auto-detects database paths relative to exe location. No configuration needed.
+
+**Source:** `Tools/MonolithQuery/monolith_query.cpp` (1080 lines)
+
+### Building from Source
+
+Both tools use standard C/C++ with no UE dependency:
+
+```bash
+# Proxy (requires WinHTTP, nlohmann/json header-only)
+cl /O2 /EHsc /std:c++17 Tools/MonolithProxy/monolith_proxy.cpp /Fe:Binaries/monolith_proxy.exe winhttp.lib
+
+# Query tool (sqlite3 amalgamation bundled)
+cl /O2 /EHsc /std:c++17 Tools/MonolithQuery/monolith_query.cpp /Fe:Binaries/monolith_query.exe
+```
+
+Precompiled binaries are included in every release — building from source is only needed if you want to modify the tools.
 
 ---
 
@@ -276,6 +391,8 @@ Monolith checks for new versions on editor startup so you don't have to babysit 
 | **Claude can't find any tools** | Check `.mcp.json` transport type: Claude Code uses `"http"`, Cursor/Cline use `"streamableHttp"`. Restart your AI client after creating the file. |
 | **Tools fail on first try** | Restart Claude Code to refresh the MCP connection. Known quirk with initial connection timing. |
 | **Port 9316 already in use** | Change the port in Editor Preferences > Plugins > Monolith, then update `.mcp.json` to match. |
+| **Proxy says "Python 3 not found"** | Switch to the C++ proxy (`monolith_proxy.exe`) — no Python needed. Or install Python 3.8+ and ensure `python` is on your PATH. |
+| **monolith_query.exe returns no results** | The exe looks for databases relative to its own location. Make sure `Saved/Monolith/EngineSource.db` and `Saved/Monolith/ProjectIndex.db` exist (created on first editor launch). |
 | **Mac/Linux not working** | Windows only for now. Mac and Linux are planned. |
 
 ---
@@ -295,13 +412,15 @@ Settings live at **Editor Preferences > Plugins > Monolith**:
 | Additional Content Paths | `[]` | Extra content paths to include in the project index |
 | Enable Procedural Town Gen | `Off` | **Work-in-progress** — 45 additional mesh actions for procedural building/town generation. Very much a WIP; unless you're willing to dig in and help improve it, best left alone for now |
 | Enable GAS | `On` | Gameplay Ability System integration (130 actions, requires GameplayAbilities plugin) |
+| Enable Logic Driver | `On` | Logic Driver Pro state machine integration (66 actions, requires Logic Driver Pro marketplace plugin) |
+| Enable ComboGraph | `On` | ComboGraph combo tree integration (13 actions, requires ComboGraph marketplace plugin) |
 | Enable Blueprint Assist | `On` | Blueprint Assist integration for enhanced auto_layout (requires BA marketplace plugin) |
 
 ---
 
 ## Skills
 
-Monolith bundles 12 Claude Code skills in `Skills/` — domain-specific workflow guides that give your AI the right mental model for each area:
+Monolith bundles 14 Claude Code skills in `Skills/` — domain-specific workflow guides that give your AI the right mental model for each area:
 
 | Skill | Description |
 |-------|-------------|
@@ -312,6 +431,8 @@ Monolith bundles 12 Claude Code skills in `Skills/` — domain-specific workflow
 | `unreal-mesh` | Mesh inspection, spatial queries, blockout, procedural geometry, horror/accessibility |
 | `unreal-ui` | Widget Blueprint CRUD, templates, styling, accessibility |
 | `unreal-gas` | Gameplay Ability System — abilities, effects, attributes, ASC, tags, cues |
+| `unreal-logicdriver` | Logic Driver Pro state machines — SM CRUD, graph editing, JSON spec, scaffolding |
+| `unreal-combograph` | ComboGraph combo trees — graph CRUD, nodes, edges, effects, ability scaffolding |
 | `unreal-debugging` | Build errors, log search, crash context |
 | `unreal-performance` | Config auditing, shader stats, INI tuning |
 | `unreal-project-search` | FTS5 search syntax, reference tracing |

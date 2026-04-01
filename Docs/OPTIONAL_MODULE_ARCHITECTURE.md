@@ -688,7 +688,7 @@ For anyone who wants to verify these constraints against engine source:
     │    UMonolithSettings                     │
     │    monolith_discover (reports all)        │
     ├──────────────────────────────────────────┤
-    │  MonolithBlueprint  (86 actions)         │
+    │  MonolithBlueprint  (88 actions)         │
     │  MonolithMaterial   (57 actions)         │
     │  MonolithAnimation  (115 actions)        │
     │  MonolithNiagara    (96 actions)         │

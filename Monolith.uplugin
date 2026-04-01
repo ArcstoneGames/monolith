@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "0.11.0",
+	"VersionName": "0.12.0",
 	"FriendlyName": "Monolith",
-	"Description": "Unified Unreal Engine MCP server — 815 actions across 12 domains (Blueprint 86, Material 57, Animation 115, Niagara 96, Mesh 242, Editor 19, Config 6, Source 11, Project 7, UI 42, GAS 130, Core 4). AI-powered asset creation, inspection, and modification.",
+	"Description": "Unified Unreal Engine MCP server — 1125 actions across 15 domains (Blueprint 88, Material 57, Animation 115, Niagara 96, Mesh 242, Editor 19, Config 6, Source 11, Project 7, UI 42, GAS 130, ComboGraph 13, AI 229, LogicDriver 66, Core 4). AI-powered asset creation, inspection, and modification.",
 	"Category": "Editor",
 	"CreatedBy": "tumourlove",
 	"CreatedByURL": "https://github.com/tumourlove/monolith",
@@ -60,6 +60,41 @@
 		{
 			"Name": "GameplayAbilities",
 			"Enabled": true
+		},
+		{
+			"Name": "StateTree",
+			"Enabled": true
+		},
+		{
+			"Name": "SmartObjects",
+			"Enabled": true
+		},
+		{
+			"Name": "EnvironmentQueryEditor",
+			"Enabled": true
+		},
+		{
+			"Name": "GameplayStateTree",
+			"Enabled": true
+		},
+		{
+			"Name": "StructUtils",
+			"Enabled": true
+		},
+		{
+			"Name": "GameplayBehaviors",
+			"Enabled": true,
+			"Optional": true
+		},
+		{
+			"Name": "MassGameplay",
+			"Enabled": true,
+			"Optional": true
+		},
+		{
+			"Name": "ZoneGraph",
+			"Enabled": true,
+			"Optional": true
 		}
 	],
 	"Modules": [
@@ -125,6 +160,21 @@
 		},
 		{
 			"Name": "MonolithGAS",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "MonolithComboGraph",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "MonolithAI",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "MonolithLogicDriver",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
 		}

@@ -89,6 +89,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category="Indexing|Deep Indexers")
 	bool bIndexGAS = true;
 
+	/** Enable AI asset indexing (behavior trees, blackboards, state trees, EQS, smart objects) */
+	UPROPERTY(config, EditAnywhere, Category="Indexing|Deep Indexers")
+	bool bIndexAI = true;
+
 	/** Enable dependency graph indexing */
 	UPROPERTY(config, EditAnywhere, Category="Indexing|Post-Pass Indexers")
 	bool bIndexDependencies = true;
@@ -168,6 +172,21 @@ public:
 		meta=(DisplayName="Enable GAS Integration",
 			  ToolTip="When enabled, registers gas_query actions for Gameplay Ability System manipulation. Requires GameplayAbilities plugin (engine-bundled)."))
 	bool bEnableGAS = true;
+
+	UPROPERTY(config, EditAnywhere, Category="Modules|Optional",
+		meta=(DisplayName="Enable ComboGraph Integration",
+			  ToolTip="When enabled and ComboGraph is installed, registers combograph_query actions for combo graph manipulation."))
+	bool bEnableComboGraph = true;
+
+	UPROPERTY(config, EditAnywhere, Category="Modules|Optional",
+		meta=(DisplayName="Enable Logic Driver Integration",
+			  ToolTip="When enabled and Logic Driver Pro is installed, registers logicdriver_query actions for state machine manipulation."))
+	bool bEnableLogicDriver = true;
+
+	UPROPERTY(config, EditAnywhere, Category="Modules|Optional",
+		meta=(DisplayName="Enable AI Module",
+			  ToolTip="Registers ai_query actions for AI asset manipulation (BT, BB, ST, EQS, SO, Navigation, Perception)."))
+	bool bEnableAI = true;
 
 	// --- Modules|Mesh ---
 

@@ -1,5 +1,6 @@
 #include "MonolithMeshUtils.h"
 #include "MonolithAssetUtils.h"
+#include "MonolithParamUtils.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
@@ -55,52 +56,12 @@ USkeletalMesh* LoadSkeletalMesh(const FString& Path, FString& OutError)
 
 bool ParseVector(const TSharedPtr<FJsonObject>& Params, const FString& Key, FVector& Out)
 {
-	// Try array format: [x, y, z]
-	const TArray<TSharedPtr<FJsonValue>>* Arr;
-	if (Params->TryGetArrayField(Key, Arr) && Arr->Num() >= 3)
-	{
-		Out.X = (*Arr)[0]->AsNumber();
-		Out.Y = (*Arr)[1]->AsNumber();
-		Out.Z = (*Arr)[2]->AsNumber();
-		return true;
-	}
-
-	// Try object format: {x, y, z}
-	const TSharedPtr<FJsonObject>* Obj;
-	if (Params->TryGetObjectField(Key, Obj))
-	{
-		Out.X = (*Obj)->GetNumberField(TEXT("x"));
-		Out.Y = (*Obj)->GetNumberField(TEXT("y"));
-		Out.Z = (*Obj)->GetNumberField(TEXT("z"));
-		return true;
-	}
-
-	return false;
+	return MonolithParamUtils::ParseVector(Params, Key, Out);
 }
 
 bool ParseRotator(const TSharedPtr<FJsonObject>& Params, const FString& Key, FRotator& Out)
 {
-	// Try array format: [pitch, yaw, roll]
-	const TArray<TSharedPtr<FJsonValue>>* Arr;
-	if (Params->TryGetArrayField(Key, Arr) && Arr->Num() >= 3)
-	{
-		Out.Pitch = (*Arr)[0]->AsNumber();
-		Out.Yaw   = (*Arr)[1]->AsNumber();
-		Out.Roll  = (*Arr)[2]->AsNumber();
-		return true;
-	}
-
-	// Try object format: {pitch, yaw, roll}
-	const TSharedPtr<FJsonObject>* Obj;
-	if (Params->TryGetObjectField(Key, Obj))
-	{
-		Out.Pitch = (*Obj)->GetNumberField(TEXT("pitch"));
-		Out.Yaw   = (*Obj)->GetNumberField(TEXT("yaw"));
-		Out.Roll  = (*Obj)->GetNumberField(TEXT("roll"));
-		return true;
-	}
-
-	return false;
+	return MonolithParamUtils::ParseRotator(Params, Key, Out);
 }
 
 AActor* FindActorByName(const FString& Name, FString& OutError)
@@ -154,16 +115,7 @@ AActor* FindActorByName(const FString& Name, FString& OutError)
 
 UWorld* GetEditorWorld()
 {
-	if (GEditor)
-	{
-		// GetEditorWorldContext() gives us the main editor world
-		UWorld* World = GEditor->GetEditorWorldContext().World();
-		if (World)
-		{
-			return World;
-		}
-	}
-	return nullptr;
+	return MonolithParamUtils::GetEditorWorld();
 }
 
 MonolithMeshUtils::FBlockoutTags ParseBlockoutTags(const AActor* Actor)

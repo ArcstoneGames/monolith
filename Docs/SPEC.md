@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 15 MCP tools (815 total actions across 12 domains; 770 active by default — 45 experimental town gen actions disabled), cutting AI assistant context consumption by ~95%.
+Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 18 MCP tools (1125 total actions across 15 domains; 1080 active by default — 45 experimental town gen actions disabled), cutting AI assistant context consumption by ~95%.
 
 ### What It Replaces
 
@@ -35,7 +35,7 @@ Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate M
 ```
 Monolith.uplugin
   MonolithCore          — HTTP server, tool registry, discovery, settings, auto-updater
-  MonolithBlueprint     — Blueprint inspection, variable/component/graph CRUD, node operations, compile (86 actions)
+  MonolithBlueprint     — Blueprint inspection, variable/component/graph CRUD, node operations, compile, spawn (88 actions)
   MonolithMaterial      — Material inspection + graph editing + CRUD + function suite (57 actions)
   MonolithAnimation     — Animation sequences, montages, ABPs, curves, notifies, skeletons, PoseSearch (115 actions)
   MonolithNiagara       — Niagara particle systems, HLSL module/function creation, DI config, event handlers, sim stages, NPC, effect types (96 actions)
@@ -46,12 +46,15 @@ Monolith.uplugin
   MonolithUI            — Widget blueprint CRUD, templates, styling, animation, settings scaffolding, accessibility (42 actions)
   MonolithMesh          — Mesh inspection, scene manipulation, spatial queries, level blockout, GeometryScript ops, horror/accessibility, lighting, audio/acoustics, performance, decals, level design, tech art, context props, procedural geometry (sweep walls, auto-collision, proc mesh caching, blueprint prefabs), genre presets, encounter design, accessibility reports (197 core actions) + EXPERIMENTAL procedural town generator (45 actions, disabled by default via bEnableProceduralTownGen) = 242 total
   MonolithGAS           — Gameplay Ability System integration: abilities, attributes, effects, ASC, tags, cues, targets, input, inspection, scaffolding (130 actions). Conditional on #if WITH_GBA
+  MonolithComboGraph    — ComboGraph plugin integration: combo graph CRUD, node/edge management, effects, cues, ability scaffolding (13 actions). Conditional on #if WITH_COMBOGRAPH
+  MonolithAI            — AI asset manipulation: Behavior Trees, Blackboards, State Trees, EQS, Smart Objects, AI Controllers, Perception, Navigation, Runtime/PIE, Scaffolds, Discovery, Advanced (229 actions). Conditional on #if WITH_STATETREE, #if WITH_SMARTOBJECTS (required); #if WITH_MASSENTITY, #if WITH_ZONEGRAPH (optional)
+  MonolithLogicDriver   — Logic Driver Pro integration: SM CRUD, graph read/write, node config, runtime/PIE, JSON spec, scaffolding, discovery, components, text graph (66 actions). Conditional on #if WITH_LOGICDRIVER
   MonolithBABridge      — Optional IModularFeatures bridge for Blueprint Assist integration. Exposes IMonolithGraphFormatter; enables BA-powered auto_layout across blueprint, material, animation, and niagara modules when Blueprint Assist is present (0 MCP actions — integration only)
 ```
 
 ### Discovery/Dispatch Pattern
 
-All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone. Conditional modules (e.g. MonolithGAS) gate registration on compile-time defines (`#if WITH_GBA`).
+All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone. Conditional modules gate registration on compile-time defines: MonolithGAS (`#if WITH_GBA`), MonolithComboGraph (`#if WITH_COMBOGRAPH`), MonolithLogicDriver (`#if WITH_LOGICDRIVER`), MonolithAI (`#if WITH_STATETREE` + `#if WITH_SMARTOBJECTS` required; `#if WITH_MASSENTITY` + `#if WITH_ZONEGRAPH` optional).
 
 ### MCP Protocol
 
@@ -67,7 +70,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | Module | Loading Phase | Type |
 |--------|--------------|------|
 | MonolithCore | PostEngineInit | Editor |
-| All others (11) | Default | Editor |
+| All others (14) | Default | Editor |
 | MonolithBABridge | Default | Editor (optional) |
 
 ### Plugin Dependencies
@@ -123,11 +126,11 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 
 | Class | Responsibility |
 |-------|---------------|
-| `FMonolithBlueprintModule` | Registers 86 blueprint actions |
+| `FMonolithBlueprintModule` | Registers 88 blueprint actions |
 | `FMonolithBlueprintActions` | Static handlers. Uses `FMonolithAssetUtils::LoadAssetByPath<UBlueprint>` |
 | `MonolithBlueprintInternal` | Helpers: AddGraphArray, FindGraphByName, PinTypeToString, SerializePin/Node, TraceExecFlow, FindEntryNode |
 
-#### Actions (86 — namespace: "blueprint")
+#### Actions (88 — namespace: "blueprint")
 
 **Read Actions (13)**
 | Action | Params | Description |
@@ -203,6 +206,12 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | Action | Params | Description |
 |--------|--------|-------------|
 | `auto_layout` | `asset_path`, `graph_name`?, `formatter`? | Auto-arrange nodes in a Blueprint graph. `formatter`: `"auto"` (default) — uses Blueprint Assist if available, falls back to built-in hierarchical layout; `"blueprint_assist"` — requires BA, errors if not present; `"builtin"` — built-in layout only |
+
+**Spawn (2)**
+| Action | Params | Description |
+|--------|--------|-------------|
+| `spawn_blueprint_actor` | `blueprint`, `location`?, `rotation`?, `scale`?, `label`?, `folder`?, `properties`?, `tags`?, `sublevel`?, `mobility`?, `select`? | Spawn a Blueprint actor into the editor world with full transform, property reflection, tags, sublevel targeting, and mobility control. Uses `GEditor->AddActor` for proper editor integration (undo/redo). Default folder: `"Blueprints"` |
+| `batch_spawn_blueprint_actors` | `blueprint`, `count`, `pattern`?, `origin`?, `spacing`?, `columns`?, `direction`?, `rotation`?, `scale`?, `label_prefix`?, `folder`?, `properties`?, `tags`?, `sublevel`?, `mobility`?, `select`? | Spawn multiple Blueprint actors in a grid or linear pattern. Partial failure semantics — continues on per-actor failure, reports successes and failures separately. Single undo transaction. Max 1000 |
 
 ---
 
@@ -764,7 +773,7 @@ The `bInstalled` filter on plugin content paths was replaced with explicit path 
 | `UMonolithSourceSubsystem` | UEditorSubsystem. Owns engine source DB. Runs native C++ source indexer. Exposes `TriggerReindex()` (full engine re-index) and `TriggerProjectReindex()` (project C++ only, incremental) |
 | `FMonolithSourceDatabase` | Read-only SQLite wrapper. Thread-safe via FCriticalSection. FTS queries with prefix matching |
 | `FMonolithSourceActions` | 11 handlers. Helpers: IsForwardDeclaration (regex), ExtractMembers (smart class outline) |
-| `UMonolithQueryCommandlet` | UCommandlet. Offline CLI — run via `UnrealEditor-Cmd.exe ProjectName -run=MonolithQuery`. Replaces `monolith_offline.py` for read/query operations without a full editor session |
+| ~~`UMonolithQueryCommandlet`~~ | **Removed.** Replaced by standalone `monolith_query.exe` (see Section 5.1). The exe has no UE runtime dependency and starts instantly |
 
 #### Actions (11 — namespace: "source")
 
@@ -1242,6 +1251,117 @@ MonolithGAS provides full MCP coverage of the Gameplay Ability System. It covers
 >
 > **GBA conditional support:** The `WITH_GBA` define is set automatically by the module's `Build.cs` when GameplayAbilities is found. Projects without GAS get zero compile overhead — the entire module compiles to an empty stub.
 
+### 3.14 MonolithComboGraph
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore
+**Namespace:** `combograph` | **Tool:** `combograph_query(action, params)` | **Actions:** 13
+**Conditional:** ComboGraph plugin features wrapped in `#if WITH_COMBOGRAPH`. When ComboGraph is absent, the module compiles to an empty stub (0 actions registered). Uses UObject reflection only — no direct C++ API linkage against ComboGraph binaries.
+**Settings toggle:** `bEnableComboGraph` (default: True)
+
+MonolithComboGraph provides MCP coverage of the ComboGraph marketplace plugin. It covers combo graph CRUD, node and edge management, gameplay effect and cue assignment per node, ability creation/linking, and full-graph scaffolding from montage lists.
+
+#### Action Categories
+
+| Category | Actions | Description |
+|----------|---------|-------------|
+| Read | 4 | List combo graphs, inspect graph structure (nodes/edges/effects), read node effects, validate graph integrity |
+| Create | 5 | Create combo graphs, add nodes with montages, add transition edges, set node effects, set node cues |
+| Scaffold | 3 | Create combo abilities, link abilities to graphs, scaffold complete graphs from ordered montage lists |
+| Layout | 1 | Auto-arrange combo graph nodes |
+
+#### Notes
+
+> **Precompiled plugin integration.** ComboGraph is a marketplace plugin with precompiled binaries. MonolithComboGraph uses UObject reflection (`FindPropertyByName`, `FProperty::GetValue_InContainer`) and `UComboGraphFactory` (discovered via reflection) rather than linking against ComboGraph headers. This makes the integration version-agnostic as long as property names are stable.
+>
+> **EdGraph sync.** ComboGraph assets contain both runtime and editor graphs. All write actions update both representations so changes are visible in the ComboGraph editor without manual refresh.
+>
+> **GAS integration.** The `create_combo_ability` and `link_ability_to_combo_graph` actions require both ComboGraph and GameplayAbilities plugins to be present.
+
+---
+
+### 3.15 MonolithLogicDriver
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore
+**Namespace:** `logicdriver` | **Tool:** `logicdriver_query(action, params)` | **Actions:** 66
+**Conditional:** Logic Driver Pro plugin features wrapped in `#if WITH_LOGICDRIVER`. When Logic Driver Pro is absent, the module compiles to an empty stub (0 actions registered). Uses UObject reflection only — no direct C++ API linkage against Logic Driver binaries. Build.cs detection at 3 locations (project plugins, engine marketplace, engine plugins).
+**Settings toggle:** `bEnableLogicDriver` (default: True)
+
+MonolithLogicDriver provides MCP coverage of the Logic Driver Pro marketplace plugin. It covers state machine asset CRUD, graph read/write, node configuration, runtime/PIE control, JSON spec-based generation, scaffolding templates, discovery, component management, and text-based graph visualization.
+
+#### Action Categories
+
+| Category | Actions | Description |
+|----------|---------|-------------|
+| Asset CRUD | 8 | Create, list, delete, compile, duplicate, rename state machines |
+| Graph Read/Write | 20 | Get structure, add/remove/connect states and transitions, get/set node properties, auto-arrange graph |
+| Node Config | 8 | Configure state classes, transition rules, conduits, node colors, entry points |
+| Runtime/PIE | 7 | Start/stop/step SM in PIE, get active states, set variables, inspect runtime context |
+| JSON/Spec | 5 | Build SM from JSON spec, export/import SM as JSON, validate spec, diff specs |
+| Scaffolding | 7 | scaffold_hello_world_sm, scaffold_horror_encounter_sm, scaffold_patrol_sm, scaffold_dialogue_sm, scaffold_health_sm, scaffold_interaction_sm, scaffold_quest_sm |
+| Discovery | 6 | get_sm_overview, list_state_machines, explain_state_machine, compare_state_machines, validate_state_machine, search_state_machines |
+| Component | 3 | Add SM component to actor, configure component, get component info |
+| Text Graph | 2 | visualize_sm_as_text (Mermaid output), export_sm_as_dot (Graphviz DOT) |
+
+#### Key Actions
+
+> **`build_sm_from_spec` (power action).** Creates a complete state machine from a JSON specification in a single call. The spec defines states, transitions, initial state, transition rules, and metadata. Handles EdGraph node creation, layout, and compilation automatically.
+>
+> **Scaffolding templates (7).** Pre-built SM patterns for common game scenarios: hello world (3-state tutorial), horror encounter (7-state with escape/lose-interest paths), patrol, dialogue, health management, interaction, and quest progression.
+>
+> **`visualize_sm_as_text`.** Generates Mermaid diagram syntax from an SM asset, including `[*]` initial state markers. Useful for documentation and debugging without opening the editor.
+>
+> **`auto_arrange_graph`.** Automatically lays out SM nodes in the editor graph for readability.
+
+#### Notes
+
+> **Precompiled plugin integration.** Logic Driver Pro is a marketplace plugin with precompiled binaries. MonolithLogicDriver uses UObject reflection (`FindPropertyByName`, `FProperty::GetValue_InContainer`) and factory classes discovered via reflection rather than linking against Logic Driver headers. The 3-location Build.cs detection finds SMSystem/SMSystemEditor modules whether installed as a project plugin, engine marketplace plugin, or engine plugin.
+>
+> **Reflection-only architecture.** All property access goes through `FindPropertyByName` + `GetValue_InContainer`. State/transition classes are resolved via `FindObject<UClass>`. This makes the integration version-agnostic as long as property names and class hierarchies are stable.
+>
+> **EdGraph sync.** State machine assets contain both runtime and editor graph representations. All write actions update both so changes are visible in the Logic Driver editor without manual refresh.
+
+---
+
+### 3.16 MonolithAI
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore, UnrealEd, AIModule, GameplayTasks, NavigationSystem, Json, JsonUtilities
+**Namespace:** `ai` | **Tool:** `ai_query(action, params)` | **Actions:** 229
+**Conditional:** State Trees (`#if WITH_STATETREE`) and Smart Objects (`#if WITH_SMARTOBJECTS`) are required dependencies. Mass Entity (`#if WITH_MASSENTITY`) and Zone Graph (`#if WITH_ZONEGRAPH`) are optional extensions. When required deps are absent, the module compiles to an empty stub (0 actions registered).
+**Settings toggle:** `bEnableAI` (default: True)
+
+MonolithAI provides comprehensive MCP coverage of Unreal Engine's AI framework. It covers Behavior Trees, Blackboards, State Trees, Environment Query System (EQS), Smart Objects, AI Controllers, AI Perception, Navigation, runtime/PIE control, scaffolding templates, discovery, and advanced AI operations.
+
+#### Action Categories
+
+| Category | Actions | Description |
+|----------|---------|-------------|
+| Behavior Trees | ~40 | BT CRUD, node management, decorator/service/task creation, composite nodes, spec-based generation |
+| Blackboards | ~20 | BB CRUD, key management, key types, inheritance, inspection |
+| State Trees | ~30 | ST CRUD, state/transition management, conditions, tasks, spec-based generation. Conditional on `#if WITH_STATETREE` |
+| EQS | ~25 | EQS query CRUD, generator/test management, contexts, debugging |
+| Smart Objects | ~20 | SO definition CRUD, slot configuration, behavior binding. Conditional on `#if WITH_SMARTOBJECTS` |
+| AI Controllers | ~15 | Controller configuration, team assignment, focus management |
+| Perception | ~20 | Sight/hearing/damage/team sense configuration, stimulus management |
+| Navigation | ~15 | NavMesh queries, path finding, nav link management, nav modifier volumes |
+| Runtime/PIE | ~15 | Runtime BT/ST inspection, active task queries, blackboard value read/write in PIE |
+| Scaffolding | ~15 | Pre-built AI patterns: patrol, guard, investigate, flee, horror stalker, search area |
+| Discovery | ~10 | AI asset overview, explain, compare, validate, search |
+| Advanced | ~4 | Batch operations, cross-module integration |
+
+#### Key Actions
+
+> **`build_behavior_tree_from_spec` (power action).** Creates a complete behavior tree from a JSON specification. Handles composite/decorator/service/task node creation, wiring, and compilation in a single call.
+>
+> **`build_state_tree_from_spec` (power action).** Creates a complete state tree from a JSON specification. Handles state/transition/condition/task creation and compilation.
+>
+> **Scaffolding templates.** Pre-built AI patterns for common game scenarios including patrol routes, guard behavior, investigation, flee response, and horror-specific stalker AI.
+
+#### Notes
+
+> **24K lines of C++ across 30 files.** MonolithAI is the largest domain module by code volume.
+>
+> **Multi-plugin conditional compilation.** Unlike single-guard modules (GAS, ComboGraph, LogicDriver), MonolithAI uses multiple compile-time guards. State Trees and Smart Objects are required; Mass Entity and Zone Graph are optional extensions that unlock additional actions when present.
+
 ---
 
 ## 4. Source Indexer
@@ -1296,19 +1416,20 @@ The engine source indexer is a native C++ implementation within `MonolithSource`
 
 Two options for offline access (no full editor session required):
 
-### 5.1 MonolithQueryCommandlet (preferred)
+### 5.1 monolith_query.exe (preferred)
 
-**Class:** `UMonolithQueryCommandlet`
+**Binary:** `Plugins/Monolith/Binaries/monolith_query.exe`
+**Source:** `Tools/MonolithQuery/` — build via `build.bat`
 **Run via:**
 ```
-"C:\Program Files (x86)\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" YourProject -run=MonolithQuery [args...]
+'Plugins/Monolith/Binaries/monolith_query.exe' <namespace> <action> [args...]
 ```
 
-Replaces `monolith_offline.py` as the primary offline access path. Uses the same C++ DB layer as the live MCP server, so query results are identical.
+Standalone C++ executable. No UE runtime, no Python, instant startup. Queries `EngineSource.db` and `ProjectIndex.db` directly. Replaces the previous `MonolithQueryCommandlet` (removed) and supersedes `monolith_offline.py` as the primary offline access path.
 
 ### 5.2 monolith_offline.py (legacy)
 
-> **LEGACY:** `monolith_offline.py` is superseded by `MonolithQueryCommandlet`. It remains functional as a zero-dependency fallback requiring only Python stdlib and no UE installation.
+> **LEGACY:** `monolith_offline.py` is superseded by `monolith_query.exe`. It remains functional as a zero-dependency fallback requiring only Python stdlib and no UE installation.
 
 **Location:** `Saved/monolith_offline.py`
 **Dependencies:** Python stdlib only (sqlite3, argparse, json, re, pathlib) — no pip installs required
@@ -1470,9 +1591,18 @@ YourProject/Plugins/Monolith/
     MonolithSource/                (8 source files)
     MonolithUI/                    (17 source files — 9 .cpp + 8 .h)
     MonolithGAS/                   (conditional on WITH_GBA — abilities, attributes, effects, ASC, tags, cues, targets, input, inspect, scaffold)
+    MonolithComboGraph/            (conditional on WITH_COMBOGRAPH — combo graph CRUD, nodes, edges, effects, cues, ability scaffolding)
+    MonolithAI/                    (conditional on WITH_STATETREE + WITH_SMARTOBJECTS — BT, BB, ST, EQS, SO, Controllers, Perception, Navigation, Runtime, Scaffolds)
+    MonolithLogicDriver/           (conditional on WITH_LOGICDRIVER — SM CRUD, graph read/write, node config, runtime/PIE, JSON spec, scaffolding, discovery, components, text graph)
+  Tools/
+    MonolithProxy/                   (MCP stdio-to-HTTP proxy source + build.bat)
+    MonolithQuery/                   (Offline query tool source + build.bat)
+  Binaries/
+    monolith_proxy.exe               (Compiled MCP proxy — replaces Python proxy)
+    monolith_query.exe               (Compiled offline query tool — replaces MonolithQueryCommandlet)
   Saved/
     .gitkeep
-    monolith_offline.py              (Offline CLI — query DBs without the editor)
+    monolith_offline.py              (Legacy offline CLI — superseded by monolith_query.exe)
     EngineSource.db                  (Engine source index, ~1.8GB — not in git)
     ProjectIndex.db                  (Project asset index — not in git)
 ```
@@ -1537,7 +1667,7 @@ See `TODO.md` for the full list. Key architectural constraints:
 | Module | Namespace | Actions |
 |--------|-----------|---------|
 | MonolithCore | monolith | 4 |
-| MonolithBlueprint | blueprint | 86 |
+| MonolithBlueprint | blueprint | 88 |
 | MonolithMaterial | material | 57 |
 | MonolithAnimation | animation | 115 |
 | MonolithNiagara | niagara | 96 |
@@ -1548,7 +1678,10 @@ See `TODO.md` for the full list. Key architectural constraints:
 | MonolithSource | source | 11 |
 | MonolithUI | ui | 42 |
 | MonolithGAS | gas | 130 |
+| MonolithComboGraph | combograph | 13 |
+| MonolithAI | ai | 229 |
+| MonolithLogicDriver | logicdriver | 66 |
 | MonolithBABridge | — | 0 (integration only) |
-| **Total** | | **815** (770 active by default) |
+| **Total** | | **1125** (1080 active by default) |
 
-**Note:** MonolithMesh includes 197 core actions (always registered) plus 45 experimental Procedural Town Generator actions (registered only when `bEnableProceduralTownGen = true`, default: false — known geometry issues). MonolithGAS is conditional on `#if WITH_GBA` — projects without GameplayAbilities register 0 GAS actions. MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 15 MCP tools with namespaced actions.
+**Note:** MonolithMesh includes 197 core actions (always registered) plus 45 experimental Procedural Town Generator actions (registered only when `bEnableProceduralTownGen = true`, default: false — known geometry issues). MonolithGAS is conditional on `#if WITH_GBA` — projects without GameplayAbilities register 0 GAS actions. MonolithComboGraph is conditional on `#if WITH_COMBOGRAPH` — projects without the ComboGraph plugin register 0 combograph actions. MonolithAI is conditional on `#if WITH_STATETREE` + `#if WITH_SMARTOBJECTS` — projects without these register 0 AI actions. MonolithLogicDriver is conditional on `#if WITH_LOGICDRIVER` — projects without Logic Driver Pro register 0 logicdriver actions. MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 18 MCP tools with namespaced actions.

@@ -5,7 +5,7 @@ description: Use when working with Unreal Engine Blueprints via Monolith MCP —
 
 # Unreal Blueprint Workflows
 
-You have access to **Monolith** with **86 Blueprint actions** via `blueprint_query()`.
+You have access to **Monolith** with **88 Blueprint actions** via `blueprint_query()`.
 
 **Also works on:** Level Blueprints (via map path or `$current`), Widget Blueprints (UWidgetBlueprint inherits UBlueprint).
 

@@ -35,6 +35,18 @@ void UMonolithIndexSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
+	// In commandlet mode, only open the DB for queries — skip indexing, live callbacks, and AR registration
+	if (IsRunningCommandlet())
+	{
+		Database = MakeUnique<FMonolithIndexDatabase>();
+		FString DbPath = GetDatabasePath();
+		if (Database->Open(DbPath))
+		{
+			UE_LOG(LogMonolithIndex, Log, TEXT("Commandlet mode — opened index DB read-only at %s"), *DbPath);
+		}
+		return;
+	}
+
 	Database = MakeUnique<FMonolithIndexDatabase>();
 	FString DbPath = GetDatabasePath();
 

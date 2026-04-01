@@ -21,8 +21,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $PluginDir = Split-Path -Parent $PSScriptRoot
-$ProjectDir = Split-Path -Parent $PluginDir
-$OutputZip = Join-Path (Split-Path -Parent $PluginDir) "Monolith-v$Version.zip"
+$ProjectDir = Split-Path -Parent (Split-Path -Parent $PluginDir)
+$OutputZip = Join-Path $ProjectDir "Monolith-v$Version.zip"
 $TempDir = Join-Path $env:TEMP "Monolith_Release_$Version"
 $UBT = 'C:\Program Files (x86)\UE_5.7\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.exe'
 $UProject = Join-Path $ProjectDir "Leviathan.uproject"
@@ -35,7 +35,7 @@ if (-not $SkipBuild) {
 
     # Set env var so Build.cs files skip optional dependency detection
     $env:MONOLITH_RELEASE_BUILD = "1"
-    Write-Host "    MONOLITH_RELEASE_BUILD=1 (BA/GBA forced off)" -ForegroundColor DarkGray
+    Write-Host "    MONOLITH_RELEASE_BUILD=1 (BA/GBA/ComboGraph forced off)" -ForegroundColor DarkGray
 
     try {
         & $UBT LeviathanEditor Win64 Development "-Project=$UProject" -waitmutex

@@ -512,13 +512,19 @@ FMonolithActionResult FMonolithMeshAdvancedLevelActions::PlaceBlueprintActor(con
 
 	AdvancedLevelHelpers::FScopedMeshTransaction Transaction(NSLOCTEXT("Monolith", "PlaceBPActor", "Monolith: Place Blueprint Actor"));
 
-	FTransform SpawnTransform(Rotation, Location, Scale);
+	FTransform SpawnTransform(Rotation.Quaternion(), Location);
 	AActor* NewActor = GEditor->AddActor(World->PersistentLevel, BPClass, SpawnTransform);
 
 	if (!NewActor)
 	{
 		Transaction.Cancel();
 		return FMonolithActionResult::Error(TEXT("Failed to spawn Blueprint actor"));
+	}
+
+	// Apply scale manually (AddActor ignores scale from FTransform)
+	if (!Scale.Equals(FVector::OneVector))
+	{
+		NewActor->SetActorScale3D(Scale);
 	}
 
 	if (!Label.IsEmpty())
@@ -537,7 +543,7 @@ FMonolithActionResult FMonolithMeshAdvancedLevelActions::PlaceBlueprintActor(con
 	// Set properties via reflection
 	TArray<FString> PropertiesSet;
 	const TSharedPtr<FJsonObject>* PropsObj = nullptr;
-	if (Params->TryGetObjectField(TEXT("properties"), PropsObj) && PropsObj && (*PropsObj).IsValid())
+	if (Params->TryGetObjectField(TEXT("properties"), PropsObj) && PropsObj && (*PropsObj).IsValid() && (*PropsObj)->Values.Num() > 0)
 	{
 		for (const auto& Pair : (*PropsObj)->Values)
 		{

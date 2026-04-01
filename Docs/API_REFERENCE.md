@@ -13,7 +13,7 @@
 | Namespace | Actions | Description |
 |-----------|---------|-------------|
 | [monolith](#monolith) | 4 | Core server tools (discover, status, update, reindex) |
-| [blueprint](#blueprint) | 86 | Blueprint read/write, variable/component/graph CRUD, node operations, compile, auto-layout |
+| [blueprint](#blueprint) | 88 | Blueprint read/write, variable/component/graph CRUD, node operations, compile, auto-layout, spawn actors |
 | [material](#material) | 57 | Material graph editing, inspection, CRUD, material functions |
 | [animation](#animation) | 115 | Animation curves, bone tracks, sync markers, root motion, compression, blend spaces, ABPs, montages, skeletons, PoseSearch, IKRig, Control Rig |
 | [niagara](#niagara) | 96 | Niagara VFX system editing (emitters, modules, params, renderers, HLSL, dynamic inputs, event handlers, sim stages, NPC, effect types) |
