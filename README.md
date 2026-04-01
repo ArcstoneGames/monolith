@@ -202,7 +202,17 @@ When you see `Monolith MCP server listening on port 9316`, you're in business.
 
 You should get back a list of namespace tools (`blueprint_query`, `material_query`, etc.). If you do, everything's working.
 
-### Step 5: (Optional) Index your project's C++ source
+### Step 5: Add project instructions for your AI
+
+Copy `Templates/CLAUDE.md.example` to your project root as `CLAUDE.md` (for Claude Code) or adapt it for your LLM of choice. It lists all 18 tools, their action counts, and workflow tips that help the AI use Monolith effectively.
+
+```bash
+cp Plugins/Monolith/Templates/CLAUDE.md.example CLAUDE.md
+```
+
+> **Not using Claude?** The template is plain Markdown — the tool list and workflow section port directly to Cursor rules, Cline system prompts, or any LLM's instruction format. The content is what matters, not the filename.
+
+### Step 6: (Optional) Index your project's C++ source
 
 Engine source indexing is automatic — `source_query` works immediately with no setup.
 

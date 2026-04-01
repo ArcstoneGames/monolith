@@ -1,42 +1,45 @@
-# Project Instructions — Monolith-Enabled
+# Monolith MCP — Project Instructions
 
-This project uses the **Monolith** plugin for Unreal Engine MCP integration.
+This project uses **Monolith** for Unreal Engine MCP integration. 18 tools, 1,125 actions across 15 domains.
 
-## Available MCP Tools
+## Tools
 
-Monolith exposes 12 MCP tools with 177 total actions:
-
-- `monolith_discover(namespace?)` — List available actions (call this first)
-- `monolith_status()` — Health check, index status, version
+- `monolith_discover(namespace?)` — List available actions (always call this first)
+- `monolith_status()` — Health check, version, action count
 - `monolith_reindex()` — Trigger full project re-index
-- `monolith_update(action)` — Check for / install plugin updates
-- `blueprint_query(action, params)` — Blueprint graph inspection (6 actions)
-- `material_query(action, params)` — Material editing, creation, instances, parameters (25 actions)
-- `animation_query(action, params)` — Animation asset workflows, PoseSearch (67 actions)
-- `niagara_query(action, params)` — Niagara particle systems (41 actions)
-- `editor_query(action, params)` — Build, logs, compile output, crash context (13 actions)
+- `blueprint_query(action, params)` — Blueprint CRUD, compile, nodes, spawn actors (88 actions)
+- `material_query(action, params)` — Materials, instances, functions, HLSL, graph (57 actions)
+- `animation_query(action, params)` — Animation assets, ABP, PoseSearch, montages (115 actions)
+- `niagara_query(action, params)` — Niagara VFX, dynamic inputs, sim stages (96 actions)
+- `mesh_query(action, params)` — Mesh inspection, scene manipulation, spatial queries, blockout, GeometryScript, procedural geometry (242 actions)
+- `editor_query(action, params)` — Build, logs, compile output, crash context, scene capture (19 actions)
 - `config_query(action, params)` — Config/INI resolution (6 actions)
-- `source_query(action, params)` — Engine source lookup (10 actions)
-- `project_query(action, params)` — Deep project index search (5 actions)
+- `source_query(action, params)` — Engine C++ source lookup, class hierarchy, callers/callees (11 actions)
+- `project_query(action, params)` — Project-wide asset search (7 actions)
+- `ui_query(action, params)` — Widget blueprints, templates, styling, accessibility (42 actions)
+- `gas_query(action, params)` — Gameplay Ability System: abilities, attributes, effects, ASC (130 actions)
+- `ai_query(action, params)` — AI: Behavior Trees, State Trees, EQS, Smart Objects, Perception, Navigation (229 actions)
+- `combograph_query(action, params)` — ComboGraph combo systems (13 actions, requires ComboGraph plugin)
+- `logicdriver_query(action, params)` — Logic Driver Pro state machines (66 actions, requires Logic Driver Pro plugin)
 
 ## Workflow
 
-1. Use `monolith_discover("namespace")` to see available actions before calling
-2. Use `project_query("search", {"query": "..."})` to find assets across the project
-3. Use domain-specific tools to inspect and modify assets
-4. Use `editor_query("get_build_errors")` after builds to diagnose issues
+1. Call `monolith_discover("namespace")` to see actions before guessing names
+2. Use `project_query("search", {"query": "..."})` to find assets
+3. Use `source_query("search_source", {"query": "..."})` to look up UE C++ APIs
+4. Use domain tools to inspect/modify assets
+5. After C++ changes: `editor_query("get_build_errors")` to check results
 
-## Asset Path Conventions
+## Asset Paths
 
-All asset paths use `/Game/Path/To/Asset` format (no `.uasset` extension):
-- Project `Content/`: `/Game/Path/To/Asset`
-- Project `Plugins/`: `/PluginName/PluginName/Path/To/Asset`
+All paths use `/Game/Path/To/Asset` format (no `.uasset`):
+- Project Content: `/Game/Path/To/Asset`
+- Project Plugins: `/PluginName/PluginName/Path/To/Asset`
 - Engine plugins: `/PluginName/Path/To/Asset`
 
 ## Rules
 
-- Always discover available actions before guessing action names
+- Always discover before calling — action names change between versions
+- Never guess `#include` paths or UE API signatures — use `source_query` to verify
 - The project index is pre-built — use `project_query` for broad searches
-- Engine source lookups via `source_query` work offline against the local index
-- Never guess `#include` paths or function signatures — use `source_query` to verify
-- After modifying C++, check build results with `editor_query("get_build_errors")`
+- For material work: `create_material` → `build_material_graph` → `connect_expressions` → `recompile_material`
