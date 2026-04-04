@@ -189,10 +189,17 @@ namespace
 		return MonolithGAS::TagContainerToJson(Container);
 	}
 
+	constexpr int32 LegacyNonInstancedPolicyValue = 0;
+
+	bool IsLegacyNonInstancedPolicy(EGameplayAbilityInstancingPolicy::Type Policy)
+	{
+		return static_cast<int32>(Policy) == LegacyNonInstancedPolicyValue;
+	}
+
 	// Parse enum string for instancing policy
 	bool ParseInstancingPolicy(const FString& Str, EGameplayAbilityInstancingPolicy::Type& Out)
 	{
-		if (Str == TEXT("NonInstanced"))           { Out = EGameplayAbilityInstancingPolicy::NonInstanced; return true; }
+		if (Str == TEXT("NonInstanced"))           { Out = static_cast<EGameplayAbilityInstancingPolicy::Type>(LegacyNonInstancedPolicyValue); return true; }
 		if (Str == TEXT("InstancedPerActor"))       { Out = EGameplayAbilityInstancingPolicy::InstancedPerActor; return true; }
 		if (Str == TEXT("InstancedPerExecution"))   { Out = EGameplayAbilityInstancingPolicy::InstancedPerExecution; return true; }
 		return false;
@@ -221,9 +228,13 @@ namespace
 	// Enum to string helpers
 	FString InstancingPolicyToString(EGameplayAbilityInstancingPolicy::Type P)
 	{
+		if (IsLegacyNonInstancedPolicy(P))
+		{
+			return TEXT("NonInstanced");
+		}
+
 		switch (P)
 		{
-		case EGameplayAbilityInstancingPolicy::NonInstanced:          return TEXT("NonInstanced");
 		case EGameplayAbilityInstancingPolicy::InstancedPerActor:     return TEXT("InstancedPerActor");
 		case EGameplayAbilityInstancingPolicy::InstancedPerExecution: return TEXT("InstancedPerExecution");
 		default: return TEXT("Unknown");
@@ -3148,7 +3159,7 @@ FMonolithActionResult FMonolithGASAbilityActions::HandleValidateAbility(const TS
 
 	// Check: NonInstanced policy (deprecated, causes issues with state)
 	EGameplayAbilityInstancingPolicy::Type InstPolicy = Ctx.CDO->GetInstancingPolicy();
-	if (InstPolicy == EGameplayAbilityInstancingPolicy::NonInstanced)
+	if (IsLegacyNonInstancedPolicy(InstPolicy))
 	{
 		// Check if ability has any variables/state defined in BP
 		bool bHasVariables = false;
@@ -3622,7 +3633,7 @@ FMonolithActionResult FMonolithGASAbilityActions::HandleValidateAbilityBlueprint
 
 	// Check: NonInstanced with variables
 	EGameplayAbilityInstancingPolicy::Type InstPolicy = CDO->GetInstancingPolicy();
-	if (InstPolicy == EGameplayAbilityInstancingPolicy::NonInstanced && BP->NewVariables.Num() > 0)
+	if (IsLegacyNonInstancedPolicy(InstPolicy) && BP->NewVariables.Num() > 0)
 	{
 		int32 UserVarCount = 0;
 		for (const FBPVariableDescription& Var : BP->NewVariables)

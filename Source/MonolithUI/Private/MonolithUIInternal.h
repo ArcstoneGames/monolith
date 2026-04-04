@@ -54,6 +54,44 @@
 
 namespace MonolithUIInternal
 {
+    inline bool TryGetRequiredString(
+        const TSharedPtr<FJsonObject>& Object,
+        const TCHAR* FieldName,
+        FString& OutValue,
+        FMonolithActionResult& OutError)
+    {
+        if (!Object.IsValid() || !Object->TryGetStringField(FieldName, OutValue) || OutValue.IsEmpty())
+        {
+            OutError = FMonolithActionResult::Error(
+                FString::Printf(TEXT("Missing required param: %s"), FieldName));
+            return false;
+        }
+
+        return true;
+    }
+
+    inline FString GetOptionalString(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName, const FString& DefaultValue = FString())
+    {
+        if (!Object.IsValid())
+        {
+            return DefaultValue;
+        }
+
+        FString Value;
+        return Object->TryGetStringField(FieldName, Value) ? Value : DefaultValue;
+    }
+
+    inline bool GetOptionalBool(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName, bool DefaultValue)
+    {
+        if (!Object.IsValid())
+        {
+            return DefaultValue;
+        }
+
+        bool Value = DefaultValue;
+        return Object->TryGetBoolField(FieldName, Value) ? Value : DefaultValue;
+    }
+
     // Load a widget blueprint by asset path, returning error result if not found
     inline UWidgetBlueprint* LoadWidgetBlueprint(const FString& AssetPath, FMonolithActionResult& OutError)
     {
@@ -309,6 +347,42 @@ namespace MonolithUIInternal
     }
 
     // Create a new Widget Blueprint, returning it (or nullptr + error). Mirrors HandleCreateWidgetBlueprint logic.
+    inline void RegisterVariableName(UWidgetBlueprint* WBP, const FName& VariableName)
+    {
+        if (!WBP || VariableName.IsNone())
+        {
+            return;
+        }
+
+        if (!WBP->WidgetVariableNameToGuidMap.Contains(VariableName))
+        {
+            WBP->OnVariableAdded(VariableName);
+        }
+    }
+
+    inline void RegisterCreatedWidget(UWidgetBlueprint* WBP, UWidget* Widget)
+    {
+        if (!Widget)
+        {
+            return;
+        }
+
+        RegisterVariableName(WBP, Widget->GetFName());
+    }
+
+    inline void ReconcileWidgetVariableGuids(UWidgetBlueprint* WBP)
+    {
+        if (!WBP)
+        {
+            return;
+        }
+
+        WBP->ForEachSourceWidget([WBP](UWidget* Widget)
+        {
+            RegisterCreatedWidget(WBP, Widget);
+        });
+    }
+
     inline UWidgetBlueprint* CreateNewWidgetBlueprint(const FString& SavePath, FMonolithActionResult& OutError)
     {
         FString PackagePath, AssetName;
@@ -347,6 +421,7 @@ namespace MonolithUIInternal
         {
             UCanvasPanel* Root = WBP->WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("RootCanvas"));
             WBP->WidgetTree->RootWidget = Root;
+            RegisterCreatedWidget(WBP, Root);
         }
 
         return WBP;
@@ -355,6 +430,8 @@ namespace MonolithUIInternal
     // Save and compile a widget blueprint
     inline void SaveAndCompileWidgetBlueprint(UWidgetBlueprint* WBP, const FString& SavePath)
     {
+        ReconcileWidgetVariableGuids(WBP);
+        FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
         FKismetEditorUtilities::CompileBlueprint(WBP);
         FAssetRegistryModule::AssetCreated(WBP);
         WBP->GetPackage()->MarkPackageDirty();
@@ -373,6 +450,7 @@ namespace MonolithUIInternal
         if (W)
         {
             Parent->AddChild(W);
+            RegisterCreatedWidget(WBP, W);
         }
         return W;
     }

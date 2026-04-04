@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-04-03
+
+### Fixed
+
+- **UE 5.7 compatibility** — resolved deprecated API usages that caused C2220 (warning-as-error) failures in non-unity builds ([#12](https://github.com/tumourlove/monolith/issues/12))
+  - NavMesh: direct property access → `GetCellSize`/`SetCellSize`/`GetCellHeight`/`SetCellHeight`/`GetAgentMaxStepHeight`/`SetAgentMaxStepHeight` with `ENavigationDataResolution`
+  - GAS: `EGameplayAbilityInstancingPolicy::NonInstanced` removed → legacy value cast
+  - GAS: `StackingType` made private → reflection-based getter/setter
+  - `FPackageName::DoesPackageExist` signature change (removed nullable param)
+  - `FCollisionQueryParams::ClearIgnoredActors` → `ClearIgnoredSourceObjects`
+  - `GetUsedTextures` simplified signature
+  - `UMovieScene::GetBindings` const correctness, `FMovieSceneBinding::GetName` removal
+- **Non-unity build** — fixed symbol collisions across 8 files (`VecToArr`, `ParseVectorArray`, `ParseStringArray`, `GetAssetPath` renamed to module-prefixed variants)
+- **ComboGraph log category** — eliminated duplicate `DEFINE_LOG_CATEGORY_STATIC` across `#if`/`#else` branches; proper extern declaration in header
+- **Uninitialized variables** — `FVector` locals now zero-initialized to suppress C4700/C6001
+
+### Improved
+
+- **StateTree schema resolution** — `ResolveStateTreeSchemaClass` searches multiple candidate paths including `/Script/GameplayStateTreeModule.*`
+- **UI animation system** — `FindOrCreateWidgetAnimationBinding`, `FindOrCreateFloatTrack` helpers; transform/color component keyframes; proper `WidgetVariableNameToGuidMap` bookkeeping
+- **UI param handling** — new `TryGetRequiredString`, `GetOptionalString`, `GetOptionalBool` helpers; duplicate-asset guard on widget creation
+
 ## [0.12.0] - 2026-04-01
 
 Biggest release yet: +310 actions (815 to 1125). Two new domain modules (MonolithAI, MonolithLogicDriver), ComboGraph expansion. Python-to-C++ port of standalone tools eliminates Python as a runtime dependency. 14 skills (up from 12).

@@ -24,13 +24,13 @@
 
 namespace
 {
-	TArray<TSharedPtr<FJsonValue>> VecToArr(const FVector& V)
+	TArray<TSharedPtr<FJsonValue>> MEnc_VecToArr(const FVector& V)
 	{
 		return MonolithMeshAnalysis::VectorToJsonArray(V);
 	}
 
 	/** Parse an array of [x,y,z] arrays from a JSON field */
-	bool ParseVectorArray(const TSharedPtr<FJsonObject>& Params, const FString& Key, TArray<FVector>& Out)
+	bool MEnc_ParseVectorArray(const TSharedPtr<FJsonObject>& Params, const FString& Key, TArray<FVector>& Out)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Arr;
 		if (!Params->TryGetArrayField(Key, Arr) || Arr->Num() == 0)
@@ -55,7 +55,7 @@ namespace
 	}
 
 	/** Parse a string array from a JSON field */
-	bool ParseStringArray(const TSharedPtr<FJsonObject>& Params, const FString& Key, TArray<FString>& Out)
+	bool MEnc_ParseStringArray(const TSharedPtr<FJsonObject>& Params, const FString& Key, TArray<FString>& Out)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Arr;
 		if (!Params->TryGetArrayField(Key, Arr))
@@ -673,7 +673,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::DesignEncounter(const TShar
 		for (const FVector& WP : PatrolWaypoints)
 		{
 			auto WPObj = MakeShared<FJsonObject>();
-			WPObj->SetArrayField(TEXT("location"), VecToArr(WP));
+			WPObj->SetArrayField(TEXT("location"), MEnc_VecToArr(WP));
 			WPObj->SetNumberField(TEXT("wait_time"), Archetype.Equals(TEXT("stalker")) ? 3.0 : 1.5);
 			PatrolRouteArr.Add(MakeShared<FJsonValueObject>(WPObj));
 		}
@@ -702,8 +702,8 @@ FMonolithActionResult FMonolithMeshEncounterActions::DesignEncounter(const TShar
 			{
 				++ViableEscapes;
 				auto RouteObj = MakeShared<FJsonObject>();
-				RouteObj->SetArrayField(TEXT("direction"), VecToArr(FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f)));
-				RouteObj->SetArrayField(TEXT("exit_point"), VecToArr(EscapeTarget));
+				RouteObj->SetArrayField(TEXT("direction"), MEnc_VecToArr(FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f)));
+				RouteObj->SetArrayField(TEXT("exit_point"), MEnc_VecToArr(EscapeTarget));
 				EscapeRouteArr.Add(MakeShared<FJsonValueObject>(RouteObj));
 			}
 		}
@@ -768,7 +768,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::DesignEncounter(const TShar
 	for (const FSpawnCandidate& S : SelectedSpawns)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(S.Location));
+		Obj->SetArrayField(TEXT("location"), MEnc_VecToArr(S.Location));
 		Obj->SetNumberField(TEXT("concealment"), S.Concealment);
 		Obj->SetNumberField(TEXT("darkness"), S.Darkness);
 		Obj->SetNumberField(TEXT("score"), S.Score);
@@ -856,7 +856,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::SuggestPatrolRoute(const TS
 
 	// Parse optional player path for stalker proximity
 	TArray<FVector> PlayerPath;
-	ParseVectorArray(Params, TEXT("player_path"), PlayerPath);
+	MEnc_ParseVectorArray(Params, TEXT("player_path"), PlayerPath);
 
 	// Gather lights
 	TArray<MonolithLightingCapture::FLightInfo> Lights = MonolithLightingCapture::GatherLights(World);
@@ -1035,9 +1035,9 @@ FMonolithActionResult FMonolithMeshEncounterActions::SuggestPatrolRoute(const TS
 		TotalExposure += (1.0f - OrderedWaypoints[i].Concealment);
 
 		auto WPObj = MakeShared<FJsonObject>();
-		WPObj->SetArrayField(TEXT("location"), VecToArr(OrderedWaypoints[i].Location));
+		WPObj->SetArrayField(TEXT("location"), MEnc_VecToArr(OrderedWaypoints[i].Location));
 		WPObj->SetNumberField(TEXT("wait_time"), BaseWaitTime);
-		WPObj->SetArrayField(TEXT("look_direction"), VecToArr(LookDir));
+		WPObj->SetArrayField(TEXT("look_direction"), MEnc_VecToArr(LookDir));
 		WPObj->SetNumberField(TEXT("concealment"), OrderedWaypoints[i].Concealment);
 		WPObj->SetNumberField(TEXT("darkness"), OrderedWaypoints[i].Darkness);
 		WaypointArr.Add(MakeShared<FJsonValueObject>(WPObj));
@@ -1218,7 +1218,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::AnalyzeAiTerritory(const TS
 	for (int32 i = 0; i < HeatmapLimit; ++i)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(Heatmap[i].Location));
+		Obj->SetArrayField(TEXT("location"), MEnc_VecToArr(Heatmap[i].Location));
 		Obj->SetNumberField(TEXT("score"), Heatmap[i].TerritoryScore);
 		HeatmapArr.Add(MakeShared<FJsonValueObject>(Obj));
 	}
@@ -1425,8 +1425,8 @@ FMonolithActionResult FMonolithMeshEncounterActions::EvaluateSafeRoom(const TSha
 	for (const FEntranceInfo& Ent : Entrances)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(Ent.Location));
-		Obj->SetArrayField(TEXT("direction"), VecToArr(Ent.Direction));
+		Obj->SetArrayField(TEXT("location"), MEnc_VecToArr(Ent.Location));
+		Obj->SetArrayField(TEXT("direction"), MEnc_VecToArr(Ent.Direction));
 		Obj->SetNumberField(TEXT("width"), Ent.Width);
 		Obj->SetBoolField(TEXT("has_door"), Ent.bHasDoor);
 		EntranceArr.Add(MakeShared<FJsonValueObject>(Obj));
@@ -1492,7 +1492,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::AnalyzeLevelPacingStructure
 
 	// Parse optional waypoints
 	TArray<FVector> Waypoints;
-	ParseVectorArray(Params, TEXT("waypoints"), Waypoints);
+	MEnc_ParseVectorArray(Params, TEXT("waypoints"), Waypoints);
 
 	double SampleInterval = 500.0;
 	Params->TryGetNumberField(TEXT("sample_interval"), SampleInterval);
@@ -1596,7 +1596,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::AnalyzeLevelPacingStructure
 			&& Samples[i].Tension > 50.0f)
 		{
 			auto PeakObj = MakeShared<FJsonObject>();
-			PeakObj->SetArrayField(TEXT("location"), VecToArr(Samples[i].Location));
+			PeakObj->SetArrayField(TEXT("location"), MEnc_VecToArr(Samples[i].Location));
 			PeakObj->SetNumberField(TEXT("distance"), Samples[i].DistanceAlongPath);
 			PeakObj->SetNumberField(TEXT("tension"), FMath::RoundToInt(Samples[i].Tension));
 			PeaksArr.Add(MakeShared<FJsonValueObject>(PeakObj));
@@ -1619,8 +1619,8 @@ FMonolithActionResult FMonolithMeshEncounterActions::AnalyzeLevelPacingStructure
 			if (RestDist > 200.0f) // Meaningful rest zone
 			{
 				auto ZoneObj = MakeShared<FJsonObject>();
-				ZoneObj->SetArrayField(TEXT("start_location"), VecToArr(Samples[RestStart].Location));
-				ZoneObj->SetArrayField(TEXT("end_location"), VecToArr(Samples[i - 1].Location));
+				ZoneObj->SetArrayField(TEXT("start_location"), MEnc_VecToArr(Samples[RestStart].Location));
+				ZoneObj->SetArrayField(TEXT("end_location"), MEnc_VecToArr(Samples[i - 1].Location));
 				ZoneObj->SetNumberField(TEXT("start_distance"), Samples[RestStart].DistanceAlongPath);
 				ZoneObj->SetNumberField(TEXT("end_distance"), Samples[i - 1].DistanceAlongPath);
 				ZoneObj->SetNumberField(TEXT("length"), RestDist);
@@ -1740,7 +1740,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::AnalyzeLevelPacingStructure
 FMonolithActionResult FMonolithMeshEncounterActions::GenerateScareSequence(const TSharedPtr<FJsonObject>& Params)
 {
 	TArray<FVector> PathPoints;
-	if (!ParseVectorArray(Params, TEXT("path_points"), PathPoints) || PathPoints.Num() < 2)
+	if (!MEnc_ParseVectorArray(Params, TEXT("path_points"), PathPoints) || PathPoints.Num() < 2)
 	{
 		return FMonolithActionResult::Error(TEXT("Missing or invalid required param: path_points (array of at least 2 [x,y,z])"));
 	}
@@ -1759,7 +1759,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::GenerateScareSequence(const
 	IntensityCap = FMath::Clamp(IntensityCap, 0.1, 1.0);
 
 	TArray<FString> ScareTypes;
-	if (!ParseStringArray(Params, TEXT("scare_types"), ScareTypes) || ScareTypes.Num() == 0)
+	if (!MEnc_ParseStringArray(Params, TEXT("scare_types"), ScareTypes) || ScareTypes.Num() == 0)
 	{
 		ScareTypes = { TEXT("audio"), TEXT("visual"), TEXT("environmental"), TEXT("entity_spawn") };
 	}
@@ -1961,7 +1961,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::GenerateScareSequence(const
 		const FScareEvent& E = Events[i];
 		auto Obj = MakeShared<FJsonObject>();
 		Obj->SetNumberField(TEXT("sequence_index"), i);
-		Obj->SetArrayField(TEXT("location"), VecToArr(E.Location));
+		Obj->SetArrayField(TEXT("location"), MEnc_VecToArr(E.Location));
 		Obj->SetNumberField(TEXT("distance_along_path"), E.DistAlongPath);
 		Obj->SetNumberField(TEXT("intensity"), E.Intensity);
 		Obj->SetStringField(TEXT("type"), E.Type);
@@ -2244,7 +2244,7 @@ FMonolithActionResult FMonolithMeshEncounterActions::ValidateHorrorIntensity(con
 		else ++WarningCount;
 
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(V.Location));
+		Obj->SetArrayField(TEXT("location"), MEnc_VecToArr(V.Location));
 		Obj->SetNumberField(TEXT("distance_along_path"), V.Distance);
 		Obj->SetStringField(TEXT("type"), V.Type);
 		Obj->SetStringField(TEXT("severity"), V.Severity);

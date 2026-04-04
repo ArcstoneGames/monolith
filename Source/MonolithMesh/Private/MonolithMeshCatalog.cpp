@@ -135,14 +135,16 @@ TSharedPtr<FJsonObject> FMonolithMeshCatalog::SearchBySize(
 	while (Stmt.Step() == ESQLitePreparedStatementStepResult::Row)
 	{
 		auto Entry = MakeShared<FJsonObject>();
-		FString AssetPath, Category, SizeClass;
+		FString AssetPath;
+		FString RowCategory;
+		FString SizeClass;
 		double BX = 0, BY = 0, BZ = 0;
 		int64 TriCount = 0;
 		Stmt.GetColumnValueByIndex(0, AssetPath);
 		Stmt.GetColumnValueByIndex(1, BX);
 		Stmt.GetColumnValueByIndex(2, BY);
 		Stmt.GetColumnValueByIndex(3, BZ);
-		Stmt.GetColumnValueByIndex(4, Category);
+		Stmt.GetColumnValueByIndex(4, RowCategory);
 		Stmt.GetColumnValueByIndex(5, TriCount);
 		Stmt.GetColumnValueByIndex(6, SizeClass);
 
@@ -152,7 +154,7 @@ TSharedPtr<FJsonObject> FMonolithMeshCatalog::SearchBySize(
 		BoundsArr.Add(MakeShared<FJsonValueNumber>(BY));
 		BoundsArr.Add(MakeShared<FJsonValueNumber>(BZ));
 		Entry->SetArrayField(TEXT("bounds"), BoundsArr);
-		Entry->SetStringField(TEXT("category"), Category);
+		Entry->SetStringField(TEXT("category"), RowCategory);
 		Entry->SetNumberField(TEXT("tri_count"), static_cast<double>(TriCount));
 		Entry->SetStringField(TEXT("size_class"), SizeClass);
 

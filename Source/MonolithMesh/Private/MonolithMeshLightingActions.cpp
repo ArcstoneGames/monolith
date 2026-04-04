@@ -77,12 +77,12 @@ void FMonolithMeshLightingActions::RegisterActions(FMonolithToolRegistry& Regist
 
 namespace
 {
-	TArray<TSharedPtr<FJsonValue>> VecToArr(const FVector& V)
+	TArray<TSharedPtr<FJsonValue>> MLight_VecToArr(const FVector& V)
 	{
 		return MonolithMeshAnalysis::VectorToJsonArray(V);
 	}
 
-	bool ParseVectorArray(const TSharedPtr<FJsonObject>& Params, const FString& Key, TArray<FVector>& Out)
+	bool MLight_ParseVectorArray(const TSharedPtr<FJsonObject>& Params, const FString& Key, TArray<FVector>& Out)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Arr;
 		if (!Params->TryGetArrayField(Key, Arr) || Arr->Num() == 0)
@@ -141,7 +141,7 @@ namespace
 		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
 		Obj->SetStringField(TEXT("name"), L.Name);
 		Obj->SetStringField(TEXT("type"), L.Type);
-		Obj->SetArrayField(TEXT("location"), VecToArr(L.Location));
+		Obj->SetArrayField(TEXT("location"), MLight_VecToArr(L.Location));
 		Obj->SetNumberField(TEXT("intensity"), L.Intensity);
 		Obj->SetNumberField(TEXT("attenuation_radius"), L.AttenuationRadius);
 		Obj->SetBoolField(TEXT("casts_shadows"), L.bCastsShadows);
@@ -219,7 +219,7 @@ namespace
 FMonolithActionResult FMonolithMeshLightingActions::SampleLightLevels(const TSharedPtr<FJsonObject>& Params)
 {
 	TArray<FVector> Points;
-	if (!ParseVectorArray(Params, TEXT("points"), Points))
+	if (!MLight_ParseVectorArray(Params, TEXT("points"), Points))
 	{
 		return FMonolithActionResult::Error(TEXT("Missing or invalid required param: points (array of [x,y,z] arrays)"));
 	}
@@ -305,7 +305,7 @@ FMonolithActionResult FMonolithMeshLightingActions::SampleLightLevels(const TSha
 	for (int32 i = 0; i < Points.Num(); ++i)
 	{
 		TSharedPtr<FJsonObject> Sample = MakeShared<FJsonObject>();
-		Sample->SetArrayField(TEXT("location"), VecToArr(Points[i]));
+		Sample->SetArrayField(TEXT("location"), MLight_VecToArr(Points[i]));
 
 		if (bDoCapture)
 		{
@@ -426,7 +426,7 @@ FMonolithActionResult FMonolithMeshLightingActions::FindDarkCorners(const TShare
 	for (const MonolithLightingCapture::FDarkZone& Zone : DarkZones)
 	{
 		TSharedPtr<FJsonObject> ZoneObj = MakeShared<FJsonObject>();
-		ZoneObj->SetArrayField(TEXT("center"), VecToArr(Zone.WorldCenter));
+		ZoneObj->SetArrayField(TEXT("center"), MLight_VecToArr(Zone.WorldCenter));
 		ZoneObj->SetNumberField(TEXT("area_sq_cm"), Zone.AreaSqCm);
 		ZoneObj->SetNumberField(TEXT("area_sq_m"), Zone.AreaSqCm / 10000.0f);
 		ZoneObj->SetNumberField(TEXT("cell_count"), Zone.CellCount);
@@ -459,7 +459,7 @@ FMonolithActionResult FMonolithMeshLightingActions::FindDarkCorners(const TShare
 FMonolithActionResult FMonolithMeshLightingActions::AnalyzeLightTransitions(const TSharedPtr<FJsonObject>& Params)
 {
 	TArray<FVector> PathPoints;
-	if (!ParseVectorArray(Params, TEXT("path_points"), PathPoints) || PathPoints.Num() < 2)
+	if (!MLight_ParseVectorArray(Params, TEXT("path_points"), PathPoints) || PathPoints.Num() < 2)
 	{
 		return FMonolithActionResult::Error(TEXT("Missing or invalid required param: path_points (need at least 2 points)"));
 	}
@@ -557,7 +557,7 @@ FMonolithActionResult FMonolithMeshLightingActions::AnalyzeLightTransitions(cons
 	for (int32 i = 0; i < SamplePoints.Num(); ++i)
 	{
 		TSharedPtr<FJsonObject> S = MakeShared<FJsonObject>();
-		S->SetArrayField(TEXT("location"), VecToArr(SamplePoints[i]));
+		S->SetArrayField(TEXT("location"), MLight_VecToArr(SamplePoints[i]));
 		S->SetNumberField(TEXT("distance_along_path"), CumulativeDistances[i]);
 		S->SetNumberField(TEXT("luminance"), Luminances[i]);
 		SamplesArr.Add(MakeShared<FJsonValueObject>(S));
@@ -576,8 +576,8 @@ FMonolithActionResult FMonolithMeshLightingActions::AnalyzeLightTransitions(cons
 			if (Ratio >= HarshRatio && Dist <= HarshDistance)
 			{
 				TSharedPtr<FJsonObject> T = MakeShared<FJsonObject>();
-				T->SetArrayField(TEXT("from"), VecToArr(SamplePoints[i - 1]));
-				T->SetArrayField(TEXT("to"), VecToArr(SamplePoints[i]));
+				T->SetArrayField(TEXT("from"), MLight_VecToArr(SamplePoints[i - 1]));
+				T->SetArrayField(TEXT("to"), MLight_VecToArr(SamplePoints[i]));
 				T->SetNumberField(TEXT("from_luminance"), Luminances[i - 1]);
 				T->SetNumberField(TEXT("to_luminance"), Luminances[i]);
 				T->SetNumberField(TEXT("ratio"), Ratio);
@@ -867,7 +867,7 @@ FMonolithActionResult FMonolithMeshLightingActions::SuggestLightPlacement(const 
 
 		TSharedPtr<FJsonObject> Suggestion = MakeShared<FJsonObject>();
 		Suggestion->SetStringField(TEXT("type"), Config.LightType);
-		Suggestion->SetArrayField(TEXT("position"), VecToArr(ProposedPos));
+		Suggestion->SetArrayField(TEXT("position"), MLight_VecToArr(ProposedPos));
 		Suggestion->SetNumberField(TEXT("intensity"), SuggestedIntensity);
 		Suggestion->SetNumberField(TEXT("attenuation_radius"), SuggestedRadius);
 		Suggestion->SetNumberField(TEXT("color_temperature"), Config.PreferredColorTemp);

@@ -4,13 +4,151 @@
 #include "MonolithParamSchema.h"
 #include "Animation/WidgetAnimation.h"
 #include "MovieScene.h"
+#include "MovieScenePossessable.h"
+#include "MovieSceneSpawnable.h"
 #include "Tracks/MovieSceneFloatTrack.h"
 #include "Channels/MovieSceneFloatChannel.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Sections/MovieSceneFloatSection.h"
 #include "Sections/MovieScene3DTransformSection.h"
 #include "Channels/MovieSceneChannelProxy.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+
+namespace
+{
+    FString ResolveBindingName(UMovieScene* MovieScene, const FMovieSceneBinding& Binding)
+    {
+        if (!MovieScene)
+        {
+            return FString();
+        }
+
+        const FGuid& BindingGuid = Binding.GetObjectGuid();
+        for (int32 PossessableIndex = 0; PossessableIndex < MovieScene->GetPossessableCount(); ++PossessableIndex)
+        {
+            const FMovieScenePossessable& Possessable = MovieScene->GetPossessable(PossessableIndex);
+            if (Possessable.GetGuid() == BindingGuid)
+            {
+                return Possessable.GetName();
+            }
+        }
+
+        for (int32 SpawnableIndex = 0; SpawnableIndex < MovieScene->GetSpawnableCount(); ++SpawnableIndex)
+        {
+            const FMovieSceneSpawnable& Spawnable = MovieScene->GetSpawnable(SpawnableIndex);
+            if (Spawnable.GetGuid() == BindingGuid)
+            {
+                return Spawnable.GetName();
+            }
+        }
+
+        return BindingGuid.ToString(EGuidFormats::DigitsWithHyphensLower);
+    }
+
+    FGuid FindOrCreateWidgetAnimationBinding(UWidgetBlueprint* WBP, UWidgetAnimation* Animation, UMovieScene* MovieScene, UWidget* TargetWidget)
+    {
+        if (!WBP || !Animation || !MovieScene || !TargetWidget)
+        {
+            return FGuid();
+        }
+
+        const FName WidgetFName = TargetWidget->GetFName();
+
+        for (const FWidgetAnimationBinding& Binding : Animation->AnimationBindings)
+        {
+            if (Binding.WidgetName == WidgetFName)
+            {
+                return Binding.AnimationGuid;
+            }
+        }
+
+        for (int32 PossessableIndex = 0; PossessableIndex < MovieScene->GetPossessableCount(); ++PossessableIndex)
+        {
+            const FMovieScenePossessable& Possessable = MovieScene->GetPossessable(PossessableIndex);
+            if (Possessable.GetName() == WidgetFName.ToString())
+            {
+                FWidgetAnimationBinding Binding;
+                Binding.AnimationGuid = Possessable.GetGuid();
+                Binding.WidgetName = WidgetFName;
+                Binding.SlotWidgetName = NAME_None;
+                Binding.bIsRootWidget = (WBP->WidgetTree && WBP->WidgetTree->RootWidget == TargetWidget);
+                Animation->AnimationBindings.Add(Binding);
+                return Binding.AnimationGuid;
+            }
+        }
+
+        const FGuid NewGuid = MovieScene->AddPossessable(WidgetFName.ToString(), TargetWidget->GetClass());
+
+        FWidgetAnimationBinding Binding;
+        Binding.AnimationGuid = NewGuid;
+        Binding.WidgetName = WidgetFName;
+        Binding.SlotWidgetName = NAME_None;
+        Binding.bIsRootWidget = (WBP->WidgetTree && WBP->WidgetTree->RootWidget == TargetWidget);
+        Animation->AnimationBindings.Add(Binding);
+        return NewGuid;
+    }
+
+    UMovieSceneFloatTrack* FindOrCreateFloatTrack(
+        UMovieScene* MovieScene,
+        const FGuid& PossessableGuid,
+        const FName& PropertyName,
+        const FString& PropertyPath,
+        const FFrameNumber& StartFrame,
+        const FFrameNumber& EndFrame)
+    {
+        if (!MovieScene || !PossessableGuid.IsValid())
+        {
+            return nullptr;
+        }
+
+        const FMovieSceneBinding* Binding = static_cast<const UMovieScene*>(MovieScene)->FindBinding(PossessableGuid);
+        if (Binding)
+        {
+            for (UMovieSceneTrack* Track : Binding->GetTracks())
+            {
+                UMovieSceneFloatTrack* FloatTrack = Cast<UMovieSceneFloatTrack>(Track);
+                if (FloatTrack && FloatTrack->GetPropertyPath().ToString() == PropertyPath)
+                {
+                    return FloatTrack;
+                }
+            }
+        }
+
+        UMovieSceneFloatTrack* FloatTrack = MovieScene->AddTrack<UMovieSceneFloatTrack>(PossessableGuid);
+        if (!FloatTrack)
+        {
+            return nullptr;
+        }
+
+        FloatTrack->SetPropertyNameAndPath(PropertyName, *PropertyPath);
+
+        UMovieSceneFloatSection* Section = Cast<UMovieSceneFloatSection>(FloatTrack->CreateNewSection());
+        if (!Section)
+        {
+            return nullptr;
+        }
+
+        Section->SetRange(TRange<FFrameNumber>(StartFrame, EndFrame));
+        FloatTrack->AddSection(*Section);
+        return FloatTrack;
+    }
+
+    UMovieSceneFloatTrack* FindOrCreateOpacityTrack(
+        UMovieScene* MovieScene,
+        const FGuid& PossessableGuid,
+        const FFrameNumber& StartFrame,
+        const FFrameNumber& EndFrame)
+    {
+        return FindOrCreateFloatTrack(
+            MovieScene,
+            PossessableGuid,
+            FName(TEXT("RenderOpacity")),
+            TEXT("RenderOpacity"),
+            StartFrame,
+            EndFrame);
+    }
+}
 
 void FMonolithUIAnimationActions::RegisterActions(FMonolithToolRegistry& Registry)
 {
@@ -54,8 +192,9 @@ void FMonolithUIAnimationActions::RegisterActions(FMonolithToolRegistry& Registr
             .Required(TEXT("animation_name"), TEXT("string"), TEXT("Name of the UWidgetAnimation"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Target widget name"))
             .Required(TEXT("property"), TEXT("string"), TEXT("Property: opacity, transform, color"))
+            .Optional(TEXT("component"), TEXT("string"), TEXT("For transform: tx, ty, angle, sx, sy. For color: r, g, b, a"))
             .Required(TEXT("time"), TEXT("number"), TEXT("Keyframe time in seconds"))
-            .Required(TEXT("value"), TEXT("number"), TEXT("Keyframe value (float for opacity, etc.)"))
+            .Required(TEXT("value"), TEXT("number"), TEXT("Keyframe value for the selected property/component"))
             .Build()
     );
 
@@ -90,6 +229,7 @@ FMonolithActionResult FMonolithUIAnimationActions::HandleListAnimations(const TS
         UMovieScene* MovieScene = Anim->GetMovieScene();
         if (MovieScene)
         {
+            const UMovieScene* ConstMovieScene = MovieScene;
             FFrameRate TickRes = MovieScene->GetTickResolution();
             TRange<FFrameNumber> PlayRange = MovieScene->GetPlaybackRange();
 
@@ -98,7 +238,7 @@ FMonolithActionResult FMonolithUIAnimationActions::HandleListAnimations(const TS
 
             AnimObj->SetNumberField(TEXT("start_time"), StartTime);
             AnimObj->SetNumberField(TEXT("end_time"), EndTime);
-            AnimObj->SetNumberField(TEXT("binding_count"), MovieScene->GetBindings().Num());
+            AnimObj->SetNumberField(TEXT("binding_count"), ConstMovieScene->GetBindings().Num());
         }
 
         AnimArray.Add(MakeShared<FJsonValueObject>(AnimObj));
@@ -198,14 +338,15 @@ FMonolithActionResult FMonolithUIAnimationActions::HandleGetAnimationDetails(con
     }
 
     // Also iterate bound object tracks
-    for (const FMovieSceneBinding& Binding : MovieScene->GetBindings())
+    const UMovieScene* ConstMovieScene = MovieScene;
+    for (const FMovieSceneBinding& Binding : ConstMovieScene->GetBindings())
     {
         for (UMovieSceneTrack* Track : Binding.GetTracks())
         {
             if (!Track) continue;
 
             TSharedPtr<FJsonObject> TrackObj = MakeShared<FJsonObject>();
-            TrackObj->SetStringField(TEXT("binding_name"), Binding.GetName());
+            TrackObj->SetStringField(TEXT("binding_name"), ResolveBindingName(MovieScene, Binding));
             TrackObj->SetStringField(TEXT("track_type"), Track->GetClass()->GetName());
 
             TArray<TSharedPtr<FJsonValue>> SectionArray;
@@ -339,54 +480,23 @@ FMonolithActionResult FMonolithUIAnimationActions::HandleCreateAnimation(const T
             }
 
             // Find or create possessable for this widget
-            FGuid PossessableGuid;
-            bool bFoundExisting = false;
-            for (int32 i = 0; i < MovieScene->GetPossessableCount(); ++i)
+            const FGuid PossessableGuid = FindOrCreateWidgetAnimationBinding(WBP, NewAnim, MovieScene, TargetWidget);
+            if (!PossessableGuid.IsValid())
             {
-                const FMovieScenePossessable& Poss = MovieScene->GetPossessable(i);
-                if (Poss.GetName() == WidgetName)
-                {
-                    PossessableGuid = Poss.GetGuid();
-                    bFoundExisting = true;
-                    break;
-                }
-            }
-
-            if (!bFoundExisting)
-            {
-                PossessableGuid = MovieScene->AddPossessable(
-                    WidgetName, TargetWidget->GetClass());
-
-                // Create the animation binding so UMG knows which widget this possessable maps to
-                FWidgetAnimationBinding AnimBinding;
-                AnimBinding.AnimationGuid = PossessableGuid;
-                AnimBinding.WidgetName = FName(*WidgetName);
-                AnimBinding.SlotWidgetName = NAME_None;
-                NewAnim->AnimationBindings.Add(AnimBinding);
+                continue;
             }
 
             // Create a float track for the property
             if (Property == TEXT("opacity"))
             {
                 // Create a float track bound to RenderOpacity
-                FMovieSceneBinding* Binding = MovieScene->FindBinding(PossessableGuid);
-                if (!Binding) continue;
-
-                UMovieSceneFloatTrack* FloatTrack = MovieScene->AddTrack<UMovieSceneFloatTrack>(PossessableGuid);
+                UMovieSceneFloatTrack* FloatTrack = FindOrCreateOpacityTrack(MovieScene, PossessableGuid, StartFrame, EndFrame);
                 if (!FloatTrack) continue;
 
-                FloatTrack->SetPropertyNameAndPath(
-                    FName(TEXT("RenderOpacity")), TEXT("RenderOpacity"));
-
-                // Create a section spanning the full duration
-                UMovieSceneFloatSection* Section = Cast<UMovieSceneFloatSection>(
-                    FloatTrack->CreateNewSection());
+                // Get the float channel and add keyframes
+                UMovieSceneSection* Section = FloatTrack->GetAllSections().Num() > 0 ? FloatTrack->GetAllSections()[0] : nullptr;
                 if (!Section) continue;
 
-                Section->SetRange(TRange<FFrameNumber>(StartFrame, EndFrame));
-                FloatTrack->AddSection(*Section);
-
-                // Get the float channel and add keyframes
                 FMovieSceneChannelProxy& ChannelProxy = Section->GetChannelProxy();
                 FMovieSceneFloatChannel* Channel = ChannelProxy.GetChannel<FMovieSceneFloatChannel>(0);
                 if (!Channel) continue;
@@ -566,8 +676,11 @@ FMonolithActionResult FMonolithUIAnimationActions::HandleCreateAnimation(const T
     // Add the animation to the widget blueprint
     WBP->Animations.Add(NewAnim);
 
-    // Mark dirty and compile
-    WBP->MarkPackageDirty();
+    // Mirror editor bookkeeping so the compiler sees a GUID for the final animation name.
+    MonolithUIInternal::RegisterVariableName(WBP, NewAnim->GetFName());
+
+    // Mark modified and compile
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
     FKismetEditorUtilities::CompileBlueprint(WBP);
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -587,6 +700,7 @@ FMonolithActionResult FMonolithUIAnimationActions::HandleAddAnimationKeyframe(co
     FString AnimationName = Params->GetStringField(TEXT("animation_name"));
     FString WidgetName = Params->GetStringField(TEXT("widget_name"));
     FString Property = Params->GetStringField(TEXT("property"));
+    FString Component = Params->HasField(TEXT("component")) ? Params->GetStringField(TEXT("component")) : FString();
     double Time = Params->GetNumberField(TEXT("time"));
     double Value = Params->GetNumberField(TEXT("value"));
 
@@ -621,75 +735,142 @@ FMonolithActionResult FMonolithUIAnimationActions::HandleAddAnimationKeyframe(co
 
     // Determine the property path to match
     FString PropertyPath;
+    FName TrackPropertyName = NAME_None;
     if (Property == TEXT("opacity"))
     {
         PropertyPath = TEXT("RenderOpacity");
+        TrackPropertyName = FName(TEXT("RenderOpacity"));
+    }
+    else if (Property == TEXT("transform"))
+    {
+        if (Component == TEXT("tx"))
+        {
+            PropertyPath = TEXT("RenderTransform.Translation.X");
+            TrackPropertyName = FName(TEXT("Translation X"));
+        }
+        else if (Component == TEXT("ty"))
+        {
+            PropertyPath = TEXT("RenderTransform.Translation.Y");
+            TrackPropertyName = FName(TEXT("Translation Y"));
+        }
+        else if (Component == TEXT("angle"))
+        {
+            PropertyPath = TEXT("RenderTransform.Angle");
+            TrackPropertyName = FName(TEXT("Angle"));
+        }
+        else if (Component == TEXT("sx"))
+        {
+            PropertyPath = TEXT("RenderTransform.Scale.X");
+            TrackPropertyName = FName(TEXT("Scale X"));
+        }
+        else if (Component == TEXT("sy"))
+        {
+            PropertyPath = TEXT("RenderTransform.Scale.Y");
+            TrackPropertyName = FName(TEXT("Scale Y"));
+        }
+        else
+        {
+            return FMonolithActionResult::Error(
+                TEXT("For property 'transform', component must be one of: tx, ty, angle, sx, sy"));
+        }
+    }
+    else if (Property == TEXT("color"))
+    {
+        if (Component == TEXT("r"))
+        {
+            PropertyPath = TEXT("ColorAndOpacity.R");
+            TrackPropertyName = FName(TEXT("Color R"));
+        }
+        else if (Component == TEXT("g"))
+        {
+            PropertyPath = TEXT("ColorAndOpacity.G");
+            TrackPropertyName = FName(TEXT("Color G"));
+        }
+        else if (Component == TEXT("b"))
+        {
+            PropertyPath = TEXT("ColorAndOpacity.B");
+            TrackPropertyName = FName(TEXT("Color B"));
+        }
+        else if (Component == TEXT("a"))
+        {
+            PropertyPath = TEXT("ColorAndOpacity.A");
+            TrackPropertyName = FName(TEXT("Color A"));
+        }
+        else
+        {
+            return FMonolithActionResult::Error(
+                TEXT("For property 'color', component must be one of: r, g, b, a"));
+        }
     }
     else
     {
         return FMonolithActionResult::Error(
-            FString::Printf(TEXT("add_animation_keyframe only supports 'opacity' property. "
-                "For transform/color, use create_animation with full keyframe arrays.")));
+            TEXT("add_animation_keyframe supports properties: opacity, transform, color"));
     }
 
-    // Find the possessable for the widget
-    FGuid PossessableGuid;
-    bool bFound = false;
-    for (int32 i = 0; i < MovieScene->GetPossessableCount(); ++i)
-    {
-        const FMovieScenePossessable& Poss = MovieScene->GetPossessable(i);
-        if (Poss.GetName() == WidgetName)
-        {
-            PossessableGuid = Poss.GetGuid();
-            bFound = true;
-            break;
-        }
-    }
-    if (!bFound)
+    UWidget* TargetWidget = WBP->WidgetTree ? WBP->WidgetTree->FindWidget(FName(*WidgetName)) : nullptr;
+    if (!TargetWidget)
     {
         return FMonolithActionResult::Error(
-            FString::Printf(TEXT("No animation binding found for widget '%s'"), *WidgetName));
+            FString::Printf(TEXT("Widget '%s' not found"), *WidgetName));
     }
 
-    // Find the matching track
-    FMovieSceneBinding* Binding = MovieScene->FindBinding(PossessableGuid);
-    if (!Binding)
+    const TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
+    const FFrameNumber StartFrame = PlaybackRange.GetLowerBoundValue();
+    const FFrameNumber EndFrame = PlaybackRange.GetUpperBoundValue();
+    const FGuid PossessableGuid = FindOrCreateWidgetAnimationBinding(WBP, TargetAnim, MovieScene, TargetWidget);
+    if (!PossessableGuid.IsValid())
     {
-        return FMonolithActionResult::Error(TEXT("No binding found for possessable"));
+        return FMonolithActionResult::Error(
+            FString::Printf(TEXT("Unable to create animation binding for widget '%s'"), *WidgetName));
     }
 
-    for (UMovieSceneTrack* Track : Binding->GetTracks())
+    UMovieSceneFloatTrack* FloatTrack = FindOrCreateFloatTrack(
+        MovieScene,
+        PossessableGuid,
+        TrackPropertyName,
+        PropertyPath,
+        StartFrame,
+        EndFrame);
+    if (!FloatTrack)
     {
-        UMovieSceneFloatTrack* FloatTrack = Cast<UMovieSceneFloatTrack>(Track);
-        if (!FloatTrack) continue;
+        return FMonolithActionResult::Error(
+            FString::Printf(TEXT("Unable to create %s track for widget '%s'"), *PropertyPath, *WidgetName));
+    }
 
-        // Check if this track's property path matches
-        if (FloatTrack->GetPropertyPath().ToString() != PropertyPath) continue;
-
-        for (UMovieSceneSection* Section : FloatTrack->GetAllSections())
+    for (UMovieSceneSection* Section : FloatTrack->GetAllSections())
+    {
+        FMovieSceneChannelProxy& ChannelProxy = Section->GetChannelProxy();
+        FMovieSceneFloatChannel* Channel = ChannelProxy.GetChannel<FMovieSceneFloatChannel>(0);
+        if (!Channel)
         {
-            FMovieSceneChannelProxy& ChannelProxy = Section->GetChannelProxy();
-            FMovieSceneFloatChannel* Channel = ChannelProxy.GetChannel<FMovieSceneFloatChannel>(0);
-            if (!Channel) continue;
-
-            Channel->AddLinearKey(KeyFrame, static_cast<float>(Value));
-
-            WBP->MarkPackageDirty();
-
-            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-            Result->SetStringField(TEXT("asset_path"), AssetPath);
-            Result->SetStringField(TEXT("animation_name"), AnimationName);
-            Result->SetStringField(TEXT("widget_name"), WidgetName);
-            Result->SetStringField(TEXT("property"), Property);
-            Result->SetNumberField(TEXT("time"), Time);
-            Result->SetNumberField(TEXT("value"), Value);
-            Result->SetBoolField(TEXT("added"), true);
-            return FMonolithActionResult::Success(Result);
+            continue;
         }
+
+        Channel->AddLinearKey(KeyFrame, static_cast<float>(Value));
+
+        FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
+        FKismetEditorUtilities::CompileBlueprint(WBP);
+
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetStringField(TEXT("asset_path"), AssetPath);
+        Result->SetStringField(TEXT("animation_name"), AnimationName);
+        Result->SetStringField(TEXT("widget_name"), WidgetName);
+        Result->SetStringField(TEXT("property"), Property);
+        if (!Component.IsEmpty())
+        {
+            Result->SetStringField(TEXT("component"), Component);
+        }
+        Result->SetNumberField(TEXT("time"), Time);
+        Result->SetNumberField(TEXT("value"), Value);
+        Result->SetBoolField(TEXT("binding_created"), true);
+        Result->SetBoolField(TEXT("track_created"), true);
+        Result->SetBoolField(TEXT("added"), true);
+        return FMonolithActionResult::Success(Result);
     }
 
     return FMonolithActionResult::Error(
-        FString::Printf(TEXT("No track found for property '%s' on widget '%s'"), *Property, *WidgetName));
+        FString::Printf(TEXT("No section channel found for property '%s' on widget '%s'"), *Property, *WidgetName));
 }
 
 // --- remove_animation ---
@@ -734,10 +915,15 @@ FMonolithActionResult FMonolithUIAnimationActions::HandleRemoveAnimation(const T
     // AnimationBindings live on the UWidgetAnimation itself, not the WBP.
     // Since we're removing the animation entirely, its bindings go with it.
 
+    if (WBP->WidgetVariableNameToGuidMap.Contains(FName(*AnimationName)))
+    {
+        WBP->OnVariableRemoved(FName(*AnimationName));
+    }
+
     // Remove the animation object
     WBP->Animations.RemoveAt(FoundIndex);
 
-    WBP->MarkPackageDirty();
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
     FKismetEditorUtilities::CompileBlueprint(WBP);
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();

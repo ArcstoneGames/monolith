@@ -34,6 +34,41 @@
 
 namespace
 {
+	UClass* ResolveStateTreeSchemaClass(const FString& RequestedName)
+	{
+		TArray<FString> CandidateNames;
+		if (!RequestedName.IsEmpty())
+		{
+			CandidateNames.Add(RequestedName);
+			if (!RequestedName.StartsWith(TEXT("U")))
+			{
+				CandidateNames.Add(TEXT("U") + RequestedName);
+			}
+		}
+		else
+		{
+			CandidateNames = {
+				TEXT("StateTreeAIComponentSchema"),
+				TEXT("UStateTreeAIComponentSchema"),
+				TEXT("/Script/GameplayStateTreeModule.StateTreeAIComponentSchema"),
+				TEXT("/Script/GameplayStateTreeModule.UStateTreeAIComponentSchema")
+			};
+		}
+
+		for (const FString& Candidate : CandidateNames)
+		{
+			if (UClass* SchemaClass = FindFirstObject<UClass>(*Candidate, EFindFirstObjectOptions::EnsureIfAmbiguous))
+			{
+				if (SchemaClass->IsChildOf(UStateTreeSchema::StaticClass()))
+				{
+					return SchemaClass;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
 	/** Load a UStateTree from the asset_path param. */
 	UStateTree* LoadStateTreeFromParams(const TSharedPtr<FJsonObject>& Params, FString& OutAssetPath, FString& OutError)
 	{
@@ -752,24 +787,14 @@ FMonolithActionResult FMonolithAIStateTreeActions::HandleCreateStateTree(const T
 	UStateTreeFactory* Factory = NewObject<UStateTreeFactory>();
 
 	// Set schema if provided
-	FString SchemaClassName = Params->GetStringField(TEXT("schema_class"));
-	if (!SchemaClassName.IsEmpty())
+	const FString SchemaClassName = Params->HasField(TEXT("schema_class")) ? Params->GetStringField(TEXT("schema_class")) : FString();
+	UClass* SchemaClass = ResolveStateTreeSchemaClass(SchemaClassName);
+	if (!SchemaClass)
 	{
-		UClass* SchemaClass = FindFirstObject<UClass>(*SchemaClassName, EFindFirstObjectOptions::EnsureIfAmbiguous);
-		if (!SchemaClass)
-		{
-			// Try with U prefix
-			SchemaClass = FindFirstObject<UClass>(*(TEXT("U") + SchemaClassName), EFindFirstObjectOptions::EnsureIfAmbiguous);
-		}
-		if (SchemaClass && SchemaClass->IsChildOf(UStateTreeSchema::StaticClass()))
-		{
-			Factory->SetSchemaClass(SchemaClass);
-		}
-		else if (!SchemaClassName.IsEmpty())
-		{
-			return FMonolithActionResult::Error(FString::Printf(TEXT("Schema class '%s' not found or not a UStateTreeSchema"), *SchemaClassName));
-		}
+		const FString MissingName = SchemaClassName.IsEmpty() ? TEXT("StateTreeAIComponentSchema") : SchemaClassName;
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Schema class '%s' not found or not a UStateTreeSchema"), *MissingName));
 	}
+	Factory->SetSchemaClass(SchemaClass);
 
 	FScopedTransaction Transaction(FText::FromString(TEXT("Monolith: Create StateTree")));
 
@@ -2837,19 +2862,14 @@ FMonolithActionResult FMonolithAIStateTreeActions::HandleBuildStateTreeFromSpec(
 	UStateTreeFactory* Factory = NewObject<UStateTreeFactory>();
 
 	// Set schema from spec
-	FString SchemaClassName = Spec->GetStringField(TEXT("schema_class"));
-	if (!SchemaClassName.IsEmpty())
+	const FString SchemaClassName = Spec->HasField(TEXT("schema_class")) ? Spec->GetStringField(TEXT("schema_class")) : FString();
+	UClass* SchemaClass = ResolveStateTreeSchemaClass(SchemaClassName);
+	if (!SchemaClass)
 	{
-		UClass* SchemaClass = FindFirstObject<UClass>(*SchemaClassName, EFindFirstObjectOptions::EnsureIfAmbiguous);
-		if (!SchemaClass)
-		{
-			SchemaClass = FindFirstObject<UClass>(*(TEXT("U") + SchemaClassName), EFindFirstObjectOptions::EnsureIfAmbiguous);
-		}
-		if (SchemaClass && SchemaClass->IsChildOf(UStateTreeSchema::StaticClass()))
-		{
-			Factory->SetSchemaClass(SchemaClass);
-		}
+		const FString MissingName = SchemaClassName.IsEmpty() ? TEXT("StateTreeAIComponentSchema") : SchemaClassName;
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Schema class '%s' not found or not a UStateTreeSchema"), *MissingName));
 	}
+	Factory->SetSchemaClass(SchemaClass);
 
 	FScopedTransaction Transaction(FText::FromString(TEXT("Monolith: Build StateTree From Spec")));
 

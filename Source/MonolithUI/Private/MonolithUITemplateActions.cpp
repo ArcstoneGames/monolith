@@ -106,7 +106,7 @@ FMonolithActionResult FMonolithUITemplateActions::HandleCreateHudElement(const T
         return FMonolithActionResult::Error(TEXT("Missing required param: element_type"));
     }
 
-    FString Prefix = Params->GetStringField(TEXT("widget_name_prefix"));
+    FString Prefix = MonolithUIInternal::GetOptionalString(Params, TEXT("widget_name_prefix"));
     if (Prefix.IsEmpty()) Prefix = ElementType;
 
     FMonolithActionResult Err;
@@ -343,10 +343,10 @@ FMonolithActionResult FMonolithUITemplateActions::HandleCreateHudElement(const T
             FString::Printf(TEXT("Unknown element_type: '%s'. Valid types: crosshair, health_bar, ammo_counter, stamina_bar, interaction_prompt, damage_indicator, compass, subtitles, flashlight_battery"), *ElementType));
     }
 
+    MonolithUIInternal::ReconcileWidgetVariableGuids(WBP);
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
 
-    bool bCompile = true;
-    if (Params->HasField(TEXT("compile"))) bCompile = Params->GetBoolField(TEXT("compile"));
+    const bool bCompile = MonolithUIInternal::GetOptionalBool(Params, TEXT("compile"), true);
     if (bCompile) FKismetEditorUtilities::CompileBlueprint(WBP);
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -626,13 +626,13 @@ FMonolithActionResult FMonolithUITemplateActions::HandleCreateDialog(const TShar
         return FMonolithActionResult::Error(TEXT("Missing required param: save_path"));
     }
 
-    FString Title = Params->GetStringField(TEXT("title"));
+    FString Title = MonolithUIInternal::GetOptionalString(Params, TEXT("title"));
     if (Title.IsEmpty()) Title = TEXT("Confirm");
-    FString Body = Params->GetStringField(TEXT("body"));
+    FString Body = MonolithUIInternal::GetOptionalString(Params, TEXT("body"));
     if (Body.IsEmpty()) Body = TEXT("Are you sure?");
-    FString ConfirmText = Params->GetStringField(TEXT("confirm_text"));
+    FString ConfirmText = MonolithUIInternal::GetOptionalString(Params, TEXT("confirm_text"));
     if (ConfirmText.IsEmpty()) ConfirmText = TEXT("Yes");
-    FString CancelText = Params->GetStringField(TEXT("cancel_text"));
+    FString CancelText = MonolithUIInternal::GetOptionalString(Params, TEXT("cancel_text"));
     if (CancelText.IsEmpty()) CancelText = TEXT("No");
 
     FMonolithActionResult Err;
@@ -742,7 +742,7 @@ FMonolithActionResult FMonolithUITemplateActions::HandleCreateNotificationToast(
         return FMonolithActionResult::Error(TEXT("Missing required param: save_path"));
     }
 
-    FString Position = Params->GetStringField(TEXT("position"));
+    FString Position = MonolithUIInternal::GetOptionalString(Params, TEXT("position"));
     if (Position.IsEmpty()) Position = TEXT("top_right");
 
     FMonolithActionResult Err;
@@ -814,12 +814,9 @@ FMonolithActionResult FMonolithUITemplateActions::HandleCreateLoadingScreen(cons
         return FMonolithActionResult::Error(TEXT("Missing required param: save_path"));
     }
 
-    bool bShowProgress = true;
-    if (Params->HasField(TEXT("show_progress"))) bShowProgress = Params->GetBoolField(TEXT("show_progress"));
-    bool bShowTips = true;
-    if (Params->HasField(TEXT("show_tips"))) bShowTips = Params->GetBoolField(TEXT("show_tips"));
-    bool bShowSpinner = true;
-    if (Params->HasField(TEXT("show_spinner"))) bShowSpinner = Params->GetBoolField(TEXT("show_spinner"));
+    const bool bShowProgress = MonolithUIInternal::GetOptionalBool(Params, TEXT("show_progress"), true);
+    const bool bShowTips = MonolithUIInternal::GetOptionalBool(Params, TEXT("show_tips"), true);
+    const bool bShowSpinner = MonolithUIInternal::GetOptionalBool(Params, TEXT("show_spinner"), true);
 
     FMonolithActionResult Err;
     UWidgetBlueprint* WBP = MonolithUIInternal::CreateNewWidgetBlueprint(SavePath, Err);

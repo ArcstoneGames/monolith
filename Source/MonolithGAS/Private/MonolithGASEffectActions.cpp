@@ -574,9 +574,9 @@ void ApplyTagConfig(const TSharedPtr<FJsonObject>& Config, FInheritedTagContaine
 	}
 }
 
-/** Parse stacking type. */
-bool ParseStackingType(const FString& Str, EGameplayEffectStackingType& OutType, FString& OutError)
-{
+	/** Parse stacking type. */
+	bool ParseStackingType(const FString& Str, EGameplayEffectStackingType& OutType, FString& OutError)
+	{
 	if (Str.Equals(TEXT("none"), ESearchCase::IgnoreCase))
 	{
 		OutType = EGameplayEffectStackingType::None;
@@ -595,7 +595,35 @@ bool ParseStackingType(const FString& Str, EGameplayEffectStackingType& OutType,
 		return false;
 	}
 	return true;
-}
+	}
+
+	EGameplayEffectStackingType GetGameplayEffectStackingTypeValue(const UGameplayEffect* GE)
+	{
+		if (!GE)
+		{
+			return EGameplayEffectStackingType::None;
+		}
+
+		EGameplayEffectStackingType StackType = EGameplayEffectStackingType::None;
+		if (FProperty* StackProp = UGameplayEffect::StaticClass()->FindPropertyByName(TEXT("StackingType")))
+		{
+			StackProp->CopyCompleteValue(&StackType, StackProp->ContainerPtrToValuePtr<void>(GE));
+		}
+		return StackType;
+	}
+
+	void SetGameplayEffectStackingTypeValue(UGameplayEffect* GE, EGameplayEffectStackingType StackType)
+	{
+		if (!GE)
+		{
+			return;
+		}
+
+		if (FProperty* StackProp = UGameplayEffect::StaticClass()->FindPropertyByName(TEXT("StackingType")))
+		{
+			StackProp->CopyCompleteValue(StackProp->ContainerPtrToValuePtr<void>(GE), &StackType);
+		}
+	}
 
 } // anonymous namespace
 
@@ -1034,14 +1062,7 @@ FMonolithActionResult FMonolithGASEffectActions::HandleGetGameplayEffect(const T
 	// Stacking
 	{
 		TSharedPtr<FJsonObject> StackObj = MakeShared<FJsonObject>();
-		EGameplayEffectStackingType StackType = EGameplayEffectStackingType::None;
-		{
-			FProperty* StackProp = UGameplayEffect::StaticClass()->FindPropertyByName(TEXT("StackingType"));
-			if (StackProp)
-			{
-				StackProp->CopyCompleteValue(&StackType, StackProp->ContainerPtrToValuePtr<void>(GE));
-			}
-		}
+		EGameplayEffectStackingType StackType = GetGameplayEffectStackingTypeValue(GE);
 		FString StackStr;
 		switch (StackType)
 		{
@@ -1741,13 +1762,7 @@ FMonolithActionResult FMonolithGASEffectActions::HandleSetEffectStacking(const T
 	}
 
 	// Set StackingType via reflection (SetStackingType is not exported)
-	{
-		FProperty* StackProp = UGameplayEffect::StaticClass()->FindPropertyByName(TEXT("StackingType"));
-		if (StackProp)
-		{
-			StackProp->CopyCompleteValue(StackProp->ContainerPtrToValuePtr<void>(GE), &StackType);
-		}
-	}
+	SetGameplayEffectStackingTypeValue(GE, StackType);
 
 	if (Params->HasField(TEXT("stack_limit")))
 	{
@@ -2329,11 +2344,7 @@ namespace
 		else if (StackType == TEXT("aggregate_by_target"))
 			Type = EGameplayEffectStackingType::AggregateByTarget;
 
-		FProperty* StackProp = UGameplayEffect::StaticClass()->FindPropertyByName(TEXT("StackingType"));
-		if (StackProp)
-		{
-			StackProp->CopyCompleteValue(StackProp->ContainerPtrToValuePtr<void>(GE), &Type);
-		}
+		SetGameplayEffectStackingTypeValue(GE, Type);
 
 		GE->StackLimitCount = StackLimit;
 		GE->StackDurationRefreshPolicy = EGameplayEffectStackingDurationPolicy::RefreshOnSuccessfulApplication;
@@ -2892,13 +2903,7 @@ FMonolithActionResult FMonolithGASEffectActions::HandleDuplicateGameplayEffect(c
 
 	// Copy stacking (via reflection)
 	{
-		FProperty* StackProp = UGameplayEffect::StaticClass()->FindPropertyByName(TEXT("StackingType"));
-		if (StackProp)
-		{
-			StackProp->CopyCompleteValue(
-				StackProp->ContainerPtrToValuePtr<void>(DestGE),
-				StackProp->ContainerPtrToValuePtr<void>(SourceGE));
-		}
+		SetGameplayEffectStackingTypeValue(DestGE, GetGameplayEffectStackingTypeValue(SourceGE));
 	}
 	DestGE->StackLimitCount = SourceGE->StackLimitCount;
 	DestGE->StackDurationRefreshPolicy = SourceGE->StackDurationRefreshPolicy;
@@ -3084,7 +3089,7 @@ FMonolithActionResult FMonolithGASEffectActions::HandleValidateEffect(const TSha
 
 	// Check: stacking on Instant GE
 	{
-		if (bIsInstant && GE->StackingType != EGameplayEffectStackingType::None)
+		if (bIsInstant && GetGameplayEffectStackingTypeValue(GE) != EGameplayEffectStackingType::None)
 		{
 			TSharedPtr<FJsonObject> ErrObj = MakeShared<FJsonObject>();
 			ErrObj->SetStringField(TEXT("type"), TEXT("stacking_on_instant"));

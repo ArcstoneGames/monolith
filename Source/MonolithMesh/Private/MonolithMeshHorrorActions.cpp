@@ -110,13 +110,13 @@ void FMonolithMeshHorrorActions::RegisterActions(FMonolithToolRegistry& Registry
 
 namespace
 {
-	TArray<TSharedPtr<FJsonValue>> VecToArr(const FVector& V)
+	TArray<TSharedPtr<FJsonValue>> MHorror_VecToArr(const FVector& V)
 	{
 		return MonolithMeshAnalysis::VectorToJsonArray(V);
 	}
 
 	/** Parse an array of [x,y,z] arrays from a JSON field */
-	bool ParseVectorArray(const TSharedPtr<FJsonObject>& Params, const FString& Key, TArray<FVector>& Out)
+	bool MHorror_ParseVectorArray(const TSharedPtr<FJsonObject>& Params, const FString& Key, TArray<FVector>& Out)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Arr;
 		if (!Params->TryGetArrayField(Key, Arr) || Arr->Num() == 0)
@@ -247,7 +247,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::AnalyzeSightlines(const TShare
 	Result->SetNumberField(TEXT("blocked_pct_10m"), FMath::RoundToInt(100.0f * static_cast<float>(Blocked10m) / static_cast<float>(RayCount)));
 	Result->SetNumberField(TEXT("blocked_pct_20m"), FMath::RoundToInt(100.0f * static_cast<float>(Blocked20m) / static_cast<float>(RayCount)));
 	Result->SetNumberField(TEXT("longest_clear_sightline"), LongestDistance);
-	Result->SetArrayField(TEXT("direction_of_longest"), VecToArr(LongestDirection));
+	Result->SetArrayField(TEXT("direction_of_longest"), MHorror_VecToArr(LongestDirection));
 	Result->SetNumberField(TEXT("average_sightline_distance"), AvgDistance);
 	Result->SetNumberField(TEXT("ray_count"), RayCount);
 
@@ -271,7 +271,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::FindHidingSpots(const TSharedP
 	}
 
 	TArray<FVector> Viewpoints;
-	if (!ParseVectorArray(Params, TEXT("viewpoints"), Viewpoints))
+	if (!MHorror_ParseVectorArray(Params, TEXT("viewpoints"), Viewpoints))
 	{
 		return FMonolithActionResult::Error(TEXT("Missing or invalid required param: viewpoints (array of [x,y,z])"));
 	}
@@ -357,7 +357,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::FindHidingSpots(const TSharedP
 	for (const FSpot& S : Spots)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(S.Location));
+		Obj->SetArrayField(TEXT("location"), MHorror_VecToArr(S.Location));
 		Obj->SetNumberField(TEXT("concealment"), S.Concealment);
 		SpotsArr.Add(MakeShared<FJsonValueObject>(Obj));
 	}
@@ -378,7 +378,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::FindHidingSpots(const TSharedP
 FMonolithActionResult FMonolithMeshHorrorActions::FindAmbushPoints(const TSharedPtr<FJsonObject>& Params)
 {
 	TArray<FVector> PathPoints;
-	if (!ParseVectorArray(Params, TEXT("path_points"), PathPoints) || PathPoints.Num() < 2)
+	if (!MHorror_ParseVectorArray(Params, TEXT("path_points"), PathPoints) || PathPoints.Num() < 2)
 	{
 		return FMonolithActionResult::Error(TEXT("Missing or invalid required param: path_points (array of at least 2 [x,y,z])"));
 	}
@@ -465,7 +465,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::FindAmbushPoints(const TShared
 	for (const FAmbushPoint& AP : Ambushes)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(AP.Location));
+		Obj->SetArrayField(TEXT("location"), MHorror_VecToArr(AP.Location));
 		Obj->SetNumberField(TEXT("concealment"), AP.Concealment);
 		Obj->SetNumberField(TEXT("surprise_angle"), AP.SurpriseAngle);
 		Obj->SetNumberField(TEXT("score"), AP.Score);
@@ -601,7 +601,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::AnalyzeChokePoints(const TShar
 	for (const FChokePoint& CP : MergedChokes)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(CP.Location));
+		Obj->SetArrayField(TEXT("location"), MHorror_VecToArr(CP.Location));
 		Obj->SetNumberField(TEXT("width"), CP.Width);
 		Obj->SetStringField(TEXT("left_obstruction"), CP.LeftObstruction);
 		Obj->SetStringField(TEXT("right_obstruction"), CP.RightObstruction);
@@ -799,7 +799,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::AnalyzeEscapeRoutes(const TSha
 		TArray<TSharedPtr<FJsonValue>> PtsArr;
 		for (const FVector& Pt : R.PathPoints)
 		{
-			PtsArr.Add(MakeShared<FJsonValueArray>(VecToArr(Pt)));
+			PtsArr.Add(MakeShared<FJsonValueArray>(MHorror_VecToArr(Pt)));
 		}
 		Obj->SetArrayField(TEXT("path_points"), PtsArr);
 		RoutesArr.Add(MakeShared<FJsonValueObject>(Obj));
@@ -891,7 +891,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::ClassifyZoneTension(const TSha
 FMonolithActionResult FMonolithMeshHorrorActions::AnalyzePacingCurve(const TSharedPtr<FJsonObject>& Params)
 {
 	TArray<FVector> PathPoints;
-	if (!ParseVectorArray(Params, TEXT("path_points"), PathPoints) || PathPoints.Num() < 2)
+	if (!MHorror_ParseVectorArray(Params, TEXT("path_points"), PathPoints) || PathPoints.Num() < 2)
 	{
 		return FMonolithActionResult::Error(TEXT("Missing or invalid required param: path_points (array of at least 2 [x,y,z])"));
 	}
@@ -1018,7 +1018,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::AnalyzePacingCurve(const TShar
 	for (const FPacingSample& S : Samples)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(S.Location));
+		Obj->SetArrayField(TEXT("location"), MHorror_VecToArr(S.Location));
 		Obj->SetNumberField(TEXT("tension_score"), FMath::RoundToInt(S.TensionScore));
 		Obj->SetStringField(TEXT("tension_level"), S.TensionLevel);
 		Obj->SetNumberField(TEXT("distance_along_path"), S.DistanceAlongPath);
@@ -1057,7 +1057,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::AnalyzePacingCurve(const TShar
 		if (Samples[i - 2].TensionScore < 30.0f && Samples[i - 1].TensionScore < 30.0f && Samples[i].TensionScore > 50.0f)
 		{
 			auto Obj = MakeShared<FJsonObject>();
-			Obj->SetArrayField(TEXT("location"), VecToArr(Samples[i].Location));
+			Obj->SetArrayField(TEXT("location"), MHorror_VecToArr(Samples[i].Location));
 			Obj->SetNumberField(TEXT("distance_along_path"), Samples[i].DistanceAlongPath);
 			Obj->SetStringField(TEXT("type"), TEXT("tension_spike_after_calm"));
 			ScareOpArr.Add(MakeShared<FJsonValueObject>(Obj));
@@ -1067,7 +1067,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::AnalyzePacingCurve(const TShar
 		if (Samples[i - 1].TensionScore > 60.0f && Samples[i].TensionScore < 30.0f)
 		{
 			auto Obj = MakeShared<FJsonObject>();
-			Obj->SetArrayField(TEXT("location"), VecToArr(Samples[i].Location));
+			Obj->SetArrayField(TEXT("location"), MHorror_VecToArr(Samples[i].Location));
 			Obj->SetNumberField(TEXT("distance_along_path"), Samples[i].DistanceAlongPath);
 			Obj->SetStringField(TEXT("type"), TEXT("false_calm_after_tension"));
 			ScareOpArr.Add(MakeShared<FJsonValueObject>(Obj));
@@ -1143,8 +1143,8 @@ FMonolithActionResult FMonolithMeshHorrorActions::FindDeadEnds(const TSharedPtr<
 	for (const auto& DE : DeadEnds)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("center"), VecToArr(DE.Center));
-		Obj->SetArrayField(TEXT("exit_direction"), VecToArr(DE.ExitDirection));
+		Obj->SetArrayField(TEXT("center"), MHorror_VecToArr(DE.Center));
+		Obj->SetArrayField(TEXT("exit_direction"), MHorror_VecToArr(DE.ExitDirection));
 		Obj->SetNumberField(TEXT("depth"), DE.Depth);
 		Obj->SetNumberField(TEXT("width"), DE.Width);
 		Obj->SetNumberField(TEXT("exit_width"), DE.ExitWidth);
@@ -1152,7 +1152,7 @@ FMonolithActionResult FMonolithMeshHorrorActions::FindDeadEnds(const TSharedPtr<
 		TArray<TSharedPtr<FJsonValue>> BoundsArr;
 		for (const FVector& Pt : DE.BoundaryPoints)
 		{
-			BoundsArr.Add(MakeShared<FJsonValueArray>(VecToArr(Pt)));
+			BoundsArr.Add(MakeShared<FJsonValueArray>(MHorror_VecToArr(Pt)));
 		}
 		Obj->SetArrayField(TEXT("boundary_points"), BoundsArr);
 		DEArr.Add(MakeShared<FJsonValueObject>(Obj));

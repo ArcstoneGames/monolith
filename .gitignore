@@ -11,6 +11,9 @@ Docs/TESTING.md
 Docs/TODO_VFX_Issues.md
 Plans/
 
+# Private project-specific modules — not part of public Monolith releases
+Source/MonolithISX/
+
 # Private training actions — never ship in public releases
 Source/MonolithEditor/Private/MonolithTrainingActions.cpp
 Source/MonolithEditor/Public/MonolithTrainingActions.h

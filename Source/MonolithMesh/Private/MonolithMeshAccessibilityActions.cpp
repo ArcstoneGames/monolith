@@ -89,7 +89,7 @@ void FMonolithMeshAccessibilityActions::RegisterActions(FMonolithToolRegistry& R
 
 namespace
 {
-	TArray<TSharedPtr<FJsonValue>> VecToArr(const FVector& V)
+	TArray<TSharedPtr<FJsonValue>> MAcc_VecToArr(const FVector& V)
 	{
 		return MonolithMeshAnalysis::VectorToJsonArray(V);
 	}
@@ -190,7 +190,7 @@ FMonolithActionResult FMonolithMeshAccessibilityActions::ValidatePathWidth(const
 	for (const FPinchPoint& PP : Violations)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(PP.Location));
+		Obj->SetArrayField(TEXT("location"), MAcc_VecToArr(PP.Location));
 		Obj->SetNumberField(TEXT("width"), PP.Width);
 		Obj->SetNumberField(TEXT("deficit"), PP.Deficit);
 		Obj->SetStringField(TEXT("left_obstruction"), PP.LeftObstruction);
@@ -457,7 +457,7 @@ FMonolithActionResult FMonolithMeshAccessibilityActions::AnalyzeVisualContrast(c
 		FHitResult LOSHit;
 		QueryParams.AddIgnoredActor(Actor);
 		bool bBlocked = World->LineTraceSingleByChannel(LOSHit, Origin, ActorLoc, ECC_Visibility, QueryParams);
-		QueryParams.ClearIgnoredActors();
+		QueryParams.ClearIgnoredSourceObjects();
 
 		if (bBlocked && LOSHit.Distance < Distance - 50.0f)
 		{
@@ -777,7 +777,7 @@ FMonolithActionResult FMonolithMeshAccessibilityActions::FindRestPoints(const TS
 	for (const FRestPoint& RP : RestPoints)
 	{
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetArrayField(TEXT("location"), VecToArr(RP.Location));
+		Obj->SetArrayField(TEXT("location"), MAcc_VecToArr(RP.Location));
 		Obj->SetStringField(TEXT("name"), RP.Name);
 		Obj->SetStringField(TEXT("type"), RP.Type);
 		Obj->SetNumberField(TEXT("distance_along_path"), RP.DistAlongPath);
@@ -825,7 +825,8 @@ FMonolithActionResult FMonolithMeshAccessibilityActions::ValidateInteractiveReac
 	}
 
 	// Optional region filter
-	FVector RegionMin, RegionMax;
+	FVector RegionMin = FVector::ZeroVector;
+	FVector RegionMax = FVector::ZeroVector;
 	bool bHasRegion = MonolithMeshUtils::ParseVector(Params, TEXT("region_min"), RegionMin)
 		&& MonolithMeshUtils::ParseVector(Params, TEXT("region_max"), RegionMax);
 
@@ -928,7 +929,7 @@ FMonolithActionResult FMonolithMeshAccessibilityActions::ValidateInteractiveReac
 				FHitResult LOSHit;
 				QueryParams.AddIgnoredActor(Actor);
 				bool bBlocked = World->LineTraceSingleByChannel(LOSHit, EyePos, ActorLoc, ECC_Visibility, QueryParams);
-				QueryParams.ClearIgnoredActors();
+				QueryParams.ClearIgnoredSourceObjects();
 				Item.bLineOfSight = !bBlocked;
 			}
 		}
@@ -972,7 +973,7 @@ FMonolithActionResult FMonolithMeshAccessibilityActions::ValidateInteractiveReac
 	{
 		auto Obj = MakeShared<FJsonObject>();
 		Obj->SetStringField(TEXT("actor"), Item.ActorName);
-		Obj->SetArrayField(TEXT("location"), VecToArr(Item.Location));
+		Obj->SetArrayField(TEXT("location"), MAcc_VecToArr(Item.Location));
 		Obj->SetNumberField(TEXT("height_above_floor"), Item.Height);
 		Obj->SetNumberField(TEXT("navmesh_distance"), Item.NavmeshDistance);
 		Obj->SetBoolField(TEXT("line_of_sight"), Item.bLineOfSight);

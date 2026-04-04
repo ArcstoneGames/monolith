@@ -95,23 +95,20 @@ void FMonolithUIActions::RegisterActions(FMonolithToolRegistry& Registry)
 // --- create_widget_blueprint ---
 FMonolithActionResult FMonolithUIActions::HandleCreateWidgetBlueprint(const TSharedPtr<FJsonObject>& Params)
 {
-    FString SavePath = Params->GetStringField(TEXT("save_path"));
-    if (SavePath.IsEmpty())
+    FMonolithActionResult ParamError;
+    FString SavePath;
+    if (!MonolithUIInternal::TryGetRequiredString(Params, TEXT("save_path"), SavePath, ParamError))
     {
-        return FMonolithActionResult::Error(TEXT("Missing required param: save_path"));
+        return ParamError;
     }
 
-    FString ParentClassName = Params->GetStringField(TEXT("parent_class"));
+    FString ParentClassName = MonolithUIInternal::GetOptionalString(Params, TEXT("parent_class"));
     if (ParentClassName.IsEmpty()) ParentClassName = TEXT("UserWidget");
 
-    FString RootWidgetType = Params->GetStringField(TEXT("root_widget"));
+    FString RootWidgetType = MonolithUIInternal::GetOptionalString(Params, TEXT("root_widget"));
     if (RootWidgetType.IsEmpty()) RootWidgetType = TEXT("CanvasPanel");
 
-    bool bSkipSave = false;
-    if (Params->HasField(TEXT("skip_save")))
-    {
-        bSkipSave = Params->GetBoolField(TEXT("skip_save"));
-    }
+    const bool bSkipSave = MonolithUIInternal::GetOptionalBool(Params, TEXT("skip_save"), false);
 
     // Resolve parent class
     UClass* ParentClass = FindFirstObject<UClass>(*ParentClassName, EFindFirstObjectOptions::NativeFirst);
@@ -139,6 +136,21 @@ FMonolithActionResult FMonolithUIActions::HandleCreateWidgetBlueprint(const TSha
         return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create package: %s"), *SavePath));
     }
 
+    // Fail cleanly if the asset already exists instead of letting FactoryCreateNew assert.
+    if (FindObject<UObject>(Package, *AssetName))
+    {
+        return FMonolithActionResult::Error(
+            FString::Printf(TEXT("Widget Blueprint already exists at '%s'"), *SavePath));
+    }
+
+    const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *SavePath, *AssetName);
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    if (AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(ObjectPath)).IsValid())
+    {
+        return FMonolithActionResult::Error(
+            FString::Printf(TEXT("Widget Blueprint already exists at '%s'"), *SavePath));
+    }
+
     // Create widget blueprint via factory
     UWidgetBlueprintFactory* Factory = NewObject<UWidgetBlueprintFactory>();
     Factory->BlueprintType = BPTYPE_Normal;
@@ -163,10 +175,13 @@ FMonolithActionResult FMonolithUIActions::HandleCreateWidgetBlueprint(const TSha
         {
             UWidget* Root = WBP->WidgetTree->ConstructWidget<UWidget>(RootClass, FName(*RootWidgetType));
             WBP->WidgetTree->RootWidget = Root;
+            MonolithUIInternal::RegisterCreatedWidget(WBP, Root);
         }
     }
 
     // Compile
+    MonolithUIInternal::ReconcileWidgetVariableGuids(WBP);
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
     FKismetEditorUtilities::CompileBlueprint(WBP);
 
     // Save
@@ -245,11 +260,17 @@ FMonolithActionResult FMonolithUIActions::HandleGetWidgetTree(const TSharedPtr<F
 // --- add_widget ---
 FMonolithActionResult FMonolithUIActions::HandleAddWidget(const TSharedPtr<FJsonObject>& Params)
 {
-    FString AssetPath = Params->GetStringField(TEXT("asset_path"));
-    FString WidgetClassName = Params->GetStringField(TEXT("widget_class"));
-    if (WidgetClassName.IsEmpty())
+    FMonolithActionResult ParamError;
+    FString AssetPath;
+    if (!MonolithUIInternal::TryGetRequiredString(Params, TEXT("asset_path"), AssetPath, ParamError))
     {
-        return FMonolithActionResult::Error(TEXT("Missing required param: widget_class"));
+        return ParamError;
+    }
+
+    FString WidgetClassName;
+    if (!MonolithUIInternal::TryGetRequiredString(Params, TEXT("widget_class"), WidgetClassName, ParamError))
+    {
+        return ParamError;
     }
 
     FMonolithActionResult Err;
@@ -269,12 +290,12 @@ FMonolithActionResult FMonolithUIActions::HandleAddWidget(const TSharedPtr<FJson
     }
 
     // Widget name
-    FString WidgetName = Params->GetStringField(TEXT("widget_name"));
+    FString WidgetName = MonolithUIInternal::GetOptionalString(Params, TEXT("widget_name"));
     FName WidgetFName = WidgetName.IsEmpty() ? NAME_None : FName(*WidgetName);
 
     // Find parent widget
     UPanelWidget* ParentPanel = nullptr;
-    FString ParentName = Params->GetStringField(TEXT("parent_name"));
+    FString ParentName = MonolithUIInternal::GetOptionalString(Params, TEXT("parent_name"));
     if (ParentName.IsEmpty())
     {
         ParentPanel = Cast<UPanelWidget>(WBP->WidgetTree->RootWidget);
@@ -310,7 +331,7 @@ FMonolithActionResult FMonolithUIActions::HandleAddWidget(const TSharedPtr<FJson
     if (UCanvasPanelSlot* CSlot = Cast<UCanvasPanelSlot>(Slot))
     {
         // Anchor preset
-        FString AnchorPreset = Params->GetStringField(TEXT("anchor_preset"));
+        FString AnchorPreset = MonolithUIInternal::GetOptionalString(Params, TEXT("anchor_preset"));
         if (!AnchorPreset.IsEmpty())
         {
             CSlot->SetAnchors(MonolithUIInternal::GetAnchorPreset(AnchorPreset));
@@ -333,15 +354,12 @@ FMonolithActionResult FMonolithUIActions::HandleAddWidget(const TSharedPtr<FJson
         }
 
         // Auto-size
-        if (Params->HasField(TEXT("auto_size")))
-        {
-            CSlot->SetAutoSize(Params->GetBoolField(TEXT("auto_size")));
-        }
+        CSlot->SetAutoSize(MonolithUIInternal::GetOptionalBool(Params, TEXT("auto_size"), CSlot->GetAutoSize()));
     }
 
     // Configure box/overlay slot alignment
-    FString HAlign = Params->GetStringField(TEXT("h_align"));
-    FString VAlign = Params->GetStringField(TEXT("v_align"));
+    FString HAlign = MonolithUIInternal::GetOptionalString(Params, TEXT("h_align"));
+    FString VAlign = MonolithUIInternal::GetOptionalString(Params, TEXT("v_align"));
 
     if (UVerticalBoxSlot* VS = Cast<UVerticalBoxSlot>(Slot))
     {
@@ -410,15 +428,14 @@ FMonolithActionResult FMonolithUIActions::HandleAddWidget(const TSharedPtr<FJson
         else if (UOverlaySlot* OS = Cast<UOverlaySlot>(Slot)) OS->SetPadding(Pad);
     }
 
+    // Mirror editor bookkeeping so the compiler sees a GUID for the final widget name.
+    MonolithUIInternal::RegisterCreatedWidget(WBP, NewWidget);
+
     // Mark modified
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
 
     // Compile if requested
-    bool bCompile = true;
-    if (Params->HasField(TEXT("compile")))
-    {
-        bCompile = Params->GetBoolField(TEXT("compile"));
-    }
+    const bool bCompile = MonolithUIInternal::GetOptionalBool(Params, TEXT("compile"), true);
     if (bCompile)
     {
         FKismetEditorUtilities::CompileBlueprint(WBP);
@@ -469,7 +486,7 @@ FMonolithActionResult FMonolithUIActions::HandleRemoveWidget(const TSharedPtr<FJ
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
 
     bool bCompile = true;
-    if (Params->HasField(TEXT("compile"))) bCompile = Params->GetBoolField(TEXT("compile"));
+    bCompile = MonolithUIInternal::GetOptionalBool(Params, TEXT("compile"), true);
     if (bCompile) FKismetEditorUtilities::CompileBlueprint(WBP);
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -507,8 +524,7 @@ FMonolithActionResult FMonolithUIActions::HandleSetWidgetProperty(const TSharedP
             Widget->SynchronizeProperties();
             FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
 
-            bool bCompile = false;
-            if (Params->HasField(TEXT("compile"))) bCompile = Params->GetBoolField(TEXT("compile"));
+            const bool bCompile = MonolithUIInternal::GetOptionalBool(Params, TEXT("compile"), false);
             if (bCompile) FKismetEditorUtilities::CompileBlueprint(WBP);
 
             TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -547,7 +563,7 @@ FMonolithActionResult FMonolithUIActions::HandleCompileWidget(const TSharedPtr<F
 // --- list_widget_types ---
 FMonolithActionResult FMonolithUIActions::HandleListWidgetTypes(const TSharedPtr<FJsonObject>& Params)
 {
-    FString Filter = Params->GetStringField(TEXT("filter"));
+    FString Filter = MonolithUIInternal::GetOptionalString(Params, TEXT("filter"));
 
     struct FWidgetTypeInfo
     {

@@ -458,7 +458,7 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 		// Get disk file modification time for incremental change detection
 		{
 			FString PackageFilename;
-			if (FPackageName::DoesPackageExist(AssetData.PackageName.ToString(), nullptr, &PackageFilename))
+			if (FPackageName::DoesPackageExist(AssetData.PackageName.ToString(), &PackageFilename))
 			{
 				FDateTime FileTime = IFileManager::Get().GetTimeStamp(*PackageFilename);
 				IndexedAsset.LastModified = FileTime.ToIso8601();
@@ -1163,7 +1163,7 @@ void UMonolithIndexSubsystem::StartIncrementalIndex()
 
 		// Populate LastModified
 		FString PackageFilename;
-		if (FPackageName::DoesPackageExist(PathStr, nullptr, &PackageFilename))
+		if (FPackageName::DoesPackageExist(PathStr, &PackageFilename))
 		{
 			FDateTime FileTime = IFileManager::Get().GetTimeStamp(*PackageFilename);
 			IndexedAsset.LastModified = FileTime.ToIso8601();
