@@ -1,6 +1,6 @@
 # Monolith — Testing Reference
 
-Last updated: 2026-04-01
+Last updated: 2026-04-04
 
 ---
 
@@ -45,9 +45,11 @@ def test_action(namespace, action, params=None):
 
 ---
 
-## Current Status: 533/665 ACTIONS PASS (9 PENDING, 46 UNTESTED, 130 GAS PASS, 66 LOGICDRIVER PASS, 229 AI UNTESTED, 45 TOWN GEN EXPERIMENTAL) + Incremental Indexer PASS + Standalone Tools PASS
+## Current Status: 542/674 ACTIONS PASS (9 PENDING, 46 UNTESTED, 130 GAS PASS, 66 LOGICDRIVER PASS, 229 AI UNTESTED, 45 TOWN GEN EXPERIMENTAL) + Incremental Indexer PASS + Standalone Tools PASS
 
-All 15 modules tested or compiled. Total plugin: 1125 actions (1080 active by default + 45 experimental town gen disabled by default). Standalone tools: `monolith_query.exe` (14/14 PASS), `monolith_proxy.exe` (3/3 PASS).
+All 15 modules tested or compiled. Total plugin: 1126 actions (1081 active by default + 45 experimental town gen disabled by default). Standalone tools: `monolith_query.exe` (14/14 PASS), `monolith_proxy.exe` (3/3 PASS).
+
+2026-04-04: MonolithBlueprint `create_data_asset` — 9/9 tests PASS. Blueprint module now 89 actions.
 
 2026-04-01: **Standalone tools verified.** `monolith_query.exe` — 14/14 actions PASS (all source + project queries). `monolith_proxy.exe` — 3/3 PASS (initialize, tools/list with 18 tools, tools/call). Both replace Python counterparts.
 
@@ -58,6 +60,21 @@ All 15 modules tested or compiled. Total plugin: 1125 actions (1080 active by de
 2026-03-30: Procedural Town Generator marked **EXPERIMENTAL** — `bEnableProceduralTownGen = false` by default. 45 town gen actions not registered unless explicitly enabled. Fix Plan v5 applied (7 fixes) but fundamental geometry issues remain (wall misalignment, room separation). Town gen test status: **FAIL** (geometry). Core mesh actions (197) unaffected.
 
 2026-03-30: MonolithGAS full test pass — 53/53 PASS, 0 FAIL. 12 bugs found and fixed (8 git commits). Key fixes: IGameplayTagsEditorModule, EnsureAssetPathFree, BS_BeingCreated suppression, AR pre-filter, GAS deep indexer. PIE runtime tests passing. 2026-03-28: Fix Plan v2 — 20 fixes across 3 phases + `validate_building` action. Stair/fire escape/ramp angle fixes, floor plan corridor/door/entrance guarantees, building_context on arch features. 2026-03-28: Procedural Town Generator — 45 new actions across 11 sub-projects. Compilation verified, runtime testing shows geometry failures. 2026-03-27: MonolithMesh module — 46 new actions (443→489 total). Compilation verified, basic MCP registration verified. 2026-03-25: Niagara expansion — 31 new actions (65→96 niagara, 349→443 total). 40/40 PASS, 3 SKIPPED, 3 bugs found and fixed during testing (type fallback warning, spawn shape duplicate, NPC namespace mismatch). Also 9 new material function actions (48→57 mat). Polish pass 2026-03-14 added 4 Niagara actions + get_system_property (213→218). 2026-03-15: HLSL module/function creation tested end-to-end (CPU + GPU), 3 bugs fixed (input exposure, dot validation, numeric index lookup). 2026-03-17: Blueprint module waves 2-7 full test pass (48/48 + 17 retests). 21 bugs found and fixed during testing session. Total actions now 278. 2026-03-17: Material module full test pass (44/44 + 11 retests). 11 bugs found and fixed. 2026-03-18: Niagara module full test pass (37/37 + 8 retests). 16 bugs found and fixed. 2026-03-18: Animation Wave 8-10 full test pass (33/33 + 4 retests). 12 bugs found and fixed. 2026-03-22: MonolithUI module full test pass (42/42). All 8 action classes verified.
+
+---
+
+## MonolithBlueprint — create_data_asset (2026-04-04)
+
+9/9 tests PASS:
+- Create PhysicalMaterial — PASS
+- Create MaterialParameterCollection (U prefix resolution) — PASS
+- Duplicate path rejection — PASS
+- Actor class rejection (Character) — PASS
+- Blueprint class rejection — PASS
+- Nonexistent class error — PASS
+- Full path class resolution (/Script/PhysicsCore.PhysicalMaterial) — PASS
+- Abstract class rejection (AnimNotify) — PASS
+- skip_save parameter — PASS
 
 ---
 

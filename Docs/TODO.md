@@ -1,6 +1,12 @@
 # Monolith — TODO
 
-Last updated: 2026-04-01
+Last updated: 2026-04-04
+
+---
+
+### MonolithBlueprint — create_data_asset (2026-04-04)
+
+- [x] `create_data_asset` — Create raw UObject instances (DataAssets, MPCs, PhysicalMaterials, CurveFloats, etc.) without Blueprint wrapper. Resolves class by name with U/A prefix fallback. Guards against abstract, deprecated, Actor-derived, and Blueprint classes. 9/9 tests PASS.
 
 ---
 
