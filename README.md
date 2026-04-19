@@ -14,7 +14,7 @@ Monolith is an Unreal Engine editor plugin that gives your AI full read/write ac
 
 It works with **Claude Code**, **Cursor**, or any MCP-compatible client. If your AI tool speaks MCP, it speaks Monolith.
 
-> **Platform:** Windows only. Mac and Linux support is coming soon.
+> **Platform:** Windows, macOS, Linux.
 
 ## Why Monolith?
 
@@ -86,7 +86,7 @@ Most MCP integrations register every action as a separate tool, which floods the
 
 - **Unreal Engine 5.7+** — Launcher or source build ([unrealengine.com](https://unrealengine.com))
 
-> **Platform:** Windows only. Mac and Linux support is coming soon.
+> **Platform:** Windows, macOS, Linux.
 
 - **Claude Code, Cursor, or another MCP client** — Any tool that supports the Model Context Protocol
 - **(Optional) Python 3.8+** — Only needed to index your own project's C++ source via `Scripts/index_project.py`. Engine source indexing is built-in and needs no Python. The MCP proxy and offline query tools are now standalone C++ executables — Python is no longer required for any core functionality.
@@ -139,7 +139,7 @@ YourProject/
 
 Monolith ships with a stdio-to-HTTP proxy that keeps your MCP session alive when the Unreal Editor restarts. No manual reconnection needed. The proxy is available as a **standalone C++ executable** (zero dependencies) or a Python script (fallback).
 
-**Option A: Native C++ proxy (recommended — no Python required)**
+**Option A: Native C++ proxy — Windows only (no Python required)**
 
 ```json
 {
@@ -152,15 +152,28 @@ Monolith ships with a stdio-to-HTTP proxy that keeps your MCP session alive when
 }
 ```
 
-**Option B: Python proxy (fallback)**
+**Option B: Python proxy (fallback — works on all platforms)**
 
 Requires Python 3.8+ ([python.org](https://python.org)).
 
+Windows:
 ```json
 {
   "mcpServers": {
     "monolith": {
       "command": "Plugins/Monolith/Scripts/monolith_proxy.bat",
+      "args": []
+    }
+  }
+}
+```
+
+macOS / Linux:
+```json
+{
+  "mcpServers": {
+    "monolith": {
+      "command": "Plugins/Monolith/Scripts/monolith_proxy.sh",
       "args": []
     }
   }
@@ -396,9 +409,10 @@ Monolith checks for new versions on editor startup so you don't have to babysit 
 | **Claude can't find any tools** | Check `.mcp.json` transport type: Claude Code uses `"http"`, Cursor/Cline use `"streamableHttp"`. Restart your AI client after creating the file. |
 | **Tools fail on first try** | Restart Claude Code to refresh the MCP connection. Known quirk with initial connection timing. |
 | **Port 9316 already in use** | Change the port in Editor Preferences > Plugins > Monolith, then update `.mcp.json` to match. |
-| **Proxy says "Python 3 not found"** | Switch to the C++ proxy (`monolith_proxy.exe`) — no Python needed. Or install Python 3.8+ and ensure `python` is on your PATH. |
+| **Proxy says "Python 3 not found"** | On Windows, switch to the C++ proxy (`monolith_proxy.exe`) — no Python needed. On macOS/Linux, install Python 3.8+ and ensure `python3` is on your PATH. |
 | **monolith_query.exe returns no results** | The exe looks for databases relative to its own location. Make sure `Saved/Monolith/EngineSource.db` and `Saved/Monolith/ProjectIndex.db` exist (created on first editor launch). |
-| **Mac/Linux not working** | Windows only for now. Mac and Linux are planned. |
+| **macOS: `monolith_proxy.sh` permission denied** | Make sure the script is executable: `chmod +x Plugins/Monolith/Scripts/monolith_proxy.sh`. |
+| **macOS/Linux: native C++ proxy not available** | The prebuilt `monolith_proxy.exe` is Windows-only for now. Use the Python proxy (`monolith_proxy.sh`) — same protocol, same features. |
 
 ---
 

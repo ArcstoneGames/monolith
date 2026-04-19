@@ -7,8 +7,8 @@ Thanks for your interest in contributing. This guide covers everything you need 
 ### Prerequisites
 
 - **Unreal Engine 5.7+** (source or launcher build)
-- **Windows** (Mac/Linux support is planned but not yet available)
-- **Python 3.10+** (only needed for engine source indexing)
+- **Windows, macOS, or Linux** — see [README Installation](README.md#installation) for per-platform proxy setup
+- **Python 3.10+** (only needed for engine source indexing and for the cross-platform MCP proxy on macOS/Linux)
 - **Git**
 
 ### Clone & Build
