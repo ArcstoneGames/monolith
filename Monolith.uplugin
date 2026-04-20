@@ -194,11 +194,6 @@
 			"LoadingPhase": "Default"
 		},
 		{
-			"Name": "MonolithISX",
-			"Type": "Editor",
-			"LoadingPhase": "Default"
-		},
-		{
 			"Name": "MonolithAudio",
 			"Type": "Editor",
 			"LoadingPhase": "Default"

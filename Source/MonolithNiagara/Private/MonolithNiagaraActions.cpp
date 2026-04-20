@@ -2655,16 +2655,18 @@ FMonolithActionResult FMonolithNiagaraActions::HandleGetModuleGraph(const TShare
 	Graph->GetNodesOfClass<UEdGraphNode>(AllNodes);
 	for (UEdGraphNode* Node : AllNodes)
 	{
-		TSharedRef<FJsonObject> NO = MakeShared<FJsonObject>();
-		NO->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
-		NO->SetStringField(TEXT("class"), Node->GetClass()->GetName());
-		NO->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-		NO->SetNumberField(TEXT("pos_x"), Node->NodePosX);
-		NO->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+		// Named NodeObj instead of NO to avoid Apple <objc/objc.h> macro `#define NO __objc_no`
+		// that leaks in transitively via ApplePlatformProcess.h on macOS and breaks compilation.
+		TSharedRef<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+		NodeObj->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
+		NodeObj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+		NodeObj->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+		NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+		NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
 		if (UNiagaraNodeFunctionCall* FN = Cast<UNiagaraNodeFunctionCall>(Node))
 		{
-			NO->SetStringField(TEXT("function_name"), FN->GetFunctionName());
-			if (FN->FunctionScript) NO->SetStringField(TEXT("function_script"), FN->FunctionScript->GetPathName());
+			NodeObj->SetStringField(TEXT("function_name"), FN->GetFunctionName());
+			if (FN->FunctionScript) NodeObj->SetStringField(TEXT("function_script"), FN->FunctionScript->GetPathName());
 		}
 		TArray<TSharedPtr<FJsonValue>> PinsArr;
 		for (UEdGraphPin* Pin : Node->Pins)
@@ -2677,8 +2679,8 @@ FMonolithActionResult FMonolithNiagaraActions::HandleGetModuleGraph(const TShare
 			PO->SetNumberField(TEXT("linked_count"), Pin->LinkedTo.Num());
 			PinsArr.Add(MakeShared<FJsonValueObject>(PO));
 		}
-		NO->SetArrayField(TEXT("pins"), PinsArr);
-		NodesArr.Add(MakeShared<FJsonValueObject>(NO));
+		NodeObj->SetArrayField(TEXT("pins"), PinsArr);
+		NodesArr.Add(MakeShared<FJsonValueObject>(NodeObj));
 	}
 	Res->SetArrayField(TEXT("nodes"), NodesArr);
 	return SuccessObj(Res);
