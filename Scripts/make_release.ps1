@@ -61,9 +61,10 @@ finally {
 }
 
 # Modules stripped from every public release zip.
-# - MonolithISX: paid marketplace plugin (InventorySystemX) integration -- redistribution not permitted
 # - MonolithSteamBridge: solo-dev only, Steam Integration Kit bridge -- not public
-$StrippedModules = @("MonolithISX", "MonolithSteamBridge")
+# (MonolithISX was extracted to a sibling plugin at Plugins/MonolithISX/ on 2026-04-21 —
+#  it no longer lives in this repo and therefore does not need stripping here.)
+$StrippedModules = @("MonolithSteamBridge")
 
 $ProjectDir = Split-Path -Parent (Split-Path -Parent $PluginDir)
 $OutputZip = Join-Path $ProjectDir "Monolith-v$Version.zip"
