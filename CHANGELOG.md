@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-04-20
+
+### Added
+
+- **macOS (Apple Silicon) support** ([#24](https://github.com/tumourlove/monolith/pull/24)) — Monolith now builds and runs on macOS 15 / Apple Silicon under UE 5.7. Uses the existing Python proxy as the stdio↔HTTP bridge (the native C++ proxy remains Windows-only for now).
+  - New `Scripts/monolith_proxy.sh` shell launcher with `python3`/`python` auto-detection and 3.8+ version gate (parity with `monolith_proxy.bat`).
+  - `Scripts/monolith_proxy.py` now declares `from __future__ import annotations` so PEP 604 type syntax (`str | None`) works on Python 3.8+ — macOS ships 3.9 by default.
+  - `MonolithNiagaraActions.cpp`: renamed local `NO` → `NodeObj` to dodge the `<objc/objc.h>` `#define NO __objc_no` macro leak that transitively reaches `ApplePlatformProcess.h` and broke compilation.
+  - `Monolith.uplugin`: dropped ghost `MonolithISX` module reference (source lives outside master; release pipeline still strips ISX + SteamBridge on its own).
+  - README + CONTRIBUTING updated to document macOS/Linux support and `.sh` launcher.
+  - PR by **@MaxenceEpitech**.
+  - **Note for macOS users:** this release ships Windows binaries only. Please clone the repo and build from source per `CONTRIBUTING.md` — the macOS build path is proven (all 17 Monolith dylibs compile on UE 5.7 / Apple Silicon). Prebuilt macOS dylibs will follow once a GitHub Actions macOS runner is wired up.
+
+### Fixed
+
+- **Editor crash on indexer pass with WorldPartition-enabled persistent level** ([#20](https://github.com/tumourlove/monolith/issues/20), fix [#21](https://github.com/tumourlove/monolith/pull/21)) — `LevelIndexer::IndexAsset` loaded level packages via `LoadPackage` to enumerate actors, which initializes `UWorldPartition` for WP-enabled levels (UE 5.4+ default). Because `LoadPackage` skips the editor's open-level flow, nothing tore down the subsystem, and when the batch loop marked the package for unload and GC eventually ran, `UWorldPartitionSubsystem::Deinitialize` asserted at `WorldPartitionSubsystem.cpp:507`. Fix uninitializes WorldPartition after `IndexActorsInLevel` and before `TryUnloadPackage(World)`. Affected every UE 5.4+ project with a WP-enabled persistent level and the default `bIndexLevels` setting. Reported and fixed by **@danielandric**.
+- **Full Monolith rebuild on every UBT invocation after ZIP install** ([#22](https://github.com/tumourlove/monolith/issues/22), fix [#23](https://github.com/tumourlove/monolith/pull/23)) — PowerShell's `Compress-Archive` writes only DOS time (no NTFS or Unix extended timestamp), and DOS time is naked wall-clock with no timezone tag. `Expand-Archive` reinterprets the stored bytes as the user's local time, so a UTC+10-packaged ZIP extracted on UTC+0 landed with file mtimes ~10 hours in the user's future. UBT's `TargetMakefile.IsValidForSourceFiles` compares `ExternalDependency.LastWriteTimeUtc` against `Makefile.CreateTimeUtc`, so a future mtime on `Monolith.uplugin` tripped the check on every build and forced a full Monolith rebuild until the user's wall clock caught up. Affected every C++ user with auto-update on (default) and every C++ user installing from the ZIP manually. Fix mirrors POSIX tar's `--touch`: the auto-updater swap scripts (Windows + macOS/Linux) touch installed files post-xcopy, and `MonolithCoreModule::StartupModule` runs an idempotent self-heal that walks the plugin tree if `Monolith.uplugin` shows a future mtime (covers manual-install users). Microsoft acknowledged the underlying ZIP design flaw in [PowerShell/Microsoft.PowerShell.Archive#133](https://github.com/PowerShell/Microsoft.PowerShell.Archive/issues/133); their fix has not shipped. Reported and fixed by **@danielandric**.
+
+### Changed
+
+- **Release builds now run non-unity** — `Scripts/make_release.ps1` passes `-DisableUnity` to UBT so missing includes and unity-only symbol collisions get caught before they reach a public release.
+
+### Credits
+
+- **@danielandric** — PR [#21](https://github.com/tumourlove/monolith/pull/21) + issue [#20](https://github.com/tumourlove/monolith/issues/20) (WorldPartition indexer crash), PR [#23](https://github.com/tumourlove/monolith/pull/23) + issue [#22](https://github.com/tumourlove/monolith/issues/22) (ZIP mtime normalization). Thank you for two clean, well-diagnosed fixes in a single day.
+- **@MaxenceEpitech** — PR [#24](https://github.com/tumourlove/monolith/pull/24) (macOS support — shell launcher, Python compat, Objective-C macro dodge, ghost module cleanup). Thanks for putting in the proof-of-work end-to-end build verification on Apple Silicon.
+
+Full diff: [v0.13.2...v0.14.0](https://github.com/tumourlove/monolith/compare/v0.13.2...v0.14.0)
+
 ## [0.13.2] - 2026-04-19
 
 ### Hotfix

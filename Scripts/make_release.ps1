@@ -82,7 +82,9 @@ if (-not $SkipBuild) {
     Write-Host "    MONOLITH_RELEASE_BUILD=1 (BA/GBA/ComboGraph forced off)" -ForegroundColor DarkGray
 
     try {
-        & $UBT LeviathanEditor Win64 Development "-Project=$UProject" -waitmutex
+        # Non-unity build catches missing includes and unity-only symbol collisions
+        # before they reach public releases (feedback_non_unity_build_releases.md).
+        & $UBT LeviathanEditor Win64 Development "-Project=$UProject" -waitmutex -DisableUnity
         if ($LASTEXITCODE -ne 0) {
             throw "UBT failed with exit code $LASTEXITCODE. Is the editor closed?"
         }
