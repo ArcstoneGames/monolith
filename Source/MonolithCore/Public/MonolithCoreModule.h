@@ -2,7 +2,7 @@
 
 #include "Modules/ModuleManager.h"
 
-#define MONOLITH_VERSION TEXT("0.12.0")
+#define MONOLITH_VERSION TEXT("0.14.0")
 
 class FMonolithHttpServer;
 
@@ -32,4 +32,7 @@ private:
 	void WriteSentinelFile(int32 Port);
 	void RemoveSentinelFile();
 	FString GetSentinelFilePath() const;
+
+	/** Touch plugin files if Monolith.uplugin shows a future mtime (cross-TZ ZIP extraction artifact). */
+	void NormalizeFutureMtimesIfNeeded();
 };

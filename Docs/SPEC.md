@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 18 MCP tools (1125 total actions across 15 domains; 1080 active by default — 45 experimental town gen actions disabled), cutting AI assistant context consumption by ~95%.
+Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate MCP (Model Context Protocol) servers and 4 C++ plugins into a single plugin with an embedded HTTP MCP server. It reduces ~220 individual tools down to 19 MCP tools (1226 total actions across 16 domains; 1181 active by default — 45 experimental town gen actions disabled), cutting AI assistant context consumption by ~95%.
 
 ### What It Replaces
 
@@ -35,11 +35,11 @@ Monolith is a unified Unreal Engine editor plugin that consolidates 9 separate M
 ```
 Monolith.uplugin
   MonolithCore          — HTTP server, tool registry, discovery, settings, auto-updater
-  MonolithBlueprint     — Blueprint inspection, variable/component/graph CRUD, node operations, compile, spawn (88 actions)
-  MonolithMaterial      — Material inspection + graph editing + CRUD + function suite (57 actions)
+  MonolithBlueprint     — Blueprint inspection, variable/component/graph CRUD, node operations, compile, spawn (89 actions)
+  MonolithMaterial      — Material inspection + graph editing + CRUD + function suite + tiling quality + texture preview (63 actions)
   MonolithAnimation     — Animation sequences, montages, ABPs, curves, notifies, skeletons, PoseSearch (115 actions)
-  MonolithNiagara       — Niagara particle systems, HLSL module/function creation, DI config, event handlers, sim stages, NPC, effect types (96 actions)
-  MonolithEditor        — Build triggers, live compile, log capture, compile output, crash context, scene capture, texture import (19 actions)
+  MonolithNiagara       — Niagara particle systems, HLSL module/function creation, DI config, event handlers, sim stages, NPC, effect types, scalability (108 actions)
+  MonolithEditor        — Build triggers, live compile, log capture, compile output, crash context, scene capture, texture import, GIF capture (20 actions)
   MonolithConfig        — Config/INI resolution and search (6 actions)
   MonolithIndex         — SQLite FTS5 deep project indexer, 14 internal indexers (7 MCP actions)
   MonolithSource        — Engine source + API lookup (11 actions)
@@ -49,12 +49,13 @@ Monolith.uplugin
   MonolithComboGraph    — ComboGraph plugin integration: combo graph CRUD, node/edge management, effects, cues, ability scaffolding (13 actions). Conditional on #if WITH_COMBOGRAPH
   MonolithAI            — AI asset manipulation: Behavior Trees, Blackboards, State Trees, EQS, Smart Objects, AI Controllers, Perception, Navigation, Runtime/PIE, Scaffolds, Discovery, Advanced (229 actions). Conditional on #if WITH_STATETREE, #if WITH_SMARTOBJECTS (required); #if WITH_MASSENTITY, #if WITH_ZONEGRAPH (optional)
   MonolithLogicDriver   — Logic Driver Pro integration: SM CRUD, graph read/write, node config, runtime/PIE, JSON spec, scaffolding, discovery, components, text graph (66 actions). Conditional on #if WITH_LOGICDRIVER
+  MonolithAudio         — Audio asset creation, inspection, batch management, Sound Cue graph building, MetaSound graph building via Builder API (81 actions). MetaSound conditional on #if WITH_METASOUND
   MonolithBABridge      — Optional IModularFeatures bridge for Blueprint Assist integration. Exposes IMonolithGraphFormatter; enables BA-powered auto_layout across blueprint, material, animation, and niagara modules when Blueprint Assist is present (0 MCP actions — integration only)
 ```
 
 ### Discovery/Dispatch Pattern
 
-All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone. Conditional modules gate registration on compile-time defines: MonolithGAS (`#if WITH_GBA`), MonolithComboGraph (`#if WITH_COMBOGRAPH`), MonolithLogicDriver (`#if WITH_LOGICDRIVER`), MonolithAI (`#if WITH_STATETREE` + `#if WITH_SMARTOBJECTS` required; `#if WITH_MASSENTITY` + `#if WITH_ZONEGRAPH` optional).
+All domain modules register actions with `FMonolithToolRegistry` (central singleton). Each domain exposes a single `{namespace}_query(action, params)` MCP tool. The 4 core tools (`monolith_discover`, `monolith_status`, `monolith_reindex`, `monolith_update`) are standalone. Conditional modules gate registration on compile-time defines: MonolithGAS (`#if WITH_GBA`), MonolithComboGraph (`#if WITH_COMBOGRAPH`), MonolithLogicDriver (`#if WITH_LOGICDRIVER`), MonolithAI (`#if WITH_STATETREE` + `#if WITH_SMARTOBJECTS` required; `#if WITH_MASSENTITY` + `#if WITH_ZONEGRAPH` optional), MonolithAudio (MetaSound actions conditional on `#if WITH_METASOUND`).
 
 ### MCP Protocol
 
@@ -70,7 +71,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 | Module | Loading Phase | Type |
 |--------|--------------|------|
 | MonolithCore | PostEngineInit | Editor |
-| All others (14) | Default | Editor |
+| All others (15) | Default | Editor |
 | MonolithBABridge | Default | Editor (optional) |
 
 ### Plugin Dependencies
@@ -223,7 +224,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 
 | Class | Responsibility |
 |-------|---------------|
-| `FMonolithMaterialModule` | Registers 57 material actions |
+| `FMonolithMaterialModule` | Registers 63 material actions |
 | `FMonolithMaterialActions` | Static handlers + helpers for loading materials and serializing expressions |
 
 #### Actions (57 — namespace: "material")
@@ -424,7 +425,7 @@ All domain modules register actions with `FMonolithToolRegistry` (central single
 
 | Class | Responsibility |
 |-------|---------------|
-| `FMonolithNiagaraModule` | Registers 96 Niagara actions |
+| `FMonolithNiagaraModule` | Registers 108 Niagara actions |
 | `FMonolithNiagaraActions` | Static handlers + extensive private helpers |
 | `MonolithNiagaraHelpers` | 6 reimplemented NiagaraEditor functions (non-exported APIs) |
 
@@ -608,7 +609,7 @@ All marked with "UE 5.7 FIX" comments:
 
 | Class | Responsibility |
 |-------|---------------|
-| `FMonolithEditorModule` | Creates FMonolithLogCapture, attaches to GLog, registers 19 actions |
+| `FMonolithEditorModule` | Creates FMonolithLogCapture, attaches to GLog, registers 20 actions |
 | `FMonolithLogCapture` | FOutputDevice subclass. Ring buffer (10,000 entries max). Thread-safe. Tracks counts by verbosity |
 | `FMonolithEditorActions` | Static handlers for build and log operations. Hooks into `ILiveCodingModule::GetOnPatchCompleteDelegate()` to capture compile results and timestamps |
 | `FMonolithSettingsCustomization` | IDetailCustomization for UMonolithSettings. Adds re-index buttons for project and source databases in Project Settings UI |
@@ -1364,6 +1365,49 @@ MonolithAI provides comprehensive MCP coverage of Unreal Engine's AI framework. 
 
 ---
 
+### 3.17 MonolithAudio
+
+**Dependencies:** Core, CoreUObject, Engine, MonolithCore, AudioMixer, AudioEditor, AssetTools, Json, JsonUtilities, Slate, SlateCore, UnrealEd
+**Namespace:** `audio` | **Tool:** `audio_query(action, params)` | **Actions:** 81
+**Conditional:** MetaSound features wrapped in `#if WITH_METASOUND`. When MetaSound is absent, MetaSound graph actions return `METASOUND_NOT_AVAILABLE` but all other actions (Sound Cue, CRUD, batch, query) function normally. Build.cs auto-detects MetaSound at `Engine/Plugins/Runtime/Metasound`.
+**Settings toggle:** `bEnableAudio` (default: True)
+
+MonolithAudio provides MCP coverage of audio asset creation, inspection, batch management, Sound Cue graph building, and MetaSound graph building. It covers the 5 configurable audio asset types (SoundAttenuation, SoundClass, SoundMix, SoundConcurrency, SoundSubmix), read-only SoundWave inspection, Sound Cue node graph construction, and MetaSound Builder API integration.
+
+**No overlap with Resonance** — Resonance owns runtime footstep/surface/movement audio playback. MonolithAudio owns editor-time asset creation, management, and inspection.
+
+#### Action Categories
+
+| Category | Actions | Description |
+|----------|---------|-------------|
+| Asset CRUD | 15 | Create/get/set triads for SoundAttenuation, SoundClass, SoundMix, SoundConcurrency, SoundSubmix |
+| Query & Search | 10 | List/search audio assets, hierarchy inspection, reference queries, stats, audio health checks (missing class, no attenuation, unused) |
+| Batch Operations | 10 | Batch assign sound class/attenuation/submix/concurrency/compression/looping/virtualization, batch rename, batch set properties, apply audio template |
+| Sound Cue Graph | 21 | Sound Cue CRUD, node add/remove/connect, graph read, node property editing, `build_sound_cue_from_spec` (power action), 5 template cues (random, layered, looping, crossfade, switch), validate, preview, delete |
+| MetaSound Graph | 25 | MetaSound Source/Patch creation, node add/remove/connect/disconnect, graph inputs/outputs, interface management, graph read, node discovery, `build_metasound_from_spec` (power action), 4 template MetaSounds (oneshot, ambient, synth, interactive), preset, variables, layout |
+
+#### Key Actions
+
+> **`build_sound_cue_from_spec` (power action).** Creates a complete Sound Cue graph from a JSON specification in a single call. The spec defines nodes (with type and properties), connections (from/to with child_index), and the first node. Handles node creation via `ConstructSoundNode`, property setting via reflection, connection wiring via `ChildNodes[]`, `LinkGraphNodesFromSoundNodes()`, and `CacheAggregateValues()`.
+>
+> **`build_metasound_from_spec` (power action).** Creates a complete MetaSound from a JSON specification in a single call. The spec defines type (Source/Patch), format, interfaces, graph inputs/outputs, nodes, connections, and interface wiring. Uses `UMetaSoundBuilderSubsystem::CreateSourceBuilder()`, `AddNodeByClassName()`, `ConnectNodes()`, and `BuildToAsset()`.
+>
+> **`apply_audio_template`.** Applies a combined settings template (sound class, attenuation, compression, submix, concurrency, looping, virtualization) to multiple assets in one call. The most efficient way to standardize audio pipeline configuration.
+>
+> **Template cues and MetaSounds.** Pre-built audio patterns: `create_random_sound_cue` (randomized selection with weights), `create_layered_sound_cue` (simultaneous playback), `create_looping_ambient_cue`, `create_distance_crossfade_cue`, `create_switch_sound_cue`, `create_oneshot_sfx`, `create_looping_ambient_metasound`, `create_synthesized_tone`, `create_interactive_metasound`.
+
+#### Notes
+
+> **Sound Cue connection semantics.** `from` is the child (data source), `to` is the parent (consumer). This matches the `ChildNodes[]` model where the parent holds references to its inputs.
+>
+> **MetaSound Builder lifecycle.** For multi-step operations, the builder is cached via `FindOrBeginBuilding()`. If the editor restarts, the builder is lost and individual mutation actions return `METASOUND_BUILDER_LOST`. The recommended workflow is `build_metasound_from_spec` for full graph creation in one call.
+>
+> **SoundWave is read-only.** MonolithAudio does not create SoundWaves (they are imported assets). `get_sound_wave_info` reads properties; `batch_set_sound_wave_properties` can modify UPROPERTY fields via reflection.
+>
+> **Future phases (not yet implemented).** Phase 3-6 planned (~69 additional actions): Audio Scene & Environment (~18), Audio Modulation & Quartz (~18), Analysis & Automation (~20), Middleware Bridges (~13). See `Docs/specs/2026-04-08-monolith-audio-phase3-6-design.md`.
+
+---
+
 ## 4. Source Indexer
 
 ### 4.1 C++ Indexer (current)
@@ -1481,11 +1525,12 @@ python Saved/monolith_offline.py <namespace> <action> [args...]
 
 ---
 
-## 6. Skills (10 bundled)
+## 6. Skills (11 bundled)
 
 | Skill | Trigger Words | Entry Point | Actions |
 |-------|--------------|-------------|---------|
 | unreal-animation | animation, montage, ABP, blend space, notify, curves, compression, PoseSearch | `animation_query()` | 115 |
+| unreal-audio | audio, sound, SoundCue, MetaSound, attenuation, submix, mixing | `audio_query()` | 81 |
 | unreal-blueprints | Blueprint, BP, event graph, node, variable | `blueprint_query()` | 86 |
 | unreal-build | build, compile, Live Coding, hot reload, rebuild | `editor_query()` | 19 |
 | unreal-cpp | C++, header, include, UCLASS, Build.cs, linker error | `source_query()` + `config_query()` | 11+6 |
@@ -1667,12 +1712,12 @@ See `TODO.md` for the full list. Key architectural constraints:
 | Module | Namespace | Actions |
 |--------|-----------|---------|
 | MonolithCore | monolith | 4 |
-| MonolithBlueprint | blueprint | 88 |
-| MonolithMaterial | material | 57 |
+| MonolithBlueprint | blueprint | 89 |
+| MonolithMaterial | material | 63 |
 | MonolithAnimation | animation | 115 |
-| MonolithNiagara | niagara | 96 |
+| MonolithNiagara | niagara | 108 |
 | MonolithMesh | mesh | 242 (197 core + 45 experimental town gen) |
-| MonolithEditor | editor | 19 |
+| MonolithEditor | editor | 20 |
 | MonolithConfig | config | 6 |
 | MonolithIndex | project | 7 |
 | MonolithSource | source | 11 |
@@ -1681,7 +1726,8 @@ See `TODO.md` for the full list. Key architectural constraints:
 | MonolithComboGraph | combograph | 13 |
 | MonolithAI | ai | 229 |
 | MonolithLogicDriver | logicdriver | 66 |
+| MonolithAudio | audio | 81 |
 | MonolithBABridge | — | 0 (integration only) |
-| **Total** | | **1125** (1080 active by default) |
+| **Total** | | **1226** (1181 active by default) |
 
-**Note:** MonolithMesh includes 197 core actions (always registered) plus 45 experimental Procedural Town Generator actions (registered only when `bEnableProceduralTownGen = true`, default: false — known geometry issues). MonolithGAS is conditional on `#if WITH_GBA` — projects without GameplayAbilities register 0 GAS actions. MonolithComboGraph is conditional on `#if WITH_COMBOGRAPH` — projects without the ComboGraph plugin register 0 combograph actions. MonolithAI is conditional on `#if WITH_STATETREE` + `#if WITH_SMARTOBJECTS` — projects without these register 0 AI actions. MonolithLogicDriver is conditional on `#if WITH_LOGICDRIVER` — projects without Logic Driver Pro register 0 logicdriver actions. MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 18 MCP tools with namespaced actions.
+**Note:** MonolithMesh includes 197 core actions (always registered) plus 45 experimental Procedural Town Generator actions (registered only when `bEnableProceduralTownGen = true`, default: false — known geometry issues). MonolithGAS is conditional on `#if WITH_GBA` — projects without GameplayAbilities register 0 GAS actions. MonolithComboGraph is conditional on `#if WITH_COMBOGRAPH` — projects without the ComboGraph plugin register 0 combograph actions. MonolithAI is conditional on `#if WITH_STATETREE` + `#if WITH_SMARTOBJECTS` — projects without these register 0 AI actions. MonolithLogicDriver is conditional on `#if WITH_LOGICDRIVER` — projects without Logic Driver Pro register 0 logicdriver actions. MonolithAudio MetaSound actions are conditional on `#if WITH_METASOUND` — projects without MetaSound get Sound Cue + CRUD + batch actions but no MetaSound graph building. MonolithBABridge registers no MCP actions — it only provides the `IMonolithGraphFormatter` IModularFeatures bridge consumed by `auto_layout` in the blueprint, material, animation, and niagara modules. The original Python server had higher tool counts (~231 tools) due to fragmented action design — Monolith consolidates these into 19 MCP tools with namespaced actions.

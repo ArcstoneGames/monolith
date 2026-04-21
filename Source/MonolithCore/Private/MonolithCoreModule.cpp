@@ -14,6 +14,9 @@ void FMonolithCoreModule::StartupModule()
 {
 	UE_LOG(LogMonolith, Log, TEXT("Monolith %s — Core module initializing"), MONOLITH_VERSION);
 
+	// Self-heal future-dated mtimes from cross-TZ ZIP extraction.
+	NormalizeFutureMtimesIfNeeded();
+
 	// Register core discovery/status tools
 	RegisterCoreTools();
 
@@ -94,6 +97,45 @@ void FMonolithCoreModule::RemoveSentinelFile()
 		IFileManager::Get().Delete(*Path);
 		UE_LOG(LogMonolith, Log, TEXT("Sentinel file removed: %s"), *Path);
 	}
+}
+
+void FMonolithCoreModule::NormalizeFutureMtimesIfNeeded()
+{
+	TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("Monolith"));
+	if (!Plugin.IsValid())
+	{
+		return;
+	}
+
+	const FString PluginDir = Plugin->GetBaseDir();
+	const FString UpluginPath = PluginDir / TEXT("Monolith.uplugin");
+
+	const FDateTime UpluginMtime = IFileManager::Get().GetTimeStamp(*UpluginPath);
+	if (UpluginMtime == FDateTime::MinValue())
+	{
+		return;
+	}
+
+	const FDateTime NowUtc = FDateTime::UtcNow();
+	if (UpluginMtime <= NowUtc)
+	{
+		return;
+	}
+
+	UE_LOG(LogMonolith, Warning, TEXT("Monolith.uplugin mtime %s is in the future (now %s) — normalizing plugin file timestamps"),
+		*UpluginMtime.ToIso8601(), *NowUtc.ToIso8601());
+
+	TArray<FString> AllFiles;
+	IFileManager::Get().FindFilesRecursive(AllFiles, *PluginDir, TEXT("*"), true, false);
+
+	int32 Touched = 0;
+	int32 Failed = 0;
+	for (const FString& File : AllFiles)
+	{
+		if (IFileManager::Get().SetTimeStamp(*File, NowUtc)) { ++Touched; } else { ++Failed; }
+	}
+
+	UE_LOG(LogMonolith, Log, TEXT("Normalized %d file(s), %d failed"), Touched, Failed);
 }
 
 #undef LOCTEXT_NAMESPACE

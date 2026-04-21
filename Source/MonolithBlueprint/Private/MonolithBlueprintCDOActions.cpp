@@ -8,6 +8,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
+#include "JsonObjectConverter.h"
 
 // --- Registration ---
 
@@ -338,30 +339,52 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleSetCDOProperty(const T
 	FString OldValue;
 	Prop->ExportText_Direct(OldValue, ValuePtr, ValuePtr, TargetObject, PPF_None);
 
-	// --- Convert JSON value to ImportText string ---
-	FString ValStr;
+	// --- Set the value (JSON-aware for structs/arrays/maps, ImportText for scalars) ---
 	const TSharedPtr<FJsonValue>& JsonVal = Params->TryGetField(TEXT("value"));
-	if (JsonVal->Type == EJson::Number)
+
+	if (JsonVal->Type == EJson::Object || JsonVal->Type == EJson::Array)
 	{
-		ValStr = FString::SanitizeFloat(JsonVal->AsNumber());
-	}
-	else if (JsonVal->Type == EJson::Boolean)
-	{
-		ValStr = JsonVal->AsBool() ? TEXT("true") : TEXT("false");
+		// Use FJsonObjectConverter for complex types (structs, TMaps, TArrays)
+		if (!FJsonObjectConverter::JsonValueToUProperty(JsonVal, Prop, ValuePtr, 0, 0))
+		{
+			// Serialize the JSON value for error reporting (truncated)
+			FString JsonStr;
+			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonStr);
+			FJsonSerializer::Serialize(JsonVal.ToSharedRef(), TEXT("value"), Writer);
+			Writer->Close();
+			if (JsonStr.Len() > 500) { JsonStr = JsonStr.Left(500) + TEXT("..."); }
+
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Failed to set property '%s' from JSON — FJsonObjectConverter rejected the format. "
+					 "Ensure the JSON structure matches the UProperty layout. Preview: %s"),
+				*PropertyName, *JsonStr));
+		}
 	}
 	else
 	{
-		ValStr = JsonVal->AsString();
-	}
+		// Scalar types: use ImportText
+		FString ValStr;
+		if (JsonVal->Type == EJson::Number)
+		{
+			ValStr = FString::SanitizeFloat(JsonVal->AsNumber());
+		}
+		else if (JsonVal->Type == EJson::Boolean)
+		{
+			ValStr = JsonVal->AsBool() ? TEXT("true") : TEXT("false");
+		}
+		else
+		{
+			ValStr = JsonVal->AsString();
+		}
 
-	// --- Import the value ---
-	const TCHAR* ImportResult = Prop->ImportText_Direct(*ValStr, ValuePtr, TargetObject, PPF_None);
-	if (!ImportResult)
-	{
-		return FMonolithActionResult::Error(FString::Printf(
-			TEXT("Failed to set property '%s' to value '%s' — ImportText rejected the format. "
-				 "For structs use ImportText syntax e.g. \"(X=1.0,Y=2.0,Z=3.0)\", for enums use the display name."),
-			*PropertyName, *ValStr));
+		const TCHAR* ImportResult = Prop->ImportText_Direct(*ValStr, ValuePtr, TargetObject, PPF_None);
+		if (!ImportResult)
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Failed to set property '%s' to value '%s' — ImportText rejected the format. "
+					 "For structs use ImportText syntax e.g. \"(X=1.0,Y=2.0,Z=3.0)\", for enums use the display name."),
+				*PropertyName, *ValStr));
+		}
 	}
 
 	// --- Read back new value for confirmation ---

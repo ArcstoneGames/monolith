@@ -1,6 +1,37 @@
 # Monolith — TODO
 
-Last updated: 2026-04-01
+Last updated: 2026-04-08
+
+---
+
+### MonolithAudio Module — 81 Actions, Phases 0-2 COMPLETE (2026-04-08)
+
+- [x] Phase 0 — Core CRUD & Batch (35 actions): Asset CRUD (15) for SoundAttenuation, SoundClass, SoundMix, SoundConcurrency, SoundSubmix. Query & Search (10) with hierarchy inspection, reference queries, audio health checks. Batch Operations (10) with template application.
+- [x] Phase 1 — Sound Cue Graph System (21 actions): Sound Cue CRUD, node management, `build_sound_cue_from_spec` (power action), 5 template cues (random, layered, looping, crossfade, switch), validation, preview, delete.
+- [x] Phase 2 — MetaSound Graph System (25 actions): MetaSound Source/Patch creation, Builder API integration, node management, `build_metasound_from_spec` (power action), 4 template MetaSounds (oneshot, ambient, synth, interactive), preset, variables.
+- [x] Conditional compilation — MetaSound features wrapped in `#if WITH_METASOUND`. Build.cs auto-detects at `Engine/Plugins/Runtime/Metasound`. Sound Cue + CRUD + batch actions always available.
+- [x] Settings toggle — `bEnableAudio` in UMonolithSettings (default: true).
+- [x] Skill file — `unreal-audio` skill created in `Plugins/Monolith/Skills/`.
+
+#### MonolithAudio — Testing Pending
+
+- [ ] **Functional testing** — All 81 actions need test pass. Sound Cue graph building, MetaSound Builder API, batch operations, query/search.
+- [ ] **MetaSound conditional testing** — Verify clean compile and graceful degradation with WITH_METASOUND=0.
+- [ ] **Template cue testing** — Verify all 5 Sound Cue templates produce valid, playable cues.
+- [ ] **Template MetaSound testing** — Verify all 4 MetaSound templates produce valid, playable sources.
+
+#### MonolithAudio — Future Work (Phase 3-6, ~69 actions)
+
+- [ ] **Phase 3 — Audio Scene & Environment (~18 actions)** — AudioVolume management, submix effect chain CRUD, ambient sound spawning/configuration, audio component inspection, stereo-spatialized detection, audio coverage analysis. Deps: Synthesis module.
+- [ ] **Phase 4 — Audio Modulation & Quartz (~18 actions)** — Control bus/mix/generator CRUD, modulation destinations, Quartz clock management. Conditional on `#if WITH_AUDIOMODULATION`. Quartz actions are PIE-only.
+- [ ] **Phase 5 — Analysis & Automation (~20 actions)** — Loudness analysis (LUFS from Asset Registry), silence/clipping detection, memory analysis, batch loudness audit, audio system scaffolding, compression suggestions, audio report generation, manifest export/import. Deps: WaveformTransformations module.
+- [ ] **Phase 6 — Middleware Bridges (~13 actions)** — Audio middleware detection (Wwise/FMOD/Steam Audio), native audio plugin config inspection, AudioLink factory enumeration. Wwise bridge (5 actions, `#if WITH_WWISE`), FMOD bridge (5 actions, `#if WITH_FMOD`). Reflection-first approach for version-agnostic integration.
+
+---
+
+### MonolithBlueprint — create_data_asset (2026-04-04)
+
+- [x] `create_data_asset` — Create raw UObject instances (DataAssets, MPCs, PhysicalMaterials, CurveFloats, etc.) without Blueprint wrapper. Resolves class by name with U/A prefix fallback. Guards against abstract, deprecated, Actor-derived, and Blueprint classes. 9/9 tests PASS.
 
 ---
 

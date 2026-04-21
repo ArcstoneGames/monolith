@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "0.12.1",
+	"VersionName": "0.14.0",
 	"FriendlyName": "Monolith",
-	"Description": "Unified Unreal Engine MCP server — 1125 actions across 15 domains (Blueprint 88, Material 57, Animation 115, Niagara 96, Mesh 242, Editor 19, Config 6, Source 11, Project 7, UI 42, GAS 130, ComboGraph 13, AI 229, LogicDriver 66, Core 4). AI-powered asset creation, inspection, and modification.",
+	"Description": "Unified Unreal Engine MCP server — 1226 actions across 16 domains (Blueprint 89, Material 63, Animation 115, Niagara 108, Mesh 242, Editor 20, Config 6, Source 11, Project 7, UI 42, GAS 130, ComboGraph 13, AI 229, LogicDriver 66, Audio 81, Core 4). AI-powered asset creation, inspection, and modification.",
 	"Category": "Editor",
 	"CreatedBy": "tumourlove",
 	"CreatedByURL": "https://github.com/tumourlove/monolith",
@@ -105,6 +105,11 @@
 			"Name": "ZoneGraph",
 			"Enabled": true,
 			"Optional": true
+		},
+		{
+			"Name": "Metasound",
+			"Enabled": true,
+			"Optional": true
 		}
 	],
 	"Modules": [
@@ -185,6 +190,11 @@
 		},
 		{
 			"Name": "MonolithLogicDriver",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "MonolithAudio",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
 		},
