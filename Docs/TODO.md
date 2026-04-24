@@ -1,6 +1,27 @@
 # Monolith — TODO
 
-Last updated: 2026-04-19 (v0.14.0)
+Last updated: 2026-04-24 (v0.14.3)
+
+---
+
+### v0.14.3 Changes (2026-04-24)
+
+#### MonolithCore — HTTP Bind Retry + Restart
+
+- [x] `FMonolithHttpServer::Start()` — HTTP bind retry with TCP port probe (5 attempts, exponential backoff). Prevents startup failures when the port is briefly held by a prior editor session.
+- [x] `FMonolithHttpServer::Restart()` — New method for runtime recovery without editor restart.
+- [x] `Monolith.Restart` console command — Wired to Restart() for manual recovery.
+- [x] Added Sockets + Networking module dependencies to MonolithCore.
+
+#### MonolithAnimation — 4 New Node Types + add_variable_get (115 → 116 actions)
+
+- [x] `add_anim_graph_node` — 4 new node types: TwoBoneIK, ModifyBone, LocalToComponentSpace, ComponentToLocalSpace.
+- [x] `add_variable_get` — New action (K2Node_VariableGet) for placing variable getter nodes in anim graphs.
+
+#### MonolithBlueprint — EditCradle + Issue #29 Fix
+
+- [x] **MonolithBlueprintEditCradle** — Recursive property-edit cradle for nested struct/array properties. Wired into `set_cdo_property`, `create_data_asset`, `create_blueprint`. Fixes cross-package TObjectPtr serialization (nested structs/arrays with TObjectPtr references to other packages were silently dropped by FLinkerSave's harvest walk on save).
+- [x] **Issue [#29](https://github.com/tumourlove/monolith/issues/29) — FIXED.** Root cause: nested struct/array CDO property edits with cross-package TObjectPtr references (e.g., IMC DefaultKeyMappings referencing InputAction assets) were silently dropped on save. EditCradle fires PreEditChange/PostEditChange at the correct property depth so FOverridableManager tracks the edit and FLinkerSave harvests all referenced objects. Credit: @danielandric for thorough repro.
 
 ---
 
