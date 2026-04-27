@@ -296,12 +296,18 @@ namespace MonolithUI
             }
         }
 
-        for (auto It = WBP->WidgetVariableNameToGuidMap.CreateIterator(); It; ++It)
+        TArray<FName> RemovedVariableNames;
+        for (const TPair<FName, FGuid>& VariableGuid : WBP->WidgetVariableNameToGuidMap)
         {
-            if (!LiveVariableNames.Contains(It.Key()))
+            if (!LiveVariableNames.Contains(VariableGuid.Key))
             {
-                It.RemoveCurrent();
+                RemovedVariableNames.Add(VariableGuid.Key);
             }
+        }
+
+        for (const FName& RemovedVariableName : RemovedVariableNames)
+        {
+            WBP->OnVariableRemoved(RemovedVariableName);
         }
     }
 

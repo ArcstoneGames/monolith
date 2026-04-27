@@ -424,6 +424,44 @@ namespace MonolithCommonUIButton
 				*TargetClass->GetName()));
 		}
 
+		TArray<UWidget*> OldButtonChildren;
+		for (int32 ChildIndex = 0; ChildIndex < OldBtn->GetChildrenCount(); ++ChildIndex)
+		{
+			if (UWidget* ChildWidget = OldBtn->GetChildAt(ChildIndex))
+			{
+				OldButtonChildren.AddUnique(ChildWidget);
+				TArray<UWidget*> Descendants;
+				UWidgetTree::GetChildWidgets(ChildWidget, Descendants);
+				for (UWidget* Descendant : Descendants)
+				{
+					OldButtonChildren.AddUnique(Descendant);
+				}
+			}
+		}
+
+		OldBtn->Modify();
+		OldBtn->ClearChildren();
+		for (UWidget* ChildWidget : OldButtonChildren)
+		{
+			if (!ChildWidget)
+			{
+				continue;
+			}
+
+			const FName ChildWidgetName = ChildWidget->GetFName();
+			for (int32 BindingIndex = Wbp->Bindings.Num() - 1; BindingIndex >= 0; --BindingIndex)
+			{
+				if (Wbp->Bindings[BindingIndex].ObjectName == ChildWidgetName.ToString())
+				{
+					Wbp->Bindings.RemoveAt(BindingIndex);
+				}
+			}
+
+			ChildWidget->Modify();
+			ChildWidget->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_DoNotDirty);
+			Wbp->OnVariableRemoved(ChildWidgetName);
+		}
+
 		Parent->RemoveChild(OldBtn);
 		OldBtn->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_DoNotDirty);
 		NewBtn->Rename(*BtnName.ToString(), Wbp->WidgetTree, REN_DontCreateRedirectors | REN_DoNotDirty);
@@ -436,8 +474,8 @@ namespace MonolithCommonUIButton
 		// ReconcileWidgetVariableGuids prunes removed child names without invoking the broader
 		// editor delete path, which would also strip graph references to the replaced button.
 
-		MonolithUI::ReconcileWidgetVariableGuids(Wbp);
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Wbp);
+		MonolithUI::ReconcileWidgetVariableGuids(Wbp);
 		FKismetEditorUtilities::CompileBlueprint(Wbp);
 		Wbp->GetOutermost()->MarkPackageDirty();
 
