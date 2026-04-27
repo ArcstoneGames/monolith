@@ -19,8 +19,8 @@ public:
 
 	/**
 	 * List all Level Sequences that have a Director Blueprint, with the
-	 * director's name and total function/variable counts. Optional path_filter
-	 * is a glob (* and ?) matched against ls_path.
+	 * director's name and total function/variable counts. Optional
+	 * asset_path_filter is a glob (* and ?) matched against ls_path.
 	 */
 	static FMonolithActionResult ListDirectors(const TSharedPtr<FJsonObject>& Params);
 

@@ -22,10 +22,10 @@ void FMonolithLevelSequenceActions::RegisterActions(FMonolithToolRegistry& Regis
 		FParamSchemaBuilder().Build());
 
 	Registry.RegisterAction(TEXT("level_sequence"), TEXT("list_directors"),
-		TEXT("List all Level Sequences that have a Director Blueprint, with director name and function/variable counts. Optional path_filter is a glob pattern (* and ?) matched against ls_path."),
+		TEXT("List all Level Sequences that have a Director Blueprint, with director name and function/variable counts. Optional asset_path_filter is a glob pattern (* and ?) matched against ls_path."),
 		FMonolithActionHandler::CreateStatic(&FMonolithLevelSequenceActions::ListDirectors),
 		FParamSchemaBuilder()
-			.Optional(TEXT("path_filter"), TEXT("string"), TEXT("Glob pattern to filter ls_path (e.g., \"/MyModule/*\")"))
+			.Optional(TEXT("asset_path_filter"), TEXT("string"), TEXT("Glob pattern to filter ls_path (e.g., \"/MyModule/*\")"))
 			.Build());
 
 	Registry.RegisterAction(TEXT("level_sequence"), TEXT("get_director_info"),
@@ -92,7 +92,7 @@ FMonolithActionResult FMonolithLevelSequenceActions::ListDirectors(const TShared
 
 	// Optional glob filter; convert * -> %, ? -> _ for SQL LIKE.
 	FString PathFilter;
-	Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+	Params->TryGetStringField(TEXT("asset_path_filter"), PathFilter);
 
 	FString SQL = TEXT("SELECT ls_path, director_bp_name, function_count, variable_count "
 	                   "FROM level_sequence_directors");

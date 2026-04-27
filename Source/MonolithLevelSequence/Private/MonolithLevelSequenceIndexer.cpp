@@ -18,6 +18,7 @@
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_CustomEvent.h"
 #include "SQLiteDatabase.h"
+#include "SQLitePreparedStatement.h"
 #include "AssetRegistry/AssetData.h"
 #include "UObject/UnrealType.h"
 #include "Dom/JsonObject.h"
@@ -31,11 +32,6 @@
 
 namespace
 {
-	FString EscapeSql(const FString& In)
-	{
-		return In.Replace(TEXT("'"), TEXT("''"));
-	}
-
 	/** Format a pin's data type as a human-readable string via the K2 schema. */
 	FString PinTypeToString(const FEdGraphPinType& PinType)
 	{
@@ -46,6 +42,49 @@ namespace
 	FString VarTypeToString(const FEdGraphPinType& PinType)
 	{
 		return PinTypeToString(PinType);
+	}
+
+	/**
+	 * Bind a string to a prepared-statement parameter, mapping empty strings to
+	 * SQL NULL. The single-argument SetBindingValueByIndex(int32) overload binds
+	 * NULL — see SQLitePreparedStatement.h:197-198.
+	 */
+	void BindNullableString(FSQLitePreparedStatement& Stmt, int32 Index, const FString& Value)
+	{
+		if (Value.IsEmpty())
+		{
+			Stmt.SetBindingValueByIndex(Index);
+		}
+		else
+		{
+			Stmt.SetBindingValueByIndex(Index, Value);
+		}
+	}
+
+	/** Bind a positive int64 as the column value, or NULL when value <= 0. */
+	void BindOptionalRowId(FSQLitePreparedStatement& Stmt, int32 Index, int64 RowId)
+	{
+		if (RowId > 0)
+		{
+			Stmt.SetBindingValueByIndex(Index, RowId);
+		}
+		else
+		{
+			Stmt.SetBindingValueByIndex(Index);
+		}
+	}
+
+	/** Run a DELETE/UPDATE prepared statement that takes a single int64 parameter. */
+	void ExecWithInt64(FSQLiteDatabase* RawDB, const TCHAR* Sql, int64 Param1)
+	{
+		if (!RawDB) return;
+		FSQLitePreparedStatement Stmt;
+		if (Stmt.Create(*RawDB, Sql))
+		{
+			Stmt.SetBindingValueByIndex(1, Param1);
+			Stmt.Execute();
+		}
+		Stmt.Destroy();
 	}
 
 	/**
@@ -173,7 +212,7 @@ namespace
 		return FString();
 	}
 
-	/** Insert one row into level_sequence_event_bindings. */
+	/** Insert one row into level_sequence_event_bindings via a prepared statement. */
 	void InsertEventBindingRow(
 		FSQLiteDatabase* RawDB,
 		int64 LsAssetId,
@@ -185,27 +224,30 @@ namespace
 		const FString& FiresFunctionName,
 		int64 FiresFunctionId)
 	{
-		// SQL NULL for empty optional text fields (binding_guid for master tracks, etc.).
-		auto SqlText = [](const FString& V) -> FString
-		{
-			return V.IsEmpty() ? TEXT("NULL") : FString::Printf(TEXT("'%s'"), *V.Replace(TEXT("'"), TEXT("''")));
-		};
-		const FString FuncIdSql = (FiresFunctionId > 0) ? FString::Printf(TEXT("%lld"), FiresFunctionId) : TEXT("NULL");
+		if (!RawDB) return;
 
-		// section_kind is NOT NULL in schema — emit as literal string, never NULL.
-		const FString SQL = FString::Printf(
-			TEXT("INSERT INTO level_sequence_event_bindings "
-				 "(ls_asset_id, binding_guid, binding_name, binding_kind, bound_class, section_kind, fires_function_name, fires_function_id) "
-				 "VALUES (%lld, %s, %s, %s, %s, '%s', %s, %s)"),
-			LsAssetId,
-			*SqlText(BindingGuidStr),
-			*SqlText(BindingName),
-			*SqlText(BindingKind),
-			*SqlText(BoundClass),
-			*SectionKind.Replace(TEXT("'"), TEXT("''")),
-			*SqlText(FiresFunctionName),
-			*FuncIdSql);
-		RawDB->Execute(*SQL);
+		FSQLitePreparedStatement Stmt;
+		if (!Stmt.Create(*RawDB, TEXT(
+			"INSERT INTO level_sequence_event_bindings "
+			"(ls_asset_id, binding_guid, binding_name, binding_kind, bound_class, "
+			" section_kind, fires_function_name, fires_function_id) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?)")))
+		{
+			return;
+		}
+
+		Stmt.SetBindingValueByIndex(1, LsAssetId);
+		BindNullableString(Stmt, 2, BindingGuidStr);
+		BindNullableString(Stmt, 3, BindingName);
+		BindNullableString(Stmt, 4, BindingKind);
+		BindNullableString(Stmt, 5, BoundClass);
+		// section_kind is NOT NULL — caller always provides it ('trigger' / 'repeater').
+		Stmt.SetBindingValueByIndex(6, SectionKind);
+		BindNullableString(Stmt, 7, FiresFunctionName);
+		BindOptionalRowId(Stmt, 8, FiresFunctionId);
+
+		Stmt.Execute();
+		Stmt.Destroy();
 	}
 
 	/**
@@ -407,10 +449,10 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 	// Wipe event_bindings under BOTH the current asset id and the old one.
 	// Without the OldAssetId pass, prior-reindex rows would orphan and never
 	// be cleaned because their ls_asset_id no longer matches anything we know.
-	RawDB->Execute(*FString::Printf(TEXT("DELETE FROM level_sequence_event_bindings WHERE ls_asset_id = %lld"), AssetId));
+	ExecWithInt64(RawDB, TEXT("DELETE FROM level_sequence_event_bindings WHERE ls_asset_id = ?"), AssetId);
 	if (OldAssetId > 0 && OldAssetId != AssetId)
 	{
-		RawDB->Execute(*FString::Printf(TEXT("DELETE FROM level_sequence_event_bindings WHERE ls_asset_id = %lld"), OldAssetId));
+		ExecWithInt64(RawDB, TEXT("DELETE FROM level_sequence_event_bindings WHERE ls_asset_id = ?"), OldAssetId);
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -420,9 +462,9 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 		// No Director — also wipe any leftover director/function/variable rows.
 		if (OldDirId > 0)
 		{
-			RawDB->Execute(*FString::Printf(TEXT("DELETE FROM level_sequence_director_functions WHERE director_id = %lld"), OldDirId));
-			RawDB->Execute(*FString::Printf(TEXT("DELETE FROM level_sequence_director_variables WHERE director_id = %lld"), OldDirId));
-			RawDB->Execute(*FString::Printf(TEXT("DELETE FROM level_sequence_directors WHERE id = %lld"), OldDirId));
+			ExecWithInt64(RawDB, TEXT("DELETE FROM level_sequence_director_functions WHERE director_id = ?"), OldDirId);
+			ExecWithInt64(RawDB, TEXT("DELETE FROM level_sequence_director_variables WHERE director_id = ?"), OldDirId);
+			ExecWithInt64(RawDB, TEXT("DELETE FROM level_sequence_directors WHERE id = ?"), OldDirId);
 		}
 		return true;
 	}
@@ -509,41 +551,55 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 	// Clean prior director's children + director row (event_bindings already cleaned above).
 	if (OldDirId > 0)
 	{
-		RawDB->Execute(*FString::Printf(TEXT("DELETE FROM level_sequence_director_functions WHERE director_id = %lld"), OldDirId));
-		RawDB->Execute(*FString::Printf(TEXT("DELETE FROM level_sequence_director_variables WHERE director_id = %lld"), OldDirId));
-		RawDB->Execute(*FString::Printf(TEXT("DELETE FROM level_sequence_directors WHERE id = %lld"), OldDirId));
+		ExecWithInt64(RawDB, TEXT("DELETE FROM level_sequence_director_functions WHERE director_id = ?"), OldDirId);
+		ExecWithInt64(RawDB, TEXT("DELETE FROM level_sequence_director_variables WHERE director_id = ?"), OldDirId);
+		ExecWithInt64(RawDB, TEXT("DELETE FROM level_sequence_directors WHERE id = ?"), OldDirId);
 	}
 
 	// Insert fresh director row.
-	const FString InsertDirSQL = FString::Printf(
-		TEXT("INSERT INTO level_sequence_directors "
-			 "(ls_asset_id, ls_path, director_bp_name, function_count, variable_count) "
-			 "VALUES (%lld, '%s', '%s', %d, %d)"),
-		AssetId,
-		*EscapeSql(LsPath),
-		*EscapeSql(DirName),
-		TotalFuncCount,
-		VarCount);
-
-	if (!RawDB->Execute(*InsertDirSQL))
+	int64 DirectorId = -1;
 	{
-		return false;
+		FSQLitePreparedStatement Stmt;
+		if (!Stmt.Create(*RawDB, TEXT(
+			"INSERT INTO level_sequence_directors "
+			"(ls_asset_id, ls_path, director_bp_name, function_count, variable_count) "
+			"VALUES (?, ?, ?, ?, ?)")))
+		{
+			return false;
+		}
+		Stmt.SetBindingValueByIndex(1, AssetId);
+		Stmt.SetBindingValueByIndex(2, LsPath);
+		Stmt.SetBindingValueByIndex(3, DirName);
+		Stmt.SetBindingValueByIndex(4, TotalFuncCount);
+		Stmt.SetBindingValueByIndex(5, VarCount);
+		const bool bOk = Stmt.Execute();
+		Stmt.Destroy();
+		if (!bOk) return false;
+		DirectorId = RawDB->GetLastInsertRowId();
 	}
-	const int64 DirectorId = RawDB->GetLastInsertRowId();
 
-	// Insert functions; remember name -> row-id for later event-binding resolution.
+	// Insert functions; remember name -> row-id (the post-pass UPDATE below is
+	// the actual source-of-truth for binding resolution, but we keep this map
+	// so InsertEventBindingRow can opportunistically populate fires_function_id
+	// inline when both function and binding sit in the same IndexAsset call).
 	TMap<FName, int64> FuncNameToId;
 	for (const FFnRecord& Fn : Functions)
 	{
-		const FString InsertFnSQL = FString::Printf(
-			TEXT("INSERT INTO level_sequence_director_functions "
-				 "(director_id, name, kind, signature_json) "
-				 "VALUES (%lld, '%s', '%s', '%s')"),
-			DirectorId,
-			*EscapeSql(Fn.Name),
-			*EscapeSql(Fn.Kind),
-			*EscapeSql(Fn.SignatureJson));
-		if (RawDB->Execute(*InsertFnSQL))
+		FSQLitePreparedStatement Stmt;
+		if (!Stmt.Create(*RawDB, TEXT(
+			"INSERT INTO level_sequence_director_functions "
+			"(director_id, name, kind, signature_json) "
+			"VALUES (?, ?, ?, ?)")))
+		{
+			continue;
+		}
+		Stmt.SetBindingValueByIndex(1, DirectorId);
+		Stmt.SetBindingValueByIndex(2, Fn.Name);
+		Stmt.SetBindingValueByIndex(3, Fn.Kind);
+		BindNullableString(Stmt, 4, Fn.SignatureJson);
+		const bool bOk = Stmt.Execute();
+		Stmt.Destroy();
+		if (bOk)
 		{
 			FuncNameToId.Add(FName(*Fn.Name), RawDB->GetLastInsertRowId());
 		}
@@ -552,19 +608,25 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 	// Insert variables.
 	for (const FBPVariableDescription& Var : DirBP->NewVariables)
 	{
-		const FString InsertVarSQL = FString::Printf(
-			TEXT("INSERT INTO level_sequence_director_variables "
-				 "(director_id, name, type) "
-				 "VALUES (%lld, '%s', '%s')"),
-			DirectorId,
-			*EscapeSql(Var.VarName.ToString()),
-			*EscapeSql(VarTypeToString(Var.VarType)));
-		RawDB->Execute(*InsertVarSQL);
+		FSQLitePreparedStatement Stmt;
+		if (!Stmt.Create(*RawDB, TEXT(
+			"INSERT INTO level_sequence_director_variables "
+			"(director_id, name, type) "
+			"VALUES (?, ?, ?)")))
+		{
+			continue;
+		}
+		Stmt.SetBindingValueByIndex(1, DirectorId);
+		Stmt.SetBindingValueByIndex(2, Var.VarName.ToString());
+		Stmt.SetBindingValueByIndex(3, VarTypeToString(Var.VarType));
+		Stmt.Execute();
+		Stmt.Destroy();
 	}
 
 	// Walk event tracks and record one row per FMovieSceneEvent.
-	// fires_function_id is left NULL here; a post-pass UPDATE below resolves it
-	// via SQL JOIN against level_sequence_director_functions for this asset.
+	// fires_function_id is left NULL here for any rows we couldn't resolve
+	// inline; a post-pass UPDATE below resolves them via SQL JOIN against
+	// level_sequence_director_functions for this asset.
 	if (UMovieScene* MS = Seq->GetMovieScene())
 	{
 		// Master tracks (not bound to a binding GUID).
@@ -597,18 +659,24 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 
 		// Post-pass: resolve fires_function_id by joining on (director's asset, function name).
 		// Done in SQL because the in-process FuncNameToId map proved unreliable across
-		// the indexer's threading context — and a JOIN-based resolve is robust regardless.
-		const FString ResolveSQL = FString::Printf(
-			TEXT("UPDATE level_sequence_event_bindings AS b "
-				 "SET fires_function_id = ("
-				 "  SELECT f.id FROM level_sequence_director_functions f "
-				 "  JOIN level_sequence_directors d ON f.director_id = d.id "
-				 "  WHERE d.ls_asset_id = %lld AND f.name = b.fires_function_name "
-				 "  LIMIT 1"
-				 ") "
-				 "WHERE b.ls_asset_id = %lld AND b.fires_function_id IS NULL AND b.fires_function_name IS NOT NULL"),
-			AssetId, AssetId);
-		RawDB->Execute(*ResolveSQL);
+		// the indexer's threading context — a JOIN-based resolve is robust regardless.
+		// Both ? bindings receive the same AssetId.
+		FSQLitePreparedStatement Stmt;
+		if (Stmt.Create(*RawDB, TEXT(
+			"UPDATE level_sequence_event_bindings AS b "
+			"SET fires_function_id = ("
+			"  SELECT f.id FROM level_sequence_director_functions f "
+			"  JOIN level_sequence_directors d ON f.director_id = d.id "
+			"  WHERE d.ls_asset_id = ? AND f.name = b.fires_function_name "
+			"  LIMIT 1"
+			") "
+			"WHERE b.ls_asset_id = ? AND b.fires_function_id IS NULL AND b.fires_function_name IS NOT NULL")))
+		{
+			Stmt.SetBindingValueByIndex(1, AssetId);
+			Stmt.SetBindingValueByIndex(2, AssetId);
+			Stmt.Execute();
+		}
+		Stmt.Destroy();
 	}
 #endif
 

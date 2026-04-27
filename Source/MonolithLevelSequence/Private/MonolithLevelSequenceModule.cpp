@@ -2,13 +2,14 @@
 #include "MonolithLevelSequenceActions.h"
 #include "MonolithLevelSequenceIndexer.h"
 #include "MonolithToolRegistry.h"
-#include "MonolithJsonUtils.h"
 #include "MonolithSettings.h"
 #include "MonolithIndexSubsystem.h"
 #include "Editor.h"
 #include "Misc/CoreDelegates.h"
 
 #define LOCTEXT_NAMESPACE "FMonolithLevelSequenceModule"
+
+DEFINE_LOG_CATEGORY(LogMonolithLevelSequence);
 
 void FMonolithLevelSequenceModule::StartupModule()
 {
@@ -18,7 +19,8 @@ void FMonolithLevelSequenceModule::StartupModule()
 	if (Settings->bEnableLevelSequence)
 	{
 		FMonolithLevelSequenceActions::RegisterActions(FMonolithToolRegistry::Get());
-		UE_LOG(LogMonolith, Log, TEXT("Monolith — LevelSequence module loaded (1 action)"));
+		const int32 ActionCount = FMonolithToolRegistry::Get().GetActions(TEXT("level_sequence")).Num();
+		UE_LOG(LogMonolithLevelSequence, Log, TEXT("MonolithLevelSequence: Loaded (%d actions)"), ActionCount);
 	}
 
 	if (Settings->bIndexLevelSequences)
@@ -30,7 +32,7 @@ void FMonolithLevelSequenceModule::StartupModule()
 				if (UMonolithIndexSubsystem* IndexSS = GEditor->GetEditorSubsystem<UMonolithIndexSubsystem>())
 				{
 					IndexSS->RegisterIndexer(MakeShared<FLevelSequenceIndexer>());
-					UE_LOG(LogMonolith, Log, TEXT("MonolithLevelSequence: Registered FLevelSequenceIndexer into MonolithIndex"));
+					UE_LOG(LogMonolithLevelSequence, Log, TEXT("MonolithLevelSequence: Registered FLevelSequenceIndexer into MonolithIndex"));
 				}
 			}
 		});
