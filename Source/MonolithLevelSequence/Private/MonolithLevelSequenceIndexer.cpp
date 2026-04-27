@@ -331,18 +331,28 @@ void FLevelSequenceIndexer::EnsureTablesExist(FMonolithIndexDatabase& DB)
 	));
 	RawDB->Execute(TEXT("CREATE INDEX IF NOT EXISTS idx_lsdir_path ON level_sequence_directors(ls_path)"));
 
+	// kind classifies the origin of each function declared on this Director:
+	//   'user'               — UEdGraph in DirBP->FunctionGraphs (you-defined function)
+	//   'custom_event'       — UK2Node_CustomEvent inside DirBP->UbergraphPages
+	//   'sequencer_endpoint' — UE-generated UFunction backing a Sequencer "Quick
+	//                          Bind" / "Create New Endpoint" event-track entry
+	//                          (name pattern: SequenceEvent__ENTRYPOINT<DirBP>_N)
+	// Inherited base-class functions and compiler-generated ExecuteUbergraph*
+	// dispatchers are NOT recorded — same convention as MonolithBlueprint's
+	// blueprint_query.get_functions (own-functions only).
 	RawDB->Execute(TEXT(
 		"CREATE TABLE IF NOT EXISTS level_sequence_director_functions ("
 		"  id INTEGER PRIMARY KEY AUTOINCREMENT,"
 		"  director_id INTEGER NOT NULL,"
 		"  name TEXT NOT NULL,"
-		"  is_event_function INTEGER NOT NULL,"
+		"  kind TEXT NOT NULL,"
 		"  signature_json TEXT,"
 		"  FOREIGN KEY (director_id) REFERENCES level_sequence_directors(id)"
 		")"
 	));
 	RawDB->Execute(TEXT("CREATE INDEX IF NOT EXISTS idx_lsdir_func_dir ON level_sequence_director_functions(director_id)"));
 	RawDB->Execute(TEXT("CREATE INDEX IF NOT EXISTS idx_lsdir_func_name ON level_sequence_director_functions(name)"));
+	RawDB->Execute(TEXT("CREATE INDEX IF NOT EXISTS idx_lsdir_func_kind ON level_sequence_director_functions(kind)"));
 
 	RawDB->Execute(TEXT(
 		"CREATE TABLE IF NOT EXISTS level_sequence_director_variables ("
@@ -420,8 +430,10 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 	const FString& LsPath = LsPathEarly;
 	const FString DirName = DirBP->GetName();
 
-	// Collect user functions (FunctionGraphs) and event functions (CustomEvent in UbergraphPages).
-	struct FFnRecord { FString Name; bool bIsEvent; FString SignatureJson; };
+	// Collect own-functions of this Director, classified by origin.
+	// Mirrors MonolithBlueprint's convention: skip inherited base-class
+	// methods and compiler-generated UE bytecode dispatchers.
+	struct FFnRecord { FString Name; FString Kind; FString SignatureJson; };
 	TArray<FFnRecord> Functions;
 
 	for (UEdGraph* FuncGraph : DirBP->FunctionGraphs)
@@ -429,7 +441,7 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 		if (!FuncGraph) continue;
 		FFnRecord Rec;
 		Rec.Name = FuncGraph->GetFName().ToString();
-		Rec.bIsEvent = false;
+		Rec.Kind = TEXT("user");
 		Rec.SignatureJson = ExtractUserFunctionSignature(FuncGraph);
 		Functions.Add(MoveTemp(Rec));
 	}
@@ -444,18 +456,20 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 
 			FFnRecord Rec;
 			Rec.Name = CustomEvent->CustomFunctionName.ToString();
-			Rec.bIsEvent = true;
+			Rec.Kind = TEXT("custom_event");
 			Rec.SignatureJson = ExtractCustomEventSignature(CustomEvent);
 			Functions.Add(MoveTemp(Rec));
 		}
 	}
 
-	// Compiled synthetic functions on the generated class: when a Sequencer Event
-	// Track uses "Create New Endpoint" / "Quick Bind", UE generates UFunctions
-	// like "SequenceEvent__ENTRYPOINT<DirBP>_N" that have no UK2Node_CustomEvent
-	// in any graph. They exist only on the compiled UClass and are the actual
-	// targets of FMovieSceneEvent::Ptrs::Function. Without indexing them, our
-	// event_bindings table can't resolve fires_function_id at all.
+	// UE-generated UFunctions on the compiled class — capture only the ones
+	// declared on THIS class (skip inherited) AND not already present in our
+	// graph-derived lists AND not the compiler's ExecuteUbergraph dispatchers.
+	// Whatever survives is a Sequencer "Quick Bind" / "Create New Endpoint"
+	// synthetic function (name pattern: SequenceEvent__ENTRYPOINT<DirBP>_N) —
+	// it has no graph node but is the real target of
+	// FMovieSceneEvent::Ptrs::Function at runtime. Indexing these is what
+	// lets event_bindings.fires_function_id resolve.
 	if (UClass* GenClass = DirBP->GeneratedClass)
 	{
 		TSet<FString> AlreadySeen;
@@ -465,12 +479,24 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 		{
 			UFunction* Fn = *It;
 			if (!Fn) continue;
+
+			// Skip inherited (base-class) functions — convention from blueprint_query.
+			if (Fn->GetOwnerClass() != GenClass) continue;
+
 			const FString FnName = Fn->GetName();
+
+			// Skip compiler-generated ubergraph dispatchers (implementation detail).
+			if (FnName == TEXT("ExecuteUbergraph") || FnName.StartsWith(TEXT("ExecuteUbergraph_")))
+			{
+				continue;
+			}
+
+			// Skip if already collected from a graph above.
 			if (AlreadySeen.Contains(FnName)) continue;
 
 			FFnRecord Rec;
 			Rec.Name = FnName;
-			Rec.bIsEvent = true;          // anything not in our graph lists is event-driven
+			Rec.Kind = TEXT("sequencer_endpoint");
 			Rec.SignatureJson = TEXT("[]");
 			Functions.Add(MoveTemp(Rec));
 			AlreadySeen.Add(FnName);
@@ -511,11 +537,11 @@ bool FLevelSequenceIndexer::IndexAsset(const FAssetData& AssetData, UObject* Loa
 	{
 		const FString InsertFnSQL = FString::Printf(
 			TEXT("INSERT INTO level_sequence_director_functions "
-				 "(director_id, name, is_event_function, signature_json) "
-				 "VALUES (%lld, '%s', %d, '%s')"),
+				 "(director_id, name, kind, signature_json) "
+				 "VALUES (%lld, '%s', '%s', '%s')"),
 			DirectorId,
 			*EscapeSql(Fn.Name),
-			Fn.bIsEvent ? 1 : 0,
+			*EscapeSql(Fn.Kind),
 			*EscapeSql(Fn.SignatureJson));
 		if (RawDB->Execute(*InsertFnSQL))
 		{
