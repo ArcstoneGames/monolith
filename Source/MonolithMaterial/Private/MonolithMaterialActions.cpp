@@ -2582,6 +2582,16 @@ FMonolithActionResult FMonolithMaterialActions::CreateMaterial(const TSharedPtr<
 	FString DomainStr = Params->HasField(TEXT("material_domain")) ? Params->GetStringField(TEXT("material_domain")) : TEXT("Surface");
 	bool bTwoSided = Params->HasField(TEXT("two_sided")) ? Params->GetBoolField(TEXT("two_sided")) : false;
 
+	// Reject unmountable/malformed destinations before any registry lookup or CreatePackage
+	// (CreatePackage asserts on inputs such as "//Game/..."). Runs BEFORE the split
+	// below because it also strips a redundant object-path suffix ("M_Bar.M_Bar"),
+	// which the asset name must be derived from.
+	const FString PathError = MonolithCore::ValidatePackagePath(AssetPath);
+	if (!PathError.IsEmpty())
+	{
+		return FMonolithActionResult::Error(PathError);
+	}
+
 	// Extract package path and asset name from the asset path
 	FString PackagePath, AssetName;
 	int32 LastSlash;
@@ -2600,14 +2610,6 @@ FMonolithActionResult FMonolithMaterialActions::CreateMaterial(const TSharedPtr<
 		return FMonolithActionResult::Error(TEXT("Asset name is empty"));
 	}
 
-	// Reject unmountable/malformed destinations before any registry lookup or CreatePackage
-	// (CreatePackage asserts on inputs such as "//Game/...").
-	const FString PathError = MonolithCore::ValidatePackagePath(AssetPath);
-	if (!PathError.IsEmpty())
-	{
-		return FMonolithActionResult::Error(PathError);
-	}
-
 	// Check if asset already exists
 	if (UEditorAssetLibrary::DoesAssetExist(AssetPath))
 	{
@@ -2620,6 +2622,9 @@ FMonolithActionResult FMonolithMaterialActions::CreateMaterial(const TSharedPtr<
 	{
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create package at '%s'"), *AssetPath));
 	}
+	// DoesAssetExist above is an Asset-Registry query only; FullyLoad is the authoritative
+	// on-disk check (no-op when nothing is on disk) so an unindexed .uasset is merged, not clobbered.
+	Pkg->FullyLoad();
 
 	UMaterial* NewMat = NewObject<UMaterial>(Pkg, FName(*AssetName), RF_Public | RF_Standalone | RF_Transactional);
 	if (!NewMat)
@@ -2720,6 +2725,8 @@ FMonolithActionResult FMonolithMaterialActions::CreateMaterialInstance(const TSh
 	{
 		return FMonolithActionResult::Error(TEXT("Failed to create package"));
 	}
+	// Registry-only DoesAssetExist above; FullyLoad is the authoritative on-disk check.
+	Pkg->FullyLoad();
 
 	UMaterialInstanceConstant* MIC = NewObject<UMaterialInstanceConstant>(Pkg, FName(*AssetName), RF_Public | RF_Standalone | RF_Transactional);
 	if (!MIC)
@@ -6308,6 +6315,16 @@ FMonolithActionResult FMonolithMaterialActions::CreateMaterialFunction(const TSh
 {
 	FString AssetPath = Params->GetStringField(TEXT("asset_path"));
 
+	// Reject unmountable/malformed destinations before any registry lookup or CreatePackage
+	// (CreatePackage asserts on inputs such as "//Game/..."). Runs BEFORE the split
+	// below because it also strips a redundant object-path suffix ("MF_Foo.MF_Foo"),
+	// which the asset name must be derived from.
+	const FString PathError = MonolithCore::ValidatePackagePath(AssetPath);
+	if (!PathError.IsEmpty())
+	{
+		return FMonolithActionResult::Error(PathError);
+	}
+
 	// Extract package path and asset name
 	FString PackagePath, AssetName;
 	int32 LastSlash;
@@ -6324,14 +6341,6 @@ FMonolithActionResult FMonolithMaterialActions::CreateMaterialFunction(const TSh
 	if (AssetName.IsEmpty())
 	{
 		return FMonolithActionResult::Error(TEXT("Asset name is empty"));
-	}
-
-	// Reject unmountable/malformed destinations before any registry lookup or CreatePackage
-	// (CreatePackage asserts on inputs such as "//Game/...").
-	const FString PathError = MonolithCore::ValidatePackagePath(AssetPath);
-	if (!PathError.IsEmpty())
-	{
-		return FMonolithActionResult::Error(PathError);
 	}
 
 	// Check if asset already exists
@@ -6364,6 +6373,8 @@ FMonolithActionResult FMonolithMaterialActions::CreateMaterialFunction(const TSh
 	{
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create package at '%s'"), *AssetPath));
 	}
+	// Registry-only DoesAssetExist above; FullyLoad is the authoritative on-disk check.
+	Pkg->FullyLoad();
 
 	UMaterialFunction* NewFunc = Cast<UMaterialFunction>(NewObject<UObject>(Pkg, FuncClass, FName(*AssetName), RF_Public | RF_Standalone | RF_Transactional));
 	if (!NewFunc)
@@ -8027,6 +8038,16 @@ FMonolithActionResult FMonolithMaterialActions::CreatePbrMaterialFromDisk(const 
 	bool bOpacityFromAlpha = Params->HasField(TEXT("opacity_from_alpha")) ? Params->GetBoolField(TEXT("opacity_from_alpha")) : false;
 	bool bReplaceExisting = Params->HasField(TEXT("replace_existing")) ? Params->GetBoolField(TEXT("replace_existing")) : false;
 
+	// Reject unmountable/malformed destinations before any registry lookup, texture import
+	// or CreatePackage (CreatePackage asserts on inputs such as "//Game/..."). Runs BEFORE
+	// the split below because it also strips a redundant object-path suffix
+	// ("M_MyMat.M_MyMat"), which the asset name must be derived from.
+	const FString MaterialPathError = MonolithCore::ValidatePackagePath(MaterialPath);
+	if (!MaterialPathError.IsEmpty())
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("material_path: %s"), *MaterialPathError));
+	}
+
 	// Validate material_path format
 	FString MaterialPackagePath, MaterialAssetName;
 	{
@@ -8041,14 +8062,6 @@ FMonolithActionResult FMonolithMaterialActions::CreatePbrMaterialFromDisk(const 
 	if (MaterialAssetName.IsEmpty())
 	{
 		return FMonolithActionResult::Error(TEXT("material_path has empty asset name"));
-	}
-
-	// Reject unmountable/malformed destinations before any registry lookup, texture import
-	// or CreatePackage (CreatePackage asserts on inputs such as "//Game/...").
-	const FString MaterialPathError = MonolithCore::ValidatePackagePath(MaterialPath);
-	if (!MaterialPathError.IsEmpty())
-	{
-		return FMonolithActionResult::Error(FString::Printf(TEXT("material_path: %s"), *MaterialPathError));
 	}
 
 	// Derive base name for textures: strip "M_" or "MI_" prefix if present
@@ -8199,6 +8212,9 @@ FMonolithActionResult FMonolithMaterialActions::CreatePbrMaterialFromDisk(const 
 	{
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create package at '%s'"), *MaterialPath));
 	}
+	// The DoesAssetExist probes above are registry-only; FullyLoad is the authoritative
+	// on-disk check. No-op after a successful DeleteAsset, merges an unindexed .uasset otherwise.
+	Pkg->FullyLoad();
 
 	UMaterial* NewMat = NewObject<UMaterial>(Pkg, FName(*MaterialAssetName), RF_Public | RF_Standalone | RF_Transactional);
 	if (!NewMat)
@@ -8396,6 +8412,8 @@ FMonolithActionResult FMonolithMaterialActions::CreateFunctionInstance(const TSh
 	{
 		return FMonolithActionResult::Error(TEXT("Failed to create package"));
 	}
+	// Registry-only DoesAssetExist above; FullyLoad is the authoritative on-disk check.
+	Pkg->FullyLoad();
 
 	// Determine correct instance class based on parent's usage
 	EMaterialFunctionUsage Usage = ParentFunc->GetMaterialFunctionUsage();
