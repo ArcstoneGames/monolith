@@ -11,9 +11,9 @@
  * CreatePackage asserts on such inputs in UObjectGlobals.cpp:1012. This
  * wrapper converts the assertion into a recoverable error return.
  *
- * Scope note: only wired into the immediate crash site plus the two shared
- * GetOrCreatePackage helpers (MonolithAI, MonolithGAS). The other ~77
- * CreatePackage call sites remain unguarded — follow-up task.
+ * Scope note: routing this validator into CreatePackage call sites is
+ * incremental, so grep the Source tree for ValidatePackagePath to see which
+ * sites currently own it.
  */
 namespace MonolithCore
 {
