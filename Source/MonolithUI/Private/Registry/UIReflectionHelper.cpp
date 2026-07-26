@@ -12,6 +12,7 @@
 #include "Registry/UIReflectionHelper.h"
 
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Layout/Margin.h"
 #include "Math/Color.h"
 #include "Math/Vector2D.h"
@@ -21,6 +22,8 @@
 #include "Registry/UIPropertyAllowlist.h"
 #include "Registry/UIPropertyPathCache.h"
 #include "Registry/UITypeRegistry.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Styling/SlateColor.h"
 #include "UObject/Class.h"
 #include "UObject/EnumProperty.h"
@@ -74,6 +77,76 @@ namespace
             Obj->TryGetNumberField(Field, Out);
         }
         return Out;
+    }
+
+    // ------------------------------------------------------------------
+    // String coercion — ParseMargin / ParseVector4 ONLY
+    // ------------------------------------------------------------------
+
+    // The `value` param is declared `any`, but the MCP proxy and the offline
+    // CLI serialise nested params to text, so a caller-supplied object/array/
+    // number still lands here as EJson::String. Re-hydrate those forms so the
+    // documented shapes are reachable; anything else is returned untouched.
+    // Deliberately NOT called from the other parsers — ParseVector2D and
+    // ParseLinearColor own their string handling ("x,y" / "#RRGGBBAA").
+    TSharedPtr<FJsonValue> CoerceStringToJson(const TSharedPtr<FJsonValue>& Value)
+    {
+        if (!Value.IsValid() || Value->Type != EJson::String)
+        {
+            return Value;
+        }
+
+        const FString S = Value->AsString().TrimStartAndEnd();
+        if (S.IsEmpty())
+        {
+            return Value;
+        }
+
+        // Braced / bracketed text -> real JSON object or array.
+        if ((S.StartsWith(TEXT("{")) && S.EndsWith(TEXT("}"))) ||
+            (S.StartsWith(TEXT("[")) && S.EndsWith(TEXT("]"))))
+        {
+            TSharedPtr<FJsonValue> Parsed;
+            TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(S);
+            if (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid())
+            {
+                return Parsed;
+            }
+            return Value;
+        }
+
+        // Bare numeric text -> JSON number (feeds Margin's uniform-scalar path).
+        if (S.IsNumeric())
+        {
+            return MakeShared<FJsonValueNumber>(FCString::Atod(*S));
+        }
+
+        return Value;
+    }
+
+    // Split "a,b,c,..." text into the first MinNum doubles. Mirrors the inline
+    // comma handling in ParseVector2D; non-numeric parts fail rather than
+    // silently writing zeros.
+    bool ParseCommaNumbers(const FString& Text, int32 MinNum, TArray<double>& Out)
+    {
+        Out.Reset();
+
+        TArray<FString> Parts;
+        Text.ParseIntoArray(Parts, TEXT(","));
+        if (Parts.Num() < MinNum)
+        {
+            return false;
+        }
+        for (int32 i = 0; i < MinNum; ++i)
+        {
+            const FString Part = Parts[i].TrimStartAndEnd();
+            if (!Part.IsNumeric())
+            {
+                return false;
+            }
+            Out.Add(FCString::Atod(*Part));
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------
@@ -161,9 +234,12 @@ namespace
         return false;
     }
 
-    // FMargin — object{left,top,right,bottom} OR array[l,t,r,b] OR scalar (uniform).
-    bool ParseMargin(const TSharedPtr<FJsonValue>& Value, FMargin& Out)
+    // FMargin — object{left,top,right,bottom} OR array[l,t,r,b] OR "l,t,r,b"
+    // OR scalar (uniform). Stringified object/array/number forms are rehydrated
+    // by CoerceStringToJson first.
+    bool ParseMargin(const TSharedPtr<FJsonValue>& InValue, FMargin& Out)
     {
+        const TSharedPtr<FJsonValue> Value = CoerceStringToJson(InValue);
         if (!Value.IsValid()) return false;
 
         if (Value->Type == EJson::Number)
@@ -193,12 +269,30 @@ namespace
                 (float)ObjNum(Obj, TEXT("bottom"), 0.0));
             return true;
         }
+        if (Value->Type == EJson::String)
+        {
+            // "l,t,r,b" text form. A bare numeric string already became a
+            // Number above, so only multi-part text reaches here.
+            TArray<double> Nums;
+            if (ParseCommaNumbers(Value->AsString(), 4, Nums))
+            {
+                Out = FMargin(
+                    (float)Nums[0],
+                    (float)Nums[1],
+                    (float)Nums[2],
+                    (float)Nums[3]);
+                return true;
+            }
+        }
         return false;
     }
 
-    // FVector4 — array[x,y,z,w] OR object{x,y,z,w}. FVector4 is LWC (double).
-    bool ParseVector4(const TSharedPtr<FJsonValue>& Value, FVector4& Out)
+    // FVector4 — array[x,y,z,w] OR object{x,y,z,w} OR "x,y,z,w". FVector4 is
+    // LWC (double). Stringified object/array forms are rehydrated by
+    // CoerceStringToJson first.
+    bool ParseVector4(const TSharedPtr<FJsonValue>& InValue, FVector4& Out)
     {
+        const TSharedPtr<FJsonValue> Value = CoerceStringToJson(InValue);
         if (!Value.IsValid()) return false;
 
         if (Value->Type == EJson::Array)
@@ -221,6 +315,16 @@ namespace
                 ObjNum(Obj, TEXT("z"), 0.0),
                 ObjNum(Obj, TEXT("w"), 0.0));
             return true;
+        }
+        if (Value->Type == EJson::String)
+        {
+            // "x,y,z,w" text form.
+            TArray<double> Nums;
+            if (ParseCommaNumbers(Value->AsString(), 4, Nums))
+            {
+                Out = FVector4(Nums[0], Nums[1], Nums[2], Nums[3]);
+                return true;
+            }
         }
         return false;
     }
@@ -440,7 +544,7 @@ namespace
                 if (!ParseMargin(Value, Parsed))
                 {
                     OutFailureReason = TEXT("ParseFailed");
-                    OutDetail = TEXT("expected Margin: scalar, [l,t,r,b], or {left,top,right,bottom}");
+                    OutDetail = TEXT("expected Margin: scalar, [l,t,r,b], {left,top,right,bottom}, \"l,t,r,b\", or any of these as a JSON string");
                     return false;
                 }
                 *(FMargin*)PropAddr = Parsed;
@@ -452,7 +556,7 @@ namespace
                 if (!ParseVector4(Value, Parsed))
                 {
                     OutFailureReason = TEXT("ParseFailed");
-                    OutDetail = TEXT("expected Vector4: [x,y,z,w] or {x,y,z,w}");
+                    OutDetail = TEXT("expected Vector4: [x,y,z,w], {x,y,z,w}, \"x,y,z,w\", or any of these as a JSON string");
                     return false;
                 }
                 *(FVector4*)PropAddr = Parsed;
