@@ -17,6 +17,7 @@
 #include "Math/Color.h"
 #include "Math/Vector2D.h"
 #include "Math/Vector4.h"
+#include "Misc/Char.h"
 #include "MonolithUICommon.h"
 #include "Registry/MonolithUIRegistrySubsystem.h"
 #include "Registry/UIPropertyAllowlist.h"
@@ -79,6 +80,28 @@ namespace
         return Out;
     }
 
+    // True if Text is a number we are willing to coerce.
+    //
+    // FString::IsNumeric routes to TCString::IsNumeric (CString.h:139-164), which
+    // skips a leading '-'/'+' and then accepts an EMPTY remainder — so "-", "+", ""
+    // and "." all report numeric and would silently coerce to 0.0. Require at least
+    // one actual digit so those forms fall through to the caller's failure path.
+    bool IsStrictNumericText(const FString& Text)
+    {
+        if (!Text.IsNumeric())
+        {
+            return false;
+        }
+        for (const TCHAR Ch : Text)
+        {
+            if (FChar::IsDigit(Ch))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // String coercion — ParseMargin / ParseVector4 ONLY
     // ------------------------------------------------------------------
@@ -116,7 +139,7 @@ namespace
         }
 
         // Bare numeric text -> JSON number (feeds Margin's uniform-scalar path).
-        if (S.IsNumeric())
+        if (IsStrictNumericText(S))
         {
             return MakeShared<FJsonValueNumber>(FCString::Atod(*S));
         }
@@ -132,7 +155,10 @@ namespace
         Out.Reset();
 
         TArray<FString> Parts;
-        Text.ParseIntoArray(Parts, TEXT(","));
+        // bInCullEmpty defaults to true, which would silently swallow empty tokens —
+        // "1,,2,3,4" would arrive as the 4-element (1,2,3,4) and pass the count check
+        // below. Keep the empties so a malformed list is rejected, not renumbered.
+        Text.ParseIntoArray(Parts, TEXT(","), /*bInCullEmpty=*/false);
         if (Parts.Num() < MinNum)
         {
             return false;
@@ -140,7 +166,7 @@ namespace
         for (int32 i = 0; i < MinNum; ++i)
         {
             const FString Part = Parts[i].TrimStartAndEnd();
-            if (!Part.IsNumeric())
+            if (!IsStrictNumericText(Part))
             {
                 return false;
             }
