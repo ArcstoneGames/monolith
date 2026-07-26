@@ -24,14 +24,19 @@
 # non-ASCII punctuation and produces parse errors at unrelated line numbers.
 #
 # Usage:
-#   .\verify_release_body.ps1 -Version "0.21.3" -ArtifactDir "D:\Unreal Projects\Monolith"
+#   .\verify_release_body.ps1 -Version "0.21.3"
+#   .\verify_release_body.ps1 -Version "0.21.3" -ArtifactDir <dir>   # if the zips are elsewhere
 # ==============================================================================
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]  [string] $Version,
     [Parameter(Mandatory = $false)] [string] $Repo        = "tumourlove/monolith",
-    [Parameter(Mandatory = $false)] [string] $ArtifactDir = "D:\Unreal Projects\Monolith"
+    # Defaults to the host project root, which is where make_release.ps1 writes the
+    # zips: this script lives at <ProjectRoot>\Plugins\Monolith\Scripts\, so three
+    # levels up is the project root. Derived rather than hardcoded so the script
+    # works from any clone.
+    [Parameter(Mandatory = $false)] [string] $ArtifactDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 )
 
 $ErrorActionPreference = "Stop"
