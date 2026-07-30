@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-07-30 — OPEN: ABP-native anim layer follow-ups
+
+Deferred while shipping `animation add_anim_layer_graph` (ABP-native animation layer graphs) and the `add_linked_anim_layer` self-layer resolution. The shipped surface covers pose inputs, topology, compile, and pin regeneration; these four were scoped out deliberately.
+
+1. **Non-pose parameter pins on animation layers.** `add_anim_layer_graph`'s `input_poses` takes pose NAMES only. `UAnimGraphNode_LinkedInputPose::Inputs` also accepts typed non-pose parameters (float, bool, struct, object …), which a layer needs to be driven by anything other than an upstream pose. Adding them requires building an `FEdGraphPinType` from a caller-supplied type string — a type-resolution surface the action does not have yet.
+   - **Add:** an optional typed-parameter list alongside `input_poses`, plus the type-string → `FEdGraphPinType` resolver it needs.
+
+2. **`get_linked_layers` cannot distinguish a self layer from an interface layer.** It emits the node `title` (a self layer reads `"<Layer>\nAnim Layer (self)"`), but no structured field — so a caller has to string-match the title to tell the two apart. An `is_self_layer` / `layer_kind` field was considered during implementation and deliberately not added, to keep the change to the write path.
+   - **Add:** a structured `layer_kind` (or `is_self_layer`) field on `get_linked_layers` output.
+
+3. **No post-compile second reconstruct on the consumer node.** Self-layer pose pins resolve against the ABP's `SkeletonGeneratedClass`, so placing a node for a layer that is not yet compiled into that class yields a node with NO pose pins, and nothing re-reconstructs it once a later compile makes the layer resolvable. The documented workaround is to keep `add_anim_layer_graph`'s default `compile: true`, or recompile before placing.
+   - **Add:** a post-compile reconstruct pass (or a `reconstruct_linked_layer_node` action) so a node placed early recovers its pins.
+
+4. **PIE evaluation of a native layer is unverified.** This session verified graph topology, schema, compile, and pin regeneration — it did not run a native layer in PIE and confirm it evaluates and contributes pose. Not a known defect; simply untested.
+   - **Add:** a PIE smoke over an ABP driving an ABP-native layer.
+
+---
+
 ## 2026-06-07 — RESOLVED: Motion Matching authoring pack + PIE/profiling harness (0.18.1)
 
 Field gaps surfaced building an end-to-end Motion Matching setup + autonomous AI locomotion workflow, now addressed (see `SPEC_CORE.md` §12 2026-06-07 notes, `specs/SPEC_MonolithAnimation.md`, `specs/SPEC_MonolithBlueprint.md`, `specs/SPEC_MonolithAI.md`, `specs/SPEC_MonolithEditor.md`):

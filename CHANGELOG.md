@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Animation layers can be authored without an interface asset.** New `animation add_anim_layer_graph` creates an ABP-native animation layer: a `UAnimationGraph` on the animation graph schema, in the Animation Blueprint's own function graphs — exactly what the editor's My Blueprint → **+** → Animation Layer button produces. Because the layer belongs to the ABP rather than to a shared `UAnimLayerInterface`, variant ABPs no longer have to agree on a layer signature just to have a layer. The schema is the part that matters: it is what makes the animation compiler emit a real `FAnimBlueprintFunction` for the graph, which is why `blueprint add_function` could not stand in — it produces an inert K2 graph. The Output Pose root node is created automatically, since a layer graph without one fails to compile. Optional `input_poses` declares input pose pins by name (`["InPose"]` or `[{"name": "InPose"}]`, capped at 16). The action refuses a duplicate graph name outright rather than renaming the incumbent graph the way the underlying engine call does, and also refuses the reserved name `AnimGraph`, child Animation Blueprints, macro libraries, and interface Blueprints.
+
+### Changed
+
+- **`animation add_linked_anim_layer` now finds ABP-native layers too.** If no implemented `UAnimLayerInterface` declares the requested `layer_name`, the action looks for a layer graph on the Animation Blueprint itself and binds it as a self layer. This mirrors the engine, which stores no "is self" flag and instead treats a failed interface lookup as the self signal. Interface layers still take precedence when the same name exists in both places, and passing `interface_class` explicitly disables the native fallback, so an interface request can never silently resolve to a self layer. `instance_class` is now rejected for a self layer, which has no override implementation to point at. In the response, a self bind reports `interface_class: "<self>"` and `guid_resolved: false`.
+- One ordering note for the pair: a self layer's pose pins are resolved against the Animation Blueprint's generated skeleton class, so the layer graph has to be compiled in before a node for it is placed. Creating a layer with `compile: false` and immediately placing its node yields a node with no pose pins. Keep the default `compile: true`, or recompile before placing.
+
 ## [0.21.3] - 2026-07-26
 
 This release closes out the open pull-request queue. Every fix below was reported or prototyped by a contributor — thanks to **@Thomasbehan**, **@whalemenace**, and **@kunkunGames** for the write-ups, which were detailed enough to reproduce from directly.
