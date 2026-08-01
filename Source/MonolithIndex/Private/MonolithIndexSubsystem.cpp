@@ -125,7 +125,10 @@ static FAutoConsoleCommand GMonolithStartIndexCommand(
 		}
 
 		UE_LOG(LogMonolithIndex, Log, TEXT("Monolith.StartIndex: manual full index requested"));
-		Subsystem->StartFullIndex();
+		if (!Subsystem->StartFullIndex())
+		{
+			UE_LOG(LogMonolithIndex, Warning, TEXT("Monolith.StartIndex: index did not start — see the preceding message"));
+		}
 	}));
 
 void UMonolithIndexSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -182,7 +185,7 @@ void UMonolithIndexSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		UE_LOG(LogMonolithIndex, Log, TEXT("Existing index found — deferring incremental catch-up until AR ready"));
 		if (AR.IsLoadingAssets())
-			AR.OnFilesLoaded().AddUObject(this, &UMonolithIndexSubsystem::StartIncrementalIndex);
+			AR.OnFilesLoaded().AddUObject(this, &UMonolithIndexSubsystem::OnAssetRegistryFilesLoadedIncremental);
 		else
 			StartIncrementalIndex();
 	}
@@ -211,6 +214,13 @@ void UMonolithIndexSubsystem::OnAssetRegistryFilesLoaded()
 	{
 		UE_LOG(LogMonolithIndex, Log, TEXT("Asset Registry loaded but auto-index no longer needed (already indexed)"));
 	}
+}
+
+void UMonolithIndexSubsystem::OnAssetRegistryFilesLoadedIncremental()
+{
+	// OnFilesLoaded is a void multicast; StartIncrementalIndex reports a result,
+	// so it needs an adapter rather than binding directly.
+	StartIncrementalIndex();
 }
 
 void UMonolithIndexSubsystem::Deinitialize()
@@ -316,12 +326,23 @@ void UMonolithIndexSubsystem::RegisterDefaultIndexers()
 	UE_LOG(LogMonolithIndex, Log, TEXT("Registered %d indexers"), Indexers.Num());
 }
 
-void UMonolithIndexSubsystem::StartFullIndex()
+bool UMonolithIndexSubsystem::CanAcceptIndexRequest() const
+{
+	return !bIsIndexing && Database.IsValid() && Database->IsOpen();
+}
+
+bool UMonolithIndexSubsystem::StartFullIndex()
 {
 	if (bIsIndexing)
 	{
 		UE_LOG(LogMonolithIndex, Warning, TEXT("Indexing already in progress"));
-		return;
+		return false;
+	}
+
+	if (!Database.IsValid() || !Database->IsOpen())
+	{
+		UE_LOG(LogMonolithIndex, Warning, TEXT("Index database is not open — cannot start a full index"));
+		return false;
 	}
 
 	bIsIndexing = true;
@@ -356,7 +377,19 @@ void UMonolithIndexSubsystem::StartFullIndex()
 		TPri_BelowNormal
 	));
 
+	if (!IndexingThread)
+	{
+		// Run() will never execute, so nothing would ever route through
+		// OnIndexingFinished and bIsIndexing would stay latched for the rest of
+		// the session. Unwind here instead.
+		UE_LOG(LogMonolithIndex, Error, TEXT("Failed to create the indexing thread — no index is running"));
+		IndexingTaskPtr.Reset();
+		OnIndexingFinished(false);
+		return false;
+	}
+
 	UE_LOG(LogMonolithIndex, Log, TEXT("Background indexing started"));
+	return true;
 }
 
 float UMonolithIndexSubsystem::GetProgress() const
@@ -453,6 +486,13 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 	const UMonolithSettings* GlobalSettings = GetDefault<UMonolithSettings>();
 	const bool bLogMemory = GlobalSettings ? GlobalSettings->bLogMemoryStats : true;
 
+	// Every fire-and-forget AsyncTask below captures this instead of `this`.
+	// Deinitialize() does Stop() -> WaitForCompletion() -> IndexingTaskPtr.Reset():
+	// joining the worker does NOT drain the game thread's task queue, so an
+	// already-queued lambda can run after this FIndexingTask has been destroyed.
+	// Anything it needs must be copied into the capture list beforehand.
+	const TWeakObjectPtr<UMonolithIndexSubsystem> WeakOwner(Owner);
+
 	if (bLogMemory)
 	{
 		FMonolithMemoryHelper::LogMemoryStats(TEXT("Full index starting"));
@@ -517,9 +557,12 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 	FMonolithIndexDatabase* DB = Owner->Database.Get();
 	if (!DB || !DB->IsOpen())
 	{
-		AsyncTask(ENamedThreads::GameThread, [this]()
+		AsyncTask(ENamedThreads::GameThread, [WeakOwner]()
 		{
-			Owner->OnIndexingFinished(false);
+			if (UMonolithIndexSubsystem* Subsystem = WeakOwner.Get())
+			{
+				Subsystem->OnIndexingFinished(false);
+			}
 		});
 		return 1;
 	}
@@ -640,9 +683,16 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 					FString::Printf(TEXT("Indexing %d / %d assets..."), CurrentIndex.Load(), TotalAssets.Load())));
 			}
 
-			AsyncTask(ENamedThreads::GameThread, [this]()
+			// Snapshot the counters here, on the worker. Loading them inside the
+			// lambda would read them through a task object that may already be gone.
+			const int32 ProgressCurrent = CurrentIndex.Load();
+			const int32 ProgressTotal = TotalAssets.Load();
+			AsyncTask(ENamedThreads::GameThread, [WeakOwner, ProgressCurrent, ProgressTotal]()
 			{
-				Owner->OnProgress.Broadcast(CurrentIndex.Load(), TotalAssets.Load());
+				if (UMonolithIndexSubsystem* Subsystem = WeakOwner.Get())
+				{
+					Subsystem->OnProgress.Broadcast(ProgressCurrent, ProgressTotal);
+				}
 			});
 		}
 	}
@@ -850,9 +900,16 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 					FString::Printf(TEXT("Deep indexing %d / %d assets..."), BatchEnd, TotalDeep)));
 			}
 
-			AsyncTask(ENamedThreads::GameThread, [this]()
+			// Snapshot the counters here, on the worker. Loading them inside the
+			// lambda would read them through a task object that may already be gone.
+			const int32 ProgressCurrent = CurrentIndex.Load();
+			const int32 ProgressTotal = TotalAssets.Load();
+			AsyncTask(ENamedThreads::GameThread, [WeakOwner, ProgressCurrent, ProgressTotal]()
 			{
-				Owner->OnProgress.Broadcast(CurrentIndex.Load(), TotalAssets.Load());
+				if (UMonolithIndexSubsystem* Subsystem = WeakOwner.Get())
+				{
+					Subsystem->OnProgress.Broadcast(ProgressCurrent, ProgressTotal);
+				}
 			});
 
 			// Log progress and memory periodically
@@ -1204,9 +1261,13 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 		FMonolithMemoryHelper::LogMemoryStats(TEXT("Full index complete"));
 	}
 
-	AsyncTask(ENamedThreads::GameThread, [this]()
+	const bool bCompleted = !bShouldStop.Load();
+	AsyncTask(ENamedThreads::GameThread, [WeakOwner, bCompleted]()
 	{
-		Owner->OnIndexingFinished(!bShouldStop);
+		if (UMonolithIndexSubsystem* Subsystem = WeakOwner.Get())
+		{
+			Subsystem->OnIndexingFinished(bCompleted);
+		}
 	});
 
 	return 0;
@@ -1238,6 +1299,12 @@ void UMonolithIndexSubsystem::OnIndexingFinished(bool bSuccess)
 			bSuccess);
 		TaskNotification.Reset();
 	}
+
+	// Re-arm live tracking on EVERY outcome, not just success. A failed or
+	// cancelled run used to leave the callbacks detached, so the subsystem
+	// reported itself active while silently dropping every subsequent asset
+	// change until a successful reindex or an editor restart.
+	RegisterLiveCallbacks();
 
 	OnComplete.Broadcast(bSuccess);
 	OnProgress.Clear();
@@ -1284,10 +1351,19 @@ bool UMonolithIndexSubsystem::CanDoIncrementalIndex() const
 	return true;
 }
 
-void UMonolithIndexSubsystem::StartIncrementalIndex()
+bool UMonolithIndexSubsystem::StartIncrementalIndex()
 {
 	check(IsInGameThread());
-	if (bIsIndexing) return;
+	if (bIsIndexing)
+	{
+		UE_LOG(LogMonolithIndex, Warning, TEXT("Indexing already in progress"));
+		return false;
+	}
+	if (!Database.IsValid() || !Database->IsOpen())
+	{
+		UE_LOG(LogMonolithIndex, Warning, TEXT("Index database is not open — cannot start an incremental index"));
+		return false;
+	}
 	bIsIndexing = true;
 	UnregisterLiveCallbacks();
 
@@ -1422,7 +1498,7 @@ void UMonolithIndexSubsystem::StartIncrementalIndex()
 		UE_LOG(LogMonolithIndex, Log, TEXT("No changes detected. Incremental index complete."));
 		bIsIndexing = false;
 		RegisterLiveCallbacks();
-		return;
+		return true;
 	}
 
 	// PHASE 6: Apply deltas
@@ -1538,6 +1614,7 @@ void UMonolithIndexSubsystem::StartIncrementalIndex()
 	UE_LOG(LogMonolithIndex, Log, TEXT("Incremental index complete."));
 	bIsIndexing = false;
 	RegisterLiveCallbacks();
+	return true;
 }
 
 // ============================================================
@@ -1595,6 +1672,26 @@ void UMonolithIndexSubsystem::RunScopedSentinels(const TSet<FString>& ChangedPat
 
 void UMonolithIndexSubsystem::RegisterLiveCallbacks()
 {
+	// An index run owns the database exclusively; arming the callbacks now would
+	// queue changes the run is about to overwrite anyway.
+	if (bIsIndexing)
+	{
+		return;
+	}
+
+	if (!Database.IsValid() || !Database->IsOpen())
+	{
+		return;
+	}
+
+	// Already armed. Re-registering would bind a second copy of every delegate
+	// and overwrite the handles, leaving the first copies permanently attached.
+	if (OnAssetsAddedHandle.IsValid() || OnAssetsRemovedHandle.IsValid()
+		|| OnAssetRenamedHandle.IsValid() || OnAssetsUpdatedOnDiskHandle.IsValid())
+	{
+		return;
+	}
+
 	IAssetRegistry& AR = IAssetRegistry::GetChecked();
 
 	OnAssetsAddedHandle = AR.OnAssetsAdded().AddUObject(this, &UMonolithIndexSubsystem::OnAssetsAddedCallback);
@@ -1622,6 +1719,14 @@ void UMonolithIndexSubsystem::UnregisterLiveCallbacks()
 		AR->OnAssetRenamed().Remove(OnAssetRenamedHandle);
 		AR->OnAssetsUpdatedOnDisk().Remove(OnAssetsUpdatedOnDiskHandle);
 	}
+
+	// Reset unconditionally, including when the Asset Registry has already gone
+	// away. A retained handle reads as "still armed" to RegisterLiveCallbacks and
+	// would block every future re-arm.
+	OnAssetsAddedHandle.Reset();
+	OnAssetsRemovedHandle.Reset();
+	OnAssetRenamedHandle.Reset();
+	OnAssetsUpdatedOnDiskHandle.Reset();
 
 	if (GEditor)
 	{

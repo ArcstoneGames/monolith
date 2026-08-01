@@ -48,17 +48,31 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** Trigger a full re-index (wipes DB, re-scans everything) */
+	/**
+	 * Trigger a full re-index (wipes DB, re-scans everything).
+	 * @return true if a run actually started. False means nothing is happening —
+	 *         see CanAcceptIndexRequest, or the worker thread failed to spawn.
+	 */
 	UFUNCTION()
-	void StartFullIndex();
+	bool StartFullIndex();
 
-	/** Trigger an incremental catch-up index (delta engine) */
+	/**
+	 * Trigger an incremental catch-up index (delta engine).
+	 * @return true if the delta pass ran. False means it was refused.
+	 */
 	UFUNCTION()
-	void StartIncrementalIndex();
+	bool StartIncrementalIndex();
 
 	/** Can we do an incremental index? (requires schema v2+ and a prior full index) */
 	UFUNCTION()
 	bool CanDoIncrementalIndex() const;
+
+	/**
+	 * Is the subsystem in a state where it could take an index request right now?
+	 * Used to grey out the Project Settings re-index buttons.
+	 */
+	UFUNCTION()
+	bool CanAcceptIndexRequest() const;
 
 	/** Is indexing currently in progress? */
 	bool IsIndexing() const { return bIsIndexing; }
@@ -108,6 +122,9 @@ private:
 
 	void OnIndexingFinished(bool bSuccess);
 	void OnAssetRegistryFilesLoaded();
+
+	/** void adapter so StartIncrementalIndex can be deferred onto OnFilesLoaded. */
+	void OnAssetRegistryFilesLoadedIncremental();
 	void RegisterDefaultIndexers();
 	FString GetDatabasePath() const;
 	bool ShouldAutoIndex() const;
