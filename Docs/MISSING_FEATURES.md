@@ -42,6 +42,51 @@ Scoped out while replacing the hardcoded git roots with runtime discovery (`Reso
 
 ---
 
+## 2026-08-01 — OPEN: `project search` follow-ups (after the #113 error-classification work)
+
+Scoped out while classifying search errors and validating `project search` input. Neither blocks that work.
+
+1. **Offline `project.*` parity is ungated.** `Scripts/verify_offline_parity.py` asserts live-vs-offline byte-identical output for `cppreflect`, `network`, `decision`, `risk` and `source` — it has **no `project` cases**. Verified in the script's own case list. So the three `project search` implementations (live `MonolithIndex`, `Tools/MonolithQuery/monolith_query.cpp`, `Scripts/monolith_offline.py`) are kept in step only by hand, and `make_release.ps1`'s parity gate cannot catch a drift between them. A drift here produces a wrong result *shape* from the offline tools, not a crash. Until it is closed, treat any edit to one of the three as an edit to all three.
+   - **Add:** `project` cases to the parity harness. They need a project index present on the machine running the gate — the reason they were skipped originally.
+
+2. **`project search` cannot answer a query whose column filters span both FTS tables.** `asset_name:BP_Enemy` and `node_name:Branch` each work, because the table that does not carry the column is skipped as not-applicable. But `asset_name:X OR node_name:Y` names columns from both tables, no single table can satisfy it, and it is refused as an invalid query. Serving it would require projecting the query separately onto each table's column set. PR #113 proposed exactly that as a 1449-line hand-written FTS5 grammar parser; that parser was **rejected** — fuzzing showed its AST destructor recursed without a depth guard, killing the editor process on a query of roughly 12,000 chained terms, and a 15,935-query differential against real SQLite found 62 false accepts and 315 false rejects.
+   - **Add:** per-table query projection that does not reintroduce a hand-rolled grammar — the query stays bound into `MATCH ?`, with SQLite's own bounded parser as the authority.
+
+---
+
+## 2026-08-01 — OPEN: generic graph-node property read/write (PR #102 part 2, deferred)
+
+PR #102 arrived in two halves. Part 1 (the Inheritable Component Handler write tier) shipped, folded into the unified component resolver that also fixes #116 — see `specs/SPEC_MonolithBlueprint.md` § Component resolver. **Part 2 — `set_graph_node_property` / `get_graph_node_properties` — was deferred pending a redesign, not rejected.** The need is real: there is no general way to read or write a `UEdGraphNode`'s own UPROPERTYs, and `ReconstructNode()` after such a write is the genuinely new insight in the submission. Keep that part.
+
+**Why the submitted shape cannot ship as-is.** It resolves an arbitrary `UObject` from a free-floating object path and then writes any `FProperty` on it, with no `CPF_Edit` filter and with `save` defaulting to **true**. A mistyped path therefore modifies and saves an engine or marketplace asset, and the action bypasses every allowlist the namespace's other write actions go through.
+
+**The safe shape to build.**
+- Anchor on `asset_path` (a Blueprint the caller names) and locate the node *within* it — `graph_name` + `node_id` / `node_guid`, the same addressing `blueprint`'s other node actions already use. Never accept a bare object path.
+- Restrict writes to `CPF_Edit` properties on `UEdGraphNode` subclasses, and refuse properties the node exposes only as pins (those belong to `set_pin_default`).
+- Default `save` to **false**, matching the rest of the namespace.
+- Call `ReconstructNode()` after a write that changes node topology, then report the resulting pin set so the caller can see what the reconstruct did.
+- Read side (`get_graph_node_properties`) is uncontroversial and can land first.
+
+---
+
+## 2026-08-01 — OPEN: server-lifecycle and indexer follow-ups (after the #114 defect fixes)
+
+Scoped out while taking the genuine fixes from #114 (the listener teardown, the four use-after-free dispatch sites, the live-callback re-arm, honest reindex results, the indexer failure exits, and the non-blocking port probe). The durable-activation feature the PR was built around was declined, and none of the items below block the fixes that were taken.
+
+1. **`Start()`'s success check is weakened on the stop-then-start path.** Because `Stop()` no longer stops the shared HTTP listener, the port stays bound for the lifetime of the editor — so `ProbePort` succeeds after a `Monolith.StopServer` regardless of whether routes were rebound. The routes *are* rebound and the behaviour is correct, but the "listening on port %d" log line is no longer evidence that the bind is fresh. Nothing observable is wrong today; the log line simply proves less than it used to.
+   - **Add:** a route-level readiness check (a loopback `GET /health` on the rebind path) so the success line reflects Monolith's own availability rather than the port's.
+
+2. **No automation coverage for the four game-thread dispatch sites.** The use-after-free fix is verified only by closing the editor during a full index and observing no crash. The invariant it depends on — no fire-and-forget `AsyncTask` inside `FIndexingTask::Run` captures `this` — is a source property that a future edit can silently break, and the crash it produces is timing-dependent and rare enough to survive several releases unnoticed (this one did).
+   - **Add:** a source-level guard, either a build-time grep in the test target or an automation test that constructs and destroys a task with a queued progress callback outstanding.
+
+3. **A failed worker-thread creation is untested on both indexers.** `MonolithSourceIndexerFailureTest.cpp` covers the database-open exit, which is reachable with a fixture. The `FRunnableThread::Create` failure exit — for the source indexer and the project indexer alike — is not, because there is no supported way to make thread creation fail from a test.
+   - **Add:** a seam (an overridable thread factory, or a test-only failure switch) so both latch-the-flag exits are covered rather than only the one that happens to be reachable.
+
+4. **`bIsIndexing` is still the only concurrency gate on the index subsystems.** The re-arm and honest-result fixes both work by keeping that single flag truthful, which is adequate for the current single-run model but says nothing about *which* run is in flight. A caller that starts a reindex and then wants to know whether its own request is the one running has no way to ask.
+   - **Add:** a run token on the start result and on `get_index_status`, so a caller can correlate a completion with the request that caused it.
+
+---
+
 ## 2026-07-30 — OPEN: ABP-native anim layer follow-ups
 
 Deferred while shipping `animation add_anim_layer_graph` (ABP-native animation layer graphs) and the `add_linked_anim_layer` self-layer resolution. The shipped surface covers pose inputs, topology, compile, and pin regeneration; these four were scoped out deliberately.
