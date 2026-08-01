@@ -137,6 +137,19 @@ struct FSearchResult
 	float Rank = 0.0f;
 };
 
+/** Outcome of a project full-text search, so caller mistakes stay distinct from index failures. */
+enum class EMonolithProjectSearchStatus : uint8
+{
+	/** Search completed, including the valid zero-result case. */
+	Succeeded,
+
+	/** The caller supplied malformed FTS5 syntax, or a column no FTS table exposes. */
+	InvalidQuery,
+
+	/** The project index could not execute an otherwise valid query. */
+	InternalError
+};
+
 /**
  * RAII wrapper around FSQLiteDatabase for the Monolith project index.
  * Creates all tables on first open, provides typed insert/query helpers.
@@ -217,6 +230,16 @@ public:
 
 	// --- FTS5 Search ---
 	TArray<FSearchResult> FullTextSearch(const FString& Query, int32 Limit = 50);
+
+	/**
+	 * Search both project FTS tables without conflating a caller's bad query with an
+	 * index/storage failure. OutResults is left empty for every non-Succeeded outcome.
+	 */
+	EMonolithProjectSearchStatus FullTextSearch(
+		const FString& Query,
+		int32 Limit,
+		TArray<FSearchResult>& OutResults,
+		FString& OutError);
 
 	// --- Stats ---
 	TSharedPtr<FJsonObject> GetStats();

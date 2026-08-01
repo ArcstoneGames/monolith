@@ -131,6 +131,8 @@ Re-index the Monolith project database. Incremental by default (delta only). Pas
 |-----------|------|----------|-------------|
 | `force` | bool | optional | Full wipe + rebuild instead of incremental delta. Default: `false` |
 
+**Returns:** `{ "status", "message" }`. `status` is `reindex_started` when a run actually began, or `reindex_not_started` when the subsystem declined it — indexing was already in progress, or the index database is not open. Before 0.22.0 this always reported `reindex_started`, including for requests that never ran. `module_not_loaded` / `subsystem_unavailable` / `function_not_found` are returned when the index subsystem is not reachable.
+
 ---
 
 ### `monolith.guide`
@@ -833,6 +835,8 @@ Unreal Engine C++ source code navigation. 1M+ symbols indexed. **12 actions** (1
 ### `source.trigger_reindex` · `source.trigger_project_reindex`
 
 `trigger_reindex` does a full clean build (engine + shaders + project). `trigger_project_reindex` is incremental (project Source/ + Plugins/ only). Both take *no parameters*.
+
+**Returns:** a text confirmation that indexing started. Since 0.22.0 both report failure honestly: if the run does not start — a reindex is already in flight, the worker thread could not be created, or (for `trigger_project_reindex`) `EngineSource.db` does not exist yet — the action returns an **error** naming the cause instead of a success message. Earlier builds always claimed the reindex had started.
 
 ### `source.audit_module_dep_reality`
 
