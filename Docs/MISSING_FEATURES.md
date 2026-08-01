@@ -6,12 +6,48 @@
 
 ---
 
+## 2026-08-01 — OPEN: Blueprint pin-type and component-resolver follow-ups
+
+Raised by the code review of the #115 / #116 / #102-part-1 work and deliberately not folded into it — none of them block those fixes, and each is a behaviour change that deserves its own verification rather than riding along.
+
+1. **Pin-type strictness is asymmetric across the variable actions.** `add_variable` now routes through `TryParsePinType` and errors on an unresolvable type token, but `set_variable_type`, `add_local_variable` and `add_replicated_variable` still use the best-effort legacy parser, so `enum:Bogus` there still yields a silent plain byte. A *valid* `enum:` resolves correctly through either path, so the documented `change_variable_type` recovery for #115 still works — this is about the failure mode, not the success one.
+   - **Add:** migrate the remaining three call sites to `TryParsePinType` so every variable-creation surface fails loudly on an unresolvable type.
+
+2. **A failed component write can leave the asset dirty.** `set_component_property` resolves with write intent (creating the Inheritable Component Handler override) *before* validating that the property exists, so a bogus `property_name` on an inherited-SCS component creates an ICH record and dirties the package, then returns an error without compiling. It is self-healing — the record is archetype-identical and gets pruned on the next compile — but the user sees an unexplained dirty flag from a call that failed. `set_mesh` in the motion-matching scaffold has the same shape.
+   - **Add:** resolve read-only, validate, then re-resolve with write intent.
+
+3. **The `Root` alias drops the class constraint.** Every resolver tier honours `RequiredClass` except the `Root` alias branch, which returns the root component without re-checking `IsA`. Unreachable from current callers (it needs `RequiredClass` to be a strict subclass of `USceneComponent`), so this is latent rather than live.
+   - **Add:** apply the same `IsA(FilterClass)` check the other tiers use.
+
+4. **The `asset_path` alias is one action wide.** It was added to `get_inherited_component_override` only; the other seven `bp_path` actions in the same file still accept `bp_path` alone. The inconsistency is the kind of thing that generates the next issue.
+   - **Add:** accept `asset_path` as an alias across that action family.
+
+---
+
+## 2026-08-01 — OPEN: risk-mining follow-ups (after the #119 root-discovery fix)
+
+Scoped out while replacing the hardcoded git roots with runtime discovery (`ResolveGitRepoRoots`, the churn path rebase, the config fingerprint, and `risk get_mining_status`). None of these block the fix; all four were deliberate omissions.
+
+1. **Repository discovery is one level deep under `Plugins/`.** A repository nested any deeper — `Plugins/<Group>/<Plugin>`, or one under `Source/` or `Content/` — is invisible to auto-resolution and has to be named explicitly in `GitRepoRoots`. A recursive walk was rejected for this pass: an unbounded `.git` search over a large project is a cost nobody asked for at bootstrap time.
+   - **Add:** an opt-in depth setting, or a `Plugins/*/*` second level, for grouped-plugin layouts.
+
+2. **No unit coverage for the resolver or the path rebase.** `FGitCoChangeIndexer::ComputeChurnPathRebase`'s four cases (repository is the project, under it, an ancestor of it, unrelated) and `ResolveGitRepoRoots`'s override-versus-auto branch are exercised only by the in-editor V8 checks. Both are pure functions over strings and are cheap to test directly.
+   - **Add:** automation tests in `Private/Tests/RiskQueryTests.cpp` covering all four rebase cases and the ancestor-probe walk, plus a fingerprint test asserting the writer's and the reader's inputs produce the same `int32`.
+
+3. **`repo_tag` is still a basename.** `RepoTagFor` takes the last path segment, so a project-root repository and a nested plugin repository that happen to share a folder name produce the same tag. Harmless to the data today — the rebase makes their file sets disjoint and the primary key is `(repo_tag, file_path)` — but the tag is user-visible as `get_file_churn`'s `repo_tag` filter, where it is ambiguous.
+   - **Add:** disambiguate the tag by project-relative offset when two roots collide.
+
+4. **The noise filter cannot express "this directory only".** Matching is case-insensitive substring containment, so `Docs/plans/` also suppresses `Plugins/X/Docs/plans/`. That is usually what is wanted, but neither behaviour is expressible. Glob or anchored-prefix support was left alone rather than changing existing users' filter semantics inside a fix.
+   - **Add:** an anchored or glob mode for `GitMiningNoiseFilter`, opt-in so current substring behaviour is preserved.
+
+---
+
 ## 2026-07-30 — OPEN: ABP-native anim layer follow-ups
 
 Deferred while shipping `animation add_anim_layer_graph` (ABP-native animation layer graphs) and the `add_linked_anim_layer` self-layer resolution. The shipped surface covers pose inputs, topology, compile, and pin regeneration; these four were scoped out deliberately.
 
-1. **Non-pose parameter pins on animation layers.** `add_anim_layer_graph`'s `input_poses` takes pose NAMES only. `UAnimGraphNode_LinkedInputPose::Inputs` also accepts typed non-pose parameters (float, bool, struct, object …), which a layer needs to be driven by anything other than an upstream pose. Adding them requires building an `FEdGraphPinType` from a caller-supplied type string — a type-resolution surface the action does not have yet.
-   - **Add:** an optional typed-parameter list alongside `input_poses`, plus the type-string → `FEdGraphPinType` resolver it needs.
+1. **Non-pose parameter pins on animation layers.** `add_anim_layer_graph`'s `input_poses` takes pose NAMES only. `UAnimGraphNode_LinkedInputPose::Inputs` also accepts typed non-pose parameters (float, bool, struct, object …), which a layer needs to be driven by anything other than an upstream pose. The type-resolution half of this is now done — issue #115 shipped `MonolithPinTypeGrammar` (`MonolithCore/Public/MonolithPinTypeGrammar.h`), a shared type-string → `FEdGraphPinType` grammar whose `TryParsePinType` hard-errors on an unresolvable token instead of silently mistyping the pin, and MonolithAnimation links `BlueprintGraph`, so the action can include it directly. What remains is the parameter list itself.
+   - **Add:** an optional typed-parameter list alongside `input_poses`, parsed with `MonolithPinTypeGrammar::TryParsePinType`. No new resolver is needed.
 
 2. **`get_linked_layers` cannot distinguish a self layer from an interface layer.** It emits the node `title` (a self layer reads `"<Layer>\nAnim Layer (self)"`), but no structured field — so a caller has to string-match the title to tell the two apart. An `is_self_layer` / `layer_kind` field was considered during implementation and deliberately not added, to keep the change to the write path.
    - **Add:** a structured `layer_kind` (or `is_self_layer`) field on `get_linked_layers` output.
