@@ -50,11 +50,28 @@ public:
 
 	/**
 	 * Trigger a full re-index (wipes DB, re-scans everything).
+	 * This is the explicit "start over" entry point — it always resets, even when
+	 * an interrupted index could have been resumed.
 	 * @return true if a run actually started. False means nothing is happening —
 	 *         see CanAcceptIndexRequest, or the worker thread failed to spawn.
 	 */
 	UFUNCTION()
 	bool StartFullIndex();
+
+	/**
+	 * Continue an interrupted full index if one is recoverable, otherwise start a
+	 * fresh one. This is what the automatic startup path and `Monolith.StartIndex`
+	 * use: a crash mid-index must not cost the batches already committed.
+	 *
+	 * UFUNCTION because MonolithCore reaches MonolithIndex only through reflection,
+	 * and `monolith_reindex` without `force` must be able to land here. Without it
+	 * that call falls through to StartFullIndex -- which always resets -- and an
+	 * agent kicking the index after a crash silently destroys the very progress
+	 * this recovery path exists to preserve.
+	 * @return true if a run actually started.
+	 */
+	UFUNCTION()
+	bool ResumeFullIndex();
 
 	/**
 	 * Trigger an incremental catch-up index (delta engine).
@@ -116,9 +133,20 @@ private:
 		TAtomic<int32> TotalAssets{0};
 		TArray<FIndexedPluginInfo> PluginsToIndex;
 
+		/** True when this run continues an interrupted index rather than starting one. */
+		bool bIsResume = false;
+
 	private:
 		UMonolithIndexSubsystem* Owner;
 	};
+
+	/**
+	 * Shared body of StartFullIndex/ResumeFullIndex.
+	 * @param bForceReset true wipes the database first; false resumes an
+	 *        interrupted run when the schema and the in-progress marker allow it,
+	 *        and falls back to a wipe when they do not.
+	 */
+	bool StartFullIndexInternal(bool bForceReset);
 
 	void OnIndexingFinished(bool bSuccess);
 	void OnAssetRegistryFilesLoaded();

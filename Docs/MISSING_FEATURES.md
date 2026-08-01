@@ -87,6 +87,27 @@ Scoped out while taking the genuine fixes from #114 (the listener teardown, the 
 
 ---
 
+## 2026-08-01 — OPEN: full-index resume follow-ups
+
+Scoped out while making an interrupted full index resumable (#117). The resume covers the metadata pass and the deep pass — between them the overwhelming majority of index time, and where crashes actually happen, since that is where assets are loaded. The post-pass sentinels were deliberately left out of it.
+
+1. **The post-pass sentinels have no checkpoints, and they append rather than replace.** `dependencies`, `actors`, `datatable_rows`, `configs`, `cpp_symbols`, `tags`/`tag_references` and the animation nodes are all written by sentinel indexers that enumerate the Asset Registry themselves rather than working from `assets` rows with ids, so `deep_indexed_hash` / `deep_index_attempts` cannot apply to them. A resume repeats the whole post-pass phase, and because those indexers insert without clearing, an interruption *during* that phase (rather than during the far longer deep pass) leaves duplicate rows behind. `monolith_reindex force=true` clears them, and the duplicates degrade `search` / `find_references` results rather than corrupting the index — but the user is not told. Per-indexer scoping was rejected for this pass: PR #120's approach was a name-to-SQL ladder in the subsystem, which puts each indexer's storage knowledge in the wrong layer and was already incomplete for several indexers.
+   - **Add:** let `IMonolithIndexer` declare the data it owns (a `ClearOwnedData(DB)` hook, defaulting to a no-op), and have the resume path call it on each sentinel before the post-pass phase — so the knowledge lives with the indexer, and a new indexer cannot silently miss it.
+
+2. **The animation pass has transactions but no resume state.** `FAnimationIndexer` now commits per batch, so an interruption costs one batch instead of the whole pass, but a resume still re-walks every animation asset from the start. Per-asset progress for it needs item 1's ownership hook (its rows are keyed by asset id but it is dispatched through the `__Animations__` sentinel, so the full-index queue never sees them individually).
+   - **Add:** checkpointing for the sentinel passes, once indexers can describe their own rows.
+
+3. **Three registered sentinel indexers never run.** `FGASIndexer`, `FMetaSoundIndexer` and `FAIIndexer` are constructed and registered but the full-index post-pass has no branch that dispatches them, so their data is never written. This is a real latent bug, separate from the resume work, and it needs its own verification — activating three indexers that have never executed is not a change to fold into a fix for something else.
+   - **Add:** dispatch them from the post-pass phase, with an in-editor verification pass over the data each produces.
+
+4. **Deleted packages are not reaped by a full index.** A full index that resumes (rather than wiping) never removes rows for assets that disappeared while the editor was closed. The live Asset Registry callbacks and the startup delta pass both handle deletions, so this only bites for packages deleted outside the editor between an interrupted run and its resume.
+   - **Add:** a reconciliation step on the resume path that drops `assets` rows whose package the Asset Registry no longer reports.
+
+5. **`monolith_reindex()` with no arguments wipes a resumable index.** It picks between incremental and full via `CanDoIncrementalIndex()`, which requires `last_full_index` — a marker an interrupted run does not have — so it takes the full-reset path and discards recoverable progress. The automatic startup path and `Monolith.StartIndex` both resume correctly; only the explicit no-argument reindex does not.
+   - **Add:** route `monolith_reindex()` (no `force`) to `ResumeFullIndex()` when an interrupted index is present. Touches `MonolithCoreTools.cpp::HandleReindex`, which reaches the subsystem by reflection, so it also needs `ResumeFullIndex` exposed as a `UFUNCTION`.
+
+---
+
 ## 2026-07-30 — OPEN: ABP-native anim layer follow-ups
 
 Deferred while shipping `animation add_anim_layer_graph` (ABP-native animation layer graphs) and the `add_linked_anim_layer` self-layer resolution. The shipped surface covers pose inputs, topology, compile, and pin regeneration; these four were scoped out deliberately.

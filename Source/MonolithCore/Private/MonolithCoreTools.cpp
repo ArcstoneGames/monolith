@@ -691,9 +691,25 @@ FMonolithActionResult FMonolithCoreTools::HandleReindex(const TSharedPtr<FJsonOb
 			// Fallback if CanDoIncrementalIndex not found (old MonolithIndex version)
 			FuncName = TEXT("StartFullIndex");
 		}
+
+		// A non-force reindex must never destroy a recoverable interrupted index.
+		// CanDoIncrementalIndex requires last_full_index, which is absent precisely
+		// while a run is interrupted, so the branch above lands on StartFullIndex --
+		// and that always resets. Since this action is how an agent typically kicks
+		// the index after a crash, that would silently discard exactly the committed
+		// batches the resume path exists to preserve. Prefer ResumeFullIndex when the
+		// build exposes it; it starts a fresh run by itself when nothing is
+		// recoverable, so this is safe even with no interrupted index on disk.
+		if (FuncName == TEXT("StartFullIndex")
+			&& IndexSubsystemClass->FindFunctionByName(TEXT("ResumeFullIndex")))
+		{
+			FuncName = TEXT("ResumeFullIndex");
+		}
 	}
 
-	const TCHAR* KindLabel = FuncName == TEXT("StartFullIndex") ? TEXT("Full re-index") : TEXT("Incremental index");
+	const TCHAR* KindLabel = (FuncName == TEXT("StartIncrementalIndex"))
+		? TEXT("Incremental index")
+		: (FuncName == TEXT("ResumeFullIndex") ? TEXT("Full index (resuming if interrupted)") : TEXT("Full re-index"));
 
 	UFunction* Func = IndexSubsystemClass->FindFunctionByName(*FuncName);
 	if (!Func)
