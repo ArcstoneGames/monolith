@@ -10,8 +10,10 @@
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "StructUtils/InstancedStruct.h"
+#include "UObject/EnumProperty.h"
 #include "UObject/Package.h"
 #include "UObject/SoftObjectPath.h"
+#include "UObject/TextProperty.h"
 #include "UObject/UnrealType.h"
 
 // NOTE: deliberately no "Chooser.h" include and no WITH_CHOOSER gate. Everything below
