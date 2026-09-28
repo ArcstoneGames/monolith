@@ -176,7 +176,7 @@ Each module has its own spec file under `specs/`. The table below is the index.
 The engine source indexer is a native C++ implementation within `MonolithSource`. `UMonolithSourceSubsystem` builds and maintains `EngineSource.db` in-process. Indexing is triggered via:
 
 - **`trigger_reindex`** — full engine source re-index
-- **`trigger_project_reindex`** — incremental project-only C++ re-index (faster; only updates project symbols)
+- **`trigger_project_reindex`** — incremental project-only C++ re-index (faster; only updates project symbols). Also kicked automatically after Live Coding / hot reload. Purges every row previously indexed under the project's `Source/` and `Plugins/` trees before re-indexing, so deleted files, symbols, modules and plugins drop out and nothing is duplicated; engine rows are untouched. See `specs/SPEC_MonolithSource.md` § Incremental Project Reindex.
 
 ### 4.2 Python Source Indexer (legacy)
 
@@ -203,6 +203,8 @@ The engine source indexer is a native C++ implementation within `MonolithSource`
 
 ### Source DB Schema
 
+Native C++ indexer schema version **3** (stamped in `meta.schema_version`). A pre-v3 `EngineSource.db` is migrated in place on open.
+
 | Table | Purpose |
 |-------|---------|
 | `modules` | id, name, path, module_type, build_cs_path |
@@ -211,6 +213,7 @@ The engine source indexer is a native C++ implementation within `MonolithSource`
 | `inheritance` | id, child_id, parent_id |
 | `references` | id, from_symbol_id, to_symbol_id, ref_kind, file_id, line |
 | `includes` | id, file_id, included_path, line |
+| `symbol_deprecations` | id, symbol_id (nullable), symbol_name, version, message, kind, file_id (nullable, v3) |
 | `symbols_fts` | FTS5 on name, qualified_name, docstring |
 | `source_fts` | FTS5 on text (file_id, line_number UNINDEXED) |
 | `meta` | key, value |

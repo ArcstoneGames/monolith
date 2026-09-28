@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-28 — OPEN: source / asset index follow-ups (after the incremental project reindex fix)
+
+Scoped out while making `source.trigger_project_reindex` (and the Live Coding / hot-reload auto-kick) purge previously indexed project rows before re-indexing, bumping the source DB schema to v3, and making the startup asset delta rename `asset_name` on moves. None of these block that fix.
+
+1. **The purge's `source_fts` delete is a full-table scan on every incremental reindex.** `source_fts.file_id` is `UNINDEXED`, so `DELETE FROM source_fts WHERE file_id IN (...)` walks every chunk of the engine index (~2.3M rows) even when the project owns a small fraction of them. Measured on the real `EngineSource.db`: about 17 s with a cold page cache, about 1 s warm. The auto-kick runs this after every Live Coding patch. `references` and `includes` have no `file_id` index either, so they scan too, though more cheaply.
+   - **Add:** a way to reach a file's FTS rows without the scan — an external-content FTS table keyed by a rowid range per file, a side table mapping `file_id` to FTS rowids, or a separate FTS table for project source — plus `file_id` indexes on `references` and `includes`.
+
+2. **The Python offline indexer's schema is out of sync with the C++ schema.** `Scripts/source_indexer/db/schema.py` has no `symbol_deprecations` table and still stamps `schema_version = 1`, while the native indexer is at v3. The Python indexer is legacy and not invoked by MonolithSource, but a DB it builds would report v1 and give `check_deprecations` / `verify_symbols` nothing to read.
+   - **Add:** bring `schema.py` to v3 (the `symbol_deprecations` table with nullable `symbol_id` / `file_id`, and `SCHEMA_VERSION = 3`), or retire the Python indexer's DB-writing path outright.
+
+3. **The startup asset delta never runs the sentinel indexers.** Phase 9 of `UMonolithIndexSubsystem::StartIncrementalIndex` is a commented-out stub, so dependencies, tag references and level actors are not refreshed for assets added or modified while the editor was closed. The live Asset Registry drain does call `RunScopedSentinels`, but that function only invokes indexers whose `SupportsIncrementalIndex()` returns true, and no indexer overrides the `false` default — so the live path does not refresh that data either.
+   - **Add:** implement `IndexScoped` / `SupportsIncrementalIndex` on the sentinels that own per-asset data (`FDependencyIndexer`, `FGameplayTagIndexer`, `FLevelIndexer`), then enable Phase 9. This overlaps the `ClearOwnedData` hook proposed under *full-index resume follow-ups* item 1: a scoped pass has to clear the asset's old rows before writing new ones.
+
+---
+
 ## 2026-09-10 — OPEN: carried into 0.23.0
 
 Four items known-open at the 0.23.0 release. None of them blocks it; each is stated here so nobody rediscovers them.
