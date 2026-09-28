@@ -1,5 +1,6 @@
 #include "MonolithSourceIndexer.h"
 #include "MonolithSourceDatabase.h"
+#include "MonolithSourceSchema.h"
 #include "MonolithCppParser.h"
 #include "MonolithShaderParser.h"
 #include "MonolithReferenceBuilder.h"
@@ -160,6 +161,19 @@ uint32 FMonolithSourceIndexer::Run()
 		// If NOT clean build, load existing engine symbols for cross-reference resolution
 		if (!bCleanBuild)
 		{
+			// Drop every row previously indexed from the project's Source/ and Plugins/
+			// trees before re-indexing them. Without this, files deleted from disk keep
+			// their rows and files still on disk get their symbols, includes, source
+			// chunks and deprecations appended next to the old ones. Purging by path
+			// prefix (not by the discovered module set) also clears modules and plugins
+			// that no longer exist. Runs before LoadExistingSymbols so stale project
+			// symbol ids never reach the name maps.
+			const TArray<FString> ProjectRoots = { ProjectPath / TEXT("Source"), ProjectPath / TEXT("Plugins") };
+			if (DB.PurgeFilesUnderPaths(ProjectRoots) < 0)
+			{
+				UE_LOG(LogMonolithSource, Warning, TEXT("Indexer: purge of previously indexed project files failed — stale project rows may remain"));
+			}
+
 			UE_LOG(LogMonolithSource, Log, TEXT("Indexer: Loading existing symbols for incremental indexing..."));
 			DB.LoadExistingSymbols(SymbolNameToId, ClassNameToId, SymbolSpans, ClassSpans);
 		}
@@ -571,7 +585,7 @@ int32 FMonolithSourceIndexer::IndexCppFile(const FString& FilePath, int64 Module
 				LinkedSymId = *Found;
 			}
 
-			DB.InsertDeprecation(LinkedSymId, SymbolName, Version, Message, Kind);
+			DB.InsertDeprecation(LinkedSymId, SymbolName, Version, Message, Kind, FileId);
 		}
 	}
 
@@ -760,7 +774,7 @@ void FMonolithSourceIndexer::Finalize(FMonolithSourceDatabase& DB)
 	UE_LOG(LogMonolithSource, Log, TEXT("Indexer: Reference extraction complete — %d refs from %d files"), RefCount, FilesProcessed);
 
 	// Set meta
-	DB.SetMeta(TEXT("schema_version"), FString::FromInt(1));
+	DB.SetMeta(TEXT("schema_version"), FString::FromInt(MonolithSourceSchema::SchemaVersion));
 	DB.SetMeta(TEXT("index_timestamp"), FString::FromInt(FDateTime::UtcNow().ToUnixTimestamp()));
 	DB.SetMeta(TEXT("total_files"), FString::FromInt(TotalFilesProcessed.Load()));
 	DB.SetMeta(TEXT("total_symbols"), FString::FromInt(TotalSymbolsExtracted.Load()));

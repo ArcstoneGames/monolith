@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Incremental project source reindex no longer leaves stale or duplicated rows.** `source trigger_project_reindex`, and the automatic reindex after Live Coding / hot reload, appended to the project's existing rows instead of replacing them: files deleted from disk kept every symbol, reference, include and source chunk, and files still on disk had their symbols, includes, source-search chunks and deprecations duplicated, with symbols removed from a file lingering beside the new ones. The pass now purges everything previously indexed under the project's `Source/` and `Plugins/` trees in a single transaction before re-indexing, which also clears modules and plugins deleted outright. Engine rows are untouched, and a full `trigger_reindex` behaves as before.
+- **Source indexer file and module ids resolved to unrelated rows.** Re-inserting an existing file or module used `INSERT OR IGNORE` followed by the connection's last insert rowid, which SQLite does not reset when the insert is ignored, so an existing file could resolve to the id of whatever was inserted last (usually a symbol). The row is now looked up first, and an existing row has its metadata (line count, timestamp, module, `Build.cs` path) refreshed.
+- **Asset index kept the old asset name after a rename detected at editor startup.** The startup incremental asset index recorded the new package path for a moved asset but left `asset_name` at its old value; it now passes the name the asset registry reports for the new path.
+
+### Changed
+
+- **Engine source database schema v3.** `symbol_deprecations` gains a nullable `file_id` column so the incremental purge can reach deprecation rows that are not linked to a symbol. Existing databases are migrated in place on the next index pass. Deprecation rows written before v3 that have neither a file nor a symbol link cannot be attributed, and are only cleared by one full `source trigger_reindex`. `meta.schema_version` now records the real schema version instead of `1`.
+
 ## [0.23.0] - 2026-09-10
 
 Two new namespaces, `input` and `localization`, and a release built largely out of the gap between what an action *reported* and what it *did* — a Sound Cue edit that asserted instead of failing, an index that hung the editor on exit, a UI rebuild that reset properties it never mentioned, and instanced input modifiers that read back as `None` after a reload with nothing anywhere flagging the loss.

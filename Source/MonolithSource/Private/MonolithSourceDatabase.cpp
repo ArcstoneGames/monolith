@@ -988,6 +988,37 @@ bool FMonolithSourceDatabase::CreateTablesIfNeeded()
 		UE_LOG(LogMonolithSource, Error, TEXT("CreateTablesIfNeeded: DDL_Tables failed — %s"), *Database->GetLastError());
 		return false;
 	}
+
+	// Schema v3 migration: pre-v3 symbol_deprecations tables lack file_id.
+	// CREATE TABLE IF NOT EXISTS leaves an existing table untouched, so add the
+	// column in place. Existing rows keep file_id = NULL.
+	{
+		bool bHasFileId = false;
+		FSQLitePreparedStatement InfoStmt;
+		InfoStmt.Create(*Database, TEXT("PRAGMA table_info(symbol_deprecations);"));
+		while (InfoStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+		{
+			FString ColumnName;
+			InfoStmt.GetColumnValueByIndex(1, ColumnName);
+			if (ColumnName == TEXT("file_id"))
+			{
+				bHasFileId = true;
+				break;
+			}
+		}
+		InfoStmt.Destroy();
+
+		if (!bHasFileId)
+		{
+			if (!Database->Execute(TEXT("ALTER TABLE symbol_deprecations ADD COLUMN file_id INTEGER REFERENCES files(id);")))
+			{
+				UE_LOG(LogMonolithSource, Error, TEXT("CreateTablesIfNeeded: adding symbol_deprecations.file_id failed — %s"), *Database->GetLastError());
+				return false;
+			}
+			UE_LOG(LogMonolithSource, Log, TEXT("CreateTablesIfNeeded: migrated symbol_deprecations to schema v3 (added file_id)"));
+		}
+	}
+
 	if (!ExecuteMulti(*Database, MonolithSourceSchema::DDL_FTS))
 	{
 		UE_LOG(LogMonolithSource, Error, TEXT("CreateTablesIfNeeded: DDL_FTS failed — %s"), *Database->GetLastError());
@@ -1088,34 +1119,43 @@ int64 FMonolithSourceDatabase::InsertModule(const FString& Name, const FString& 
 	FScopeLock Lock(&DbLock);
 	if (!Database || !Database->IsValid()) return 0;
 
-	// INSERT OR IGNORE — if UNIQUE(name,path) already exists, this is a no-op
+	// Look up first. An INSERT OR IGNORE that hits the UNIQUE(name,path) constraint
+	// does NOT reset sqlite3_last_insert_rowid(), so reading GetLastInsertRowId()
+	// after an ignored insert returns the rowid of an unrelated earlier insert.
+	{
+		FSQLitePreparedStatement SelStmt;
+		SelStmt.Create(*Database, TEXT("SELECT id FROM modules WHERE name = ? AND path = ?;"));
+		SelStmt.SetBindingValueByIndex(1, Name);
+		SelStmt.SetBindingValueByIndex(2, Path);
+		if (SelStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+		{
+			int64 ExistingId = 0;
+			SelStmt.GetColumnValueByIndex(0, ExistingId);
+			SelStmt.Destroy();
+
+			// Refresh the mutable metadata so a re-index never leaves it stale.
+			FSQLitePreparedStatement UpdStmt;
+			UpdStmt.Create(*Database, TEXT("UPDATE modules SET module_type = ?, build_cs_path = ? WHERE id = ?;"));
+			UpdStmt.SetBindingValueByIndex(1, ModuleType);
+			UpdStmt.SetBindingValueByIndex(2, BuildCsPath);
+			UpdStmt.SetBindingValueByIndex(3, ExistingId);
+			UpdStmt.Step();
+			return ExistingId;
+		}
+	}
+
 	FSQLitePreparedStatement InsStmt;
-	InsStmt.Create(*Database, TEXT("INSERT OR IGNORE INTO modules (name, path, module_type, build_cs_path) VALUES (?, ?, ?, ?);"));
+	InsStmt.Create(*Database, TEXT("INSERT INTO modules (name, path, module_type, build_cs_path) VALUES (?, ?, ?, ?);"));
 	InsStmt.SetBindingValueByIndex(1, Name);
 	InsStmt.SetBindingValueByIndex(2, Path);
 	InsStmt.SetBindingValueByIndex(3, ModuleType);
 	InsStmt.SetBindingValueByIndex(4, BuildCsPath);
-	InsStmt.Step();
-
-	int64 RowId = Database->GetLastInsertRowId();
-	if (RowId != 0)
+	if (InsStmt.Step() == ESQLitePreparedStatementStepResult::Done)
 	{
-		return RowId;
+		return Database->GetLastInsertRowId();
 	}
 
-	// Already existed — fetch its id
-	FSQLitePreparedStatement SelStmt;
-	SelStmt.Create(*Database, TEXT("SELECT id FROM modules WHERE name = ? AND path = ?;"));
-	SelStmt.SetBindingValueByIndex(1, Name);
-	SelStmt.SetBindingValueByIndex(2, Path);
-	if (SelStmt.Step() == ESQLitePreparedStatementStepResult::Row)
-	{
-		int64 ExistingId = 0;
-		SelStmt.GetColumnValueByIndex(0, ExistingId);
-		return ExistingId;
-	}
-
-	UE_LOG(LogMonolithSource, Warning, TEXT("InsertModule: could not retrieve id for '%s'"), *Name);
+	UE_LOG(LogMonolithSource, Warning, TEXT("InsertModule: insert failed for '%s' — %s"), *Name, *Database->GetLastError());
 	return 0;
 }
 
@@ -1124,33 +1164,55 @@ int64 FMonolithSourceDatabase::InsertFile(const FString& FilePath, int64 ModuleI
 	FScopeLock Lock(&DbLock);
 	if (!Database || !Database->IsValid()) return 0;
 
+	// Look up first — see InsertModule for why GetLastInsertRowId() cannot be
+	// trusted after an ignored insert.
+	{
+		FSQLitePreparedStatement SelStmt;
+		SelStmt.Create(*Database, TEXT("SELECT id FROM files WHERE path = ?;"));
+		SelStmt.SetBindingValueByIndex(1, FilePath);
+		if (SelStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+		{
+			int64 ExistingId = 0;
+			SelStmt.GetColumnValueByIndex(0, ExistingId);
+			SelStmt.Destroy();
+
+			// Existing row: refresh its metadata to match the file being indexed now.
+			FSQLitePreparedStatement UpdStmt;
+			UpdStmt.Create(*Database, TEXT("UPDATE files SET module_id = ?, file_type = ?, line_count = ?, last_modified = ? WHERE id = ?;"));
+			if (ModuleId != 0)
+			{
+				UpdStmt.SetBindingValueByIndex(1, ModuleId);
+			}
+			else
+			{
+				UpdStmt.SetBindingValueByIndex(1); // NULL
+			}
+			UpdStmt.SetBindingValueByIndex(2, FileType);
+			UpdStmt.SetBindingValueByIndex(3, static_cast<int64>(LineCount));
+			UpdStmt.SetBindingValueByIndex(4, LastModified);
+			UpdStmt.SetBindingValueByIndex(5, ExistingId);
+			UpdStmt.Step();
+			return ExistingId;
+		}
+	}
+
 	FSQLitePreparedStatement InsStmt;
-	InsStmt.Create(*Database, TEXT("INSERT OR IGNORE INTO files (path, module_id, file_type, line_count, last_modified) VALUES (?, ?, ?, ?, ?);"));
+	InsStmt.Create(*Database, TEXT("INSERT INTO files (path, module_id, file_type, line_count, last_modified) VALUES (?, ?, ?, ?, ?);"));
 	InsStmt.SetBindingValueByIndex(1, FilePath);
-	InsStmt.SetBindingValueByIndex(2, ModuleId);
+	if (ModuleId != 0)
+	{
+		InsStmt.SetBindingValueByIndex(2, ModuleId);
+	}
+	// else: leave unbound — SQLite defaults to NULL
 	InsStmt.SetBindingValueByIndex(3, FileType);
 	InsStmt.SetBindingValueByIndex(4, static_cast<int64>(LineCount));
 	InsStmt.SetBindingValueByIndex(5, LastModified);
-	InsStmt.Step();
-
-	int64 RowId = Database->GetLastInsertRowId();
-	if (RowId != 0)
+	if (InsStmt.Step() == ESQLitePreparedStatementStepResult::Done)
 	{
-		return RowId;
+		return Database->GetLastInsertRowId();
 	}
 
-	// Already existed — fetch its id
-	FSQLitePreparedStatement SelStmt;
-	SelStmt.Create(*Database, TEXT("SELECT id FROM files WHERE path = ?;"));
-	SelStmt.SetBindingValueByIndex(1, FilePath);
-	if (SelStmt.Step() == ESQLitePreparedStatementStepResult::Row)
-	{
-		int64 ExistingId = 0;
-		SelStmt.GetColumnValueByIndex(0, ExistingId);
-		return ExistingId;
-	}
-
-	UE_LOG(LogMonolithSource, Warning, TEXT("InsertFile: could not retrieve id for '%s'"), *FilePath);
+	UE_LOG(LogMonolithSource, Warning, TEXT("InsertFile: insert failed for '%s' — %s"), *FilePath, *Database->GetLastError());
 	return 0;
 }
 
@@ -1324,15 +1386,15 @@ FString FMonolithSourceDatabase::GetMeta(const FString& Key)
 // Deprecation queries (item 3)
 // ============================================================
 
-void FMonolithSourceDatabase::InsertDeprecation(int64 SymbolId, const FString& SymbolName, const FString& Version, const FString& Message, const FString& Kind)
+void FMonolithSourceDatabase::InsertDeprecation(int64 SymbolId, const FString& SymbolName, const FString& Version, const FString& Message, const FString& Kind, int64 FileId)
 {
 	FScopeLock Lock(&DbLock);
 	if (!Database || !Database->IsValid()) return;
 
 	FSQLitePreparedStatement Stmt;
 	Stmt.Create(*Database,
-		TEXT("INSERT INTO symbol_deprecations (symbol_id, symbol_name, version, message, kind) ")
-		TEXT("VALUES (?, ?, ?, ?, ?);"));
+		TEXT("INSERT INTO symbol_deprecations (symbol_id, symbol_name, version, message, kind, file_id) ")
+		TEXT("VALUES (?, ?, ?, ?, ?, ?);"));
 
 	// symbol_id — bind NULL if 0 (class-body methods have no symbols row)
 	if (SymbolId != 0)
@@ -1345,6 +1407,12 @@ void FMonolithSourceDatabase::InsertDeprecation(int64 SymbolId, const FString& S
 	Stmt.SetBindingValueByIndex(3, Version);
 	Stmt.SetBindingValueByIndex(4, Message);
 	Stmt.SetBindingValueByIndex(5, Kind);
+
+	// file_id — bind NULL if 0
+	if (FileId != 0)
+	{
+		Stmt.SetBindingValueByIndex(6, FileId);
+	}
 	Stmt.Step();
 }
 
@@ -1495,4 +1563,175 @@ int32 FMonolithSourceDatabase::LoadExistingSymbols(
 		Count, OutClassNameToId.Num());
 
 	return Count;
+}
+
+// ============================================================
+// Incremental purge — drop every row derived from files under the given roots
+// ============================================================
+
+int32 FMonolithSourceDatabase::PurgeFilesUnderPaths(const TArray<FString>& RootDirs)
+{
+	FScopeLock Lock(&DbLock);
+	if (!Database || !Database->IsValid()) return -1;
+
+	// Normalise each root to "<dir>/" so "Source" never prefix-matches "SourceOld".
+	TArray<FString> Prefixes;
+	for (const FString& Root : RootDirs)
+	{
+		FString Prefix = Root;
+		FPaths::NormalizeDirectoryName(Prefix);   // backslashes -> '/', trailing slash stripped
+		if (Prefix.IsEmpty()) continue;
+		Prefix += TEXT("/");
+		Prefixes.Add(Prefix);
+	}
+	if (Prefixes.Num() == 0) return 0;
+
+	// sqlite3_changes() for the most recent statement on this connection.
+	auto LastChanges = [this]() -> int32
+	{
+		FSQLitePreparedStatement ChangesStmt;
+		ChangesStmt.Create(*Database, TEXT("SELECT changes();"));
+		int64 Changes = 0;
+		if (ChangesStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+		{
+			ChangesStmt.GetColumnValueByIndex(0, Changes);
+		}
+		return static_cast<int32>(Changes);
+	};
+
+	// Executes one statement and returns the rows it changed, or -1 on error.
+	auto ExecCounted = [this, &LastChanges](const TCHAR* SQL) -> int32
+	{
+		if (!Database->Execute(SQL))
+		{
+			UE_LOG(LogMonolithSource, Error, TEXT("PurgeFilesUnderPaths: '%s' failed — %s"), SQL, *Database->GetLastError());
+			return -1;
+		}
+		return LastChanges();
+	};
+
+	// Id sets live in connection-private TEMP tables so every DELETE below is one
+	// set-based statement probing an INTEGER PRIMARY KEY, not a per-row loop.
+	if (!Database->Execute(TEXT("CREATE TEMP TABLE IF NOT EXISTS purge_files (id INTEGER PRIMARY KEY);"))
+		|| !Database->Execute(TEXT("CREATE TEMP TABLE IF NOT EXISTS purge_symbols (id INTEGER PRIMARY KEY);")))
+	{
+		UE_LOG(LogMonolithSource, Error, TEXT("PurgeFilesUnderPaths: temp table creation failed — %s"), *Database->GetLastError());
+		return -1;
+	}
+
+	if (!Database->Execute(TEXT("BEGIN;")))
+	{
+		UE_LOG(LogMonolithSource, Error, TEXT("PurgeFilesUnderPaths: BEGIN failed — %s"), *Database->GetLastError());
+		return -1;
+	}
+
+	bool bOk = Database->Execute(TEXT("DELETE FROM purge_files;"))
+		&& Database->Execute(TEXT("DELETE FROM purge_symbols;"));
+
+	// Collect the file set. Paths are compared with '\' folded to '/' and ASCII
+	// case folded on both sides, so a root spelled differently from the stored
+	// paths (drive-letter case, separators) still matches.
+	for (int32 i = 0; bOk && i < Prefixes.Num(); ++i)
+	{
+		FSQLitePreparedStatement Stmt;
+		Stmt.Create(*Database,
+			TEXT("INSERT OR IGNORE INTO purge_files (id) SELECT id FROM files ")
+			TEXT("WHERE lower(substr(replace(path, '\\', '/'), 1, ?)) = lower(?);"));
+		Stmt.SetBindingValueByIndex(1, static_cast<int64>(Prefixes[i].Len()));
+		Stmt.SetBindingValueByIndex(2, Prefixes[i]);
+		bOk = (Stmt.Step() == ESQLitePreparedStatementStepResult::Done);
+	}
+
+	if (bOk)
+	{
+		bOk = Database->Execute(TEXT("INSERT INTO purge_symbols (id) SELECT id FROM symbols WHERE file_id IN (SELECT id FROM purge_files);"));
+	}
+
+	int32 FileCount = 0;
+	int32 SymbolCount = 0;
+	if (bOk)
+	{
+		FSQLitePreparedStatement CountStmt;
+		CountStmt.Create(*Database, TEXT("SELECT (SELECT COUNT(*) FROM purge_files), (SELECT COUNT(*) FROM purge_symbols);"));
+		if (CountStmt.Step() == ESQLitePreparedStatementStepResult::Row)
+		{
+			int64 F = 0, S = 0;
+			CountStmt.GetColumnValueByIndex(0, F);
+			CountStmt.GetColumnValueByIndex(1, S);
+			FileCount = static_cast<int32>(F);
+			SymbolCount = static_cast<int32>(S);
+		}
+	}
+
+	int32 RefCount = 0, InhCount = 0, IncCount = 0, FtsCount = 0, DepCount = 0, ModCount = 0, Reparented = 0;
+	auto Accumulate = [&bOk](int32 Changes, int32& Into)
+	{
+		if (Changes < 0) { bOk = false; return; }
+		Into += Changes;
+	};
+
+	if (bOk && FileCount > 0)
+	{
+		// references are split three ways so the from/to halves use idx_refs_from /
+		// idx_refs_to. Type references carry from_symbol_id = 0 and are reachable
+		// only through file_id.
+		Accumulate(ExecCounted(TEXT("DELETE FROM \"references\" WHERE from_symbol_id IN (SELECT id FROM purge_symbols);")), RefCount);
+		if (bOk) Accumulate(ExecCounted(TEXT("DELETE FROM \"references\" WHERE to_symbol_id IN (SELECT id FROM purge_symbols);")), RefCount);
+		if (bOk) Accumulate(ExecCounted(TEXT("DELETE FROM \"references\" WHERE file_id IN (SELECT id FROM purge_files);")), RefCount);
+		if (bOk) Accumulate(ExecCounted(TEXT("DELETE FROM inheritance WHERE child_id IN (SELECT id FROM purge_symbols) OR parent_id IN (SELECT id FROM purge_symbols);")), InhCount);
+		// Rows written before schema v3 have file_id NULL; the symbol_id arm still
+		// reaches the linked ones. Unlinked legacy rows are cleared by a full reindex.
+		if (bOk) Accumulate(ExecCounted(TEXT("DELETE FROM symbol_deprecations WHERE file_id IN (SELECT id FROM purge_files) OR symbol_id IN (SELECT id FROM purge_symbols);")), DepCount);
+		if (bOk) Accumulate(ExecCounted(TEXT("DELETE FROM includes WHERE file_id IN (SELECT id FROM purge_files);")), IncCount);
+		// source_fts.file_id is UNINDEXED, so this scans the FTS content table once.
+		if (bOk) Accumulate(ExecCounted(TEXT("DELETE FROM source_fts WHERE file_id IN (SELECT id FROM purge_files);")), FtsCount);
+		// Survivors must not keep a parent id that is about to disappear.
+		if (bOk) Accumulate(ExecCounted(TEXT("UPDATE symbols SET parent_symbol_id = NULL WHERE parent_symbol_id IN (SELECT id FROM purge_symbols) AND id NOT IN (SELECT id FROM purge_symbols);")), Reparented);
+		// symbols_ad keeps symbols_fts in sync for each deleted row.
+		if (bOk) bOk = ExecCounted(TEXT("DELETE FROM symbols WHERE id IN (SELECT id FROM purge_symbols);")) >= 0;
+		if (bOk) bOk = ExecCounted(TEXT("DELETE FROM files WHERE id IN (SELECT id FROM purge_files);")) >= 0;
+	}
+
+	// Modules at or under the roots that no longer own any file. This also removes
+	// modules and plugins that were deleted from disk entirely.
+	for (int32 i = 0; bOk && i < Prefixes.Num(); ++i)
+	{
+		FSQLitePreparedStatement Stmt;
+		Stmt.Create(*Database,
+			TEXT("DELETE FROM modules ")
+			TEXT("WHERE (lower(substr(replace(path, '\\', '/'), 1, ?)) = lower(?) OR lower(replace(path, '\\', '/')) = lower(?)) ")
+			TEXT("AND id NOT IN (SELECT module_id FROM files WHERE module_id IS NOT NULL);"));
+		Stmt.SetBindingValueByIndex(1, static_cast<int64>(Prefixes[i].Len()));
+		Stmt.SetBindingValueByIndex(2, Prefixes[i]);
+		Stmt.SetBindingValueByIndex(3, Prefixes[i].LeftChop(1));
+		bOk = (Stmt.Step() == ESQLitePreparedStatementStepResult::Done);
+		Stmt.Destroy();
+		if (bOk)
+		{
+			ModCount += LastChanges();
+		}
+	}
+
+	if (!bOk)
+	{
+		UE_LOG(LogMonolithSource, Error, TEXT("PurgeFilesUnderPaths: failed — %s; rolling back"), *Database->GetLastError());
+		Database->Execute(TEXT("ROLLBACK;"));
+		return -1;
+	}
+
+	Database->Execute(TEXT("DELETE FROM purge_files;"));
+	Database->Execute(TEXT("DELETE FROM purge_symbols;"));
+
+	if (!Database->Execute(TEXT("COMMIT;")))
+	{
+		UE_LOG(LogMonolithSource, Error, TEXT("PurgeFilesUnderPaths: COMMIT failed — %s; rolling back"), *Database->GetLastError());
+		Database->Execute(TEXT("ROLLBACK;"));
+		return -1;
+	}
+
+	UE_LOG(LogMonolithSource, Log,
+		TEXT("PurgeFilesUnderPaths: purged %d files, %d symbols, %d references, %d inheritance, %d includes, %d source chunks, %d deprecations, %d modules (%d symbols re-parented)"),
+		FileCount, SymbolCount, RefCount, InhCount, IncCount, FtsCount, DepCount, ModCount, Reparented);
+
+	return FileCount;
 }

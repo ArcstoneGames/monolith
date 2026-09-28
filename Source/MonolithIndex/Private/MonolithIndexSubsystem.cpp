@@ -1864,7 +1864,18 @@ bool UMonolithIndexSubsystem::StartIncrementalIndex()
 	// 6b: Moves
 	for (const auto& [OldPath, NewPath] : Moves)
 	{
-		Database->UpdateAssetPath(OldPath.ToString(), NewPath.ToString());
+		// A move usually renames the asset too; pass the new name so asset_name
+		// does not keep the old one (UpdateAssetPath keeps it when this is empty).
+		FString NewAssetName;
+		{
+			TArray<FAssetData> MovedAssets;
+			AR.GetAssetsByPackageName(NewPath, MovedAssets);
+			if (MovedAssets.Num() > 0)
+			{
+				NewAssetName = MovedAssets[0].AssetName.ToString();
+			}
+		}
+		Database->UpdateAssetPath(OldPath.ToString(), NewPath.ToString(), NewAssetName);
 		if (FIoHash* Hash = CurrentHashes.Find(NewPath))
 			Database->UpdateSavedHash(NewPath.ToString(), LexToString(*Hash));
 	}

@@ -194,7 +194,9 @@ public:
 	// --- Deprecation queries (item 3) ---
 	// symbol_id is NULLABLE: pass 0 to store NULL (class-body methods have no
 	// symbols row — Step-0 finding). Lookups key on symbol_name.
-	void InsertDeprecation(int64 SymbolId, const FString& SymbolName, const FString& Version, const FString& Message, const FString& Kind);
+	// FileId (schema v3) records the source file so an incremental reindex can
+	// purge the row; pass 0 to store NULL.
+	void InsertDeprecation(int64 SymbolId, const FString& SymbolName, const FString& Version, const FString& Message, const FString& Kind, int64 FileId = 0);
 	/** Returns the deprecation row for the first matching symbol, or unset when not deprecated. */
 	TOptional<FMonolithDeprecationRow> GetDeprecation(const FString& SymbolName);
 	/** Batch lookup: maps each input symbol name that IS deprecated to its row. Absent keys = not deprecated. */
@@ -205,6 +207,19 @@ public:
 	// --- Incremental indexing support ---
 	int32 LoadExistingSymbols(TMap<FString, int64>& OutSymbolNameToId, TMap<FString, int64>& OutClassNameToId,
 		TMap<FString, TPair<int32,int32>>& OutSymbolSpans, TMap<FString, TPair<int32,int32>>& OutClassSpans);
+
+	/**
+	 * Delete every indexed file whose path lies under one of RootDirs, together with
+	 * all rows derived from those files: symbols (symbols_fts follows via the
+	 * symbols_ad trigger), references, inheritance, includes, source_fts chunks and
+	 * symbol_deprecations. Surviving symbols whose parent_symbol_id pointed into the
+	 * purged set are re-parented to NULL, and modules under the roots that are left
+	 * with no files are removed. Runs in a single transaction.
+	 *
+	 * Paths are compared with backslashes folded to '/' and ASCII case-insensitively.
+	 * Returns the number of files purged, or -1 on failure (transaction rolled back).
+	 */
+	int32 PurgeFilesUnderPaths(const TArray<FString>& RootDirs);
 
 private:
 	FMonolithSourceSymbol ReadSymbolFromStatement(FSQLitePreparedStatement& Stmt);
