@@ -87,8 +87,11 @@ namespace MonolithCppReflectTestDetail
 			return FString();
 		}
 
-		OutWorkRoot = FPaths::AutomationTransientDir()
-			/ FString::Printf(TEXT("cppreflect-fixture-%s"), *FGuid::NewGuid().ToString());
+		// Absolute on purpose: AutomationTransientDir() is relative to the engine binaries when the
+		// project shares the engine's root, and Run() resolves a relative root against the PROJECT
+		// dir, which lands somewhere else entirely (0 artefacts scanned).
+		OutWorkRoot = FPaths::ConvertRelativePathToFull(FPaths::AutomationTransientDir()
+			/ FString::Printf(TEXT("cppreflect-fixture-%s"), *FGuid::NewGuid().ToString()));
 
 		const FString ModuleUhtDir = OutWorkRoot / TEXT("Inc") / ModuleName / TEXT("UHT");
 		FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*ModuleUhtDir);
@@ -224,8 +227,8 @@ bool FCppReflectEmptyRootsDegradedTest::RunTest(const FString& /*Parameters*/)
 	}
 	FSQLiteDatabase& Db = ScopedDb.Get();
 
-	const FString GhostRoot = FPaths::AutomationTransientDir()
-		/ FString::Printf(TEXT("ghost-%s"), *FGuid::NewGuid().ToString());
+	const FString GhostRoot = FPaths::ConvertRelativePathToFull(FPaths::AutomationTransientDir()
+		/ FString::Printf(TEXT("ghost-%s"), *FGuid::NewGuid().ToString()));
 	// Intentionally do NOT create the directory — exercises the
 	// CollectArtefacts "skipping missing root" path.
 
@@ -267,11 +270,15 @@ bool FCppReflectCursorPaginationTest::RunTest(const FString& /*Parameters*/)
 	}
 	FSQLiteDatabase& Db = ScopedDb.Get();
 
-	// Bootstrap the schema by running the reader on no roots — table-create only.
+	// Bootstrap the schema by running the reader on a root that does not exist — table-create
+	// only. An EMPTY root list is not "no roots": Run() auto-resolves it to the whole project
+	// Intermediate/Build tree (thousands of artefacts, many seconds of game-thread time).
 	{
+		const FString GhostRoot = FPaths::ConvertRelativePathToFull(FPaths::AutomationTransientDir()
+			/ FString::Printf(TEXT("cppreflect-schema-only-%s"), *FGuid::NewGuid().ToString()));
 		FUHTArtefactReader Reader;
 		FString Status;
-		Reader.Run(Db, {}, false, /*bAllowMarketplacePaths=*/false, Status);
+		Reader.Run(Db, { GhostRoot }, false, /*bAllowMarketplacePaths=*/false, Status);
 	}
 
 	// Seed 150 synthetic UPROPERTY rows on a single class.
