@@ -95,6 +95,12 @@
 #include "UObject/UObjectIterator.h"
 #include "Engine/Blueprint.h"
 #include "Templates/UnrealTemplate.h"
+// ...and the Dirty half of that function: a non-data-only BS_Dirty Blueprint is recompiled
+// before PIE, so one whose last compile left Error annotations on its nodes is reported too.
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Logging/TokenizedMessage.h"
 
 // start_pie needs the level-editor module + asset viewport to pin PIE to in-viewport mode
 #include "LevelEditor.h"
@@ -585,7 +591,7 @@ void FMonolithEditorActions::RegisterActions(FMonolithLogCapture* LogCapture)
 			.Build());
 
 	Registry.RegisterAction(TEXT("editor"), TEXT("list_errored_blueprints"),
-		TEXT("Read-only scan of all loaded Blueprints for unresolved compile errors (status==BS_Error && bDisplayCompilePIEWarning) — the exact condition the engine tests before raising its blocking PIE compile-error modal. Returns {count, blueprints:[{name, path}]}. Run this before run_pie_smoke to know whether PIE will be refused / blocked."),
+		TEXT("Read-only scan of all loaded Blueprints for unresolved compile errors, mirroring what the engine collects before raising its blocking PIE compile-error modal: status==BS_Error && bDisplayCompilePIEWarning (status \"error\"), and a non-data-only BS_Dirty Blueprint, which the engine recompiles before PIE, whose last compile left Error annotations on its nodes (status \"dirty_with_errors\"). Does not compile anything, so a Dirty Blueprint newly broken since its last compile is not seen. Returns {count, blueprints:[{name, path, status}]}. Run this before run_pie_smoke to know whether PIE will be refused / blocked."),
 		FMonolithActionHandler::CreateStatic(&HandleListErroredBlueprints),
 		FParamSchemaBuilder().Build());
 
@@ -1907,28 +1913,82 @@ namespace
 	{
 		FString Name;
 		FString Path;
+		// "error": BS_Error and still warning on PIE. "dirty_with_errors": BS_Dirty, so the
+		// engine recompiles it before PIE, and its last compile left Error annotations.
+		FString Status;
 	};
 
-	// Scan every loaded UBlueprint for the same condition the engine's
-	// ResolveDirtyBlueprints (PlayLevel.cpp) tests before raising the blocking
-	// "unresolved compiler errors" PIE prompt: status == BS_Error AND the BP still
-	// wants to warn on PIE (bDisplayCompilePIEWarning). Starting PIE on such a world
+	// True when any node of the Blueprint still carries an Error-severity compiler message.
+	// The compiler clears every node's message at the start of a full compile and annotates
+	// the nodes its errors name, and MarkBlueprintAsModified (-> BS_Dirty) leaves them alone,
+	// so on a Dirty Blueprint they are the record of the last compile. Read-only: no compile.
+	bool HasErrorAnnotationsFromLastCompile(UBlueprint* Blueprint)
+	{
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+		for (const UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+			for (const UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node && Node->bHasCompilerMessage && Node->ErrorType <= EMessageSeverity::Error)
+				{
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	// Scan every loaded UBlueprint for what the engine's ResolveDirtyBlueprints
+	// (PlayLevel.cpp) will put in its ErroredBlueprints list before raising the
+	// blocking "unresolved compiler errors" PIE prompt. Starting PIE on such a world
 	// pops a Slate modal that runs a nested loop on the game thread, starving the
-	// in-process MCP HTTP server until a human clicks.
+	// in-process MCP HTTP server until a human clicks. The engine's partition, mirrored:
+	//  - skipped: garbage, up-to-date, and PKG_ForDiffing (diff-view copies);
+	//  - recompiled before PIE: non-data-only BS_Dirty Blueprints (IsPossiblyDirty but
+	//    not BS_Unknown). Any that fail join ErroredBlueprints. A scan cannot compile
+	//    without changing state, so it reports those whose LAST compile failed (their
+	//    nodes still carry Error annotations) - a broken Blueprint that was merely
+	//    re-dirtied, which a BS_Error-only test passes;
+	//  - otherwise: BS_Error AND the BP still wants to warn on PIE (bDisplayCompilePIEWarning).
 	void ScanErroredBlueprints(TArray<FErroredBlueprintEntry>& OutErrored)
 	{
 		for (TObjectIterator<UBlueprint> It; It; ++It)
 		{
 			UBlueprint* Blueprint = *It;
-			if (!IsValid(Blueprint))
+			if (!IsValid(Blueprint) || Blueprint->IsUpToDate())
 			{
 				continue;
 			}
-			if (Blueprint->Status == BS_Error && Blueprint->bDisplayCompilePIEWarning)
+			const UPackage* Package = Blueprint->GetPackage();
+			if (Package && Package->HasAnyPackageFlags(PKG_ForDiffing))
+			{
+				continue;
+			}
+
+			const TCHAR* Status = nullptr;
+			if (Blueprint->Status == BS_Dirty && !FBlueprintEditorUtils::IsDataOnlyBlueprint(Blueprint))
+			{
+				if (HasErrorAnnotationsFromLastCompile(Blueprint))
+				{
+					Status = TEXT("dirty_with_errors");
+				}
+			}
+			else if (Blueprint->Status == BS_Error && Blueprint->bDisplayCompilePIEWarning)
+			{
+				Status = TEXT("error");
+			}
+
+			if (Status)
 			{
 				FErroredBlueprintEntry Entry;
 				Entry.Name = Blueprint->GetName();
 				Entry.Path = Blueprint->GetPathName();
+				Entry.Status = Status;
 				OutErrored.Add(MoveTemp(Entry));
 			}
 		}
@@ -1944,6 +2004,7 @@ namespace
 			TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
 			Obj->SetStringField(TEXT("name"), Entry.Name);
 			Obj->SetStringField(TEXT("path"), Entry.Path);
+			Obj->SetStringField(TEXT("status"), Entry.Status);
 			Items.Add(MakeShared<FJsonValueObject>(Obj));
 		}
 		return Items;
