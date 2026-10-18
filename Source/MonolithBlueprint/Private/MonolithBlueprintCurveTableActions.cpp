@@ -17,6 +17,7 @@
 #include "Curves/RichCurve.h"
 #include "Curves/SimpleCurve.h"
 #include "Curves/RealCurve.h"
+#include "Curves/CurveFloat.h"
 #include "EditorAssetLibrary.h"
 #include "ScopedTransaction.h"
 #include "Dom/JsonObject.h"
@@ -185,6 +186,30 @@ void FMonolithBlueprintCurveTableActions::RegisterActions(FMonolithToolRegistry&
 			.Required(TEXT("old_name"),   TEXT("string"),  TEXT("Existing curve row name"))
 			.Required(TEXT("new_name"),   TEXT("string"),  TEXT("New curve row name"))
 			.Optional(TEXT("save"),       TEXT("boolean"), TEXT("If true, save the package after renaming."), TEXT("false"))
+			.Build());
+
+	// ---- Standalone UCurveFloat ----
+
+	Registry.RegisterAction(TEXT("blueprint"), TEXT("get_curve_float_keys"),
+		TEXT("Read the keys of a standalone UCurveFloat asset (its FloatCurve, which Python/Blueprint cannot reach). Returns key_count, "
+		     "keys:[{time, value, interp, tangent_mode, arrive_tangent, leave_tangent}], default_value (null when unset), "
+		     "pre_infinity / post_infinity extrapolation, is_event_curve and the time/value range."),
+		FMonolithActionHandler::CreateStatic(&HandleGetCurveFloatKeys),
+		FParamSchemaBuilder()
+			.RequiredAssetPath(TEXT("asset_path"), TEXT("CurveFloat asset path, e.g. /Game/Data/CRV_Speed"))
+			.Build());
+
+	Registry.RegisterAction(TEXT("blueprint"), TEXT("set_curve_float_keys"),
+		TEXT("Write keys into a standalone UCurveFloat asset's FloatCurve. replace=true (default) clears existing keys first; replace=false "
+		     "updates keys at matching times and adds the rest. All keys are validated before the curve is touched. Auto / smart_auto "
+		     "tangents are recomputed after the write; user / break keys keep the arrive_tangent / leave_tangent you pass. "
+		     "Undoable; marks the package dirty. Returns the resulting keys."),
+		FMonolithActionHandler::CreateStatic(&HandleSetCurveFloatKeys),
+		FParamSchemaBuilder()
+			.RequiredAssetPath(TEXT("asset_path"), TEXT("CurveFloat asset path"))
+			.Required(TEXT("keys"), TEXT("array"), TEXT("Array of {time:number, value:number, interp?: \"linear\"|\"constant\"|\"cubic\" (default cubic, the curve-editor default), tangent_mode?: \"auto\"|\"smart_auto\"|\"user\"|\"break\" (default auto), arrive_tangent?, leave_tangent?}"))
+			.Optional(TEXT("replace"), TEXT("boolean"), TEXT("Clear existing keys before writing (default true)"), TEXT("true"))
+			.Optional(TEXT("save"), TEXT("boolean"), TEXT("If true, save the package after writing."), TEXT("false"))
 			.Build());
 }
 
@@ -557,5 +582,261 @@ FMonolithActionResult FMonolithBlueprintCurveTableActions::HandleRenameCurveTabl
 	Root->SetBoolField(TEXT("renamed"), true);
 	Root->SetBoolField(TEXT("saved"), bSaved);
 	Root->SetBoolField(TEXT("success"), true);
+	return FMonolithActionResult::Success(Root);
+}
+
+// ============================================================
+//  Standalone UCurveFloat: get_curve_float_keys / set_curve_float_keys
+//
+//  UCurveFloat::FloatCurve is an FRichCurve UPROPERTY, but FRichCurve is not
+//  exposed to Python/Blueprint, so script code cannot edit it. These actions
+//  edit it through the FRichCurve API directly.
+// ============================================================
+
+namespace MonolithCurveFloatInternal
+{
+	static bool ParseTangentMode(const FString& InStr, ERichCurveTangentMode& OutMode)
+	{
+		const FString Lower = InStr.ToLower();
+		if (Lower == TEXT("auto"))                                     { OutMode = RCTM_Auto;      return true; }
+		if (Lower == TEXT("smart_auto") || Lower == TEXT("smartauto")) { OutMode = RCTM_SmartAuto; return true; }
+		if (Lower == TEXT("user"))                                     { OutMode = RCTM_User;      return true; }
+		if (Lower == TEXT("break"))                                    { OutMode = RCTM_Break;     return true; }
+		return false;
+	}
+
+	static FString TangentModeToString(ERichCurveTangentMode InMode)
+	{
+		switch (InMode)
+		{
+		case RCTM_Auto:      return TEXT("auto");
+		case RCTM_SmartAuto: return TEXT("smart_auto");
+		case RCTM_User:      return TEXT("user");
+		case RCTM_Break:     return TEXT("break");
+		default:             return TEXT("none");
+		}
+	}
+
+	static FString ExtrapToString(ERichCurveExtrapolation InExtrap)
+	{
+		if (const UEnum* Enum = StaticEnum<ERichCurveExtrapolation>())
+		{
+			return Enum->GetNameStringByValue(static_cast<int64>(InExtrap));
+		}
+		return FString::FromInt(static_cast<int32>(InExtrap));
+	}
+
+	static TSharedPtr<FJsonObject> SerializeCurveFloat(const UCurveFloat* Curve, const FString& AssetPath)
+	{
+		const FRichCurve& Rich = Curve->FloatCurve;
+
+		TArray<TSharedPtr<FJsonValue>> Keys;
+		for (const FRichCurveKey& Key : Rich.GetConstRefOfKeys())
+		{
+			TSharedPtr<FJsonObject> K = MakeShared<FJsonObject>();
+			K->SetNumberField(TEXT("time"), Key.Time);
+			K->SetNumberField(TEXT("value"), Key.Value);
+			K->SetStringField(TEXT("interp"), MonolithCurveTableInternal::InterpModeToString(Key.InterpMode.GetValue()));
+			K->SetStringField(TEXT("tangent_mode"), TangentModeToString(Key.TangentMode.GetValue()));
+			K->SetNumberField(TEXT("arrive_tangent"), Key.ArriveTangent);
+			K->SetNumberField(TEXT("leave_tangent"), Key.LeaveTangent);
+			Keys.Add(MakeShared<FJsonValueObject>(K));
+		}
+
+		TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetStringField(TEXT("asset_path"), AssetPath);
+		Root->SetNumberField(TEXT("key_count"), Keys.Num());
+		Root->SetArrayField(TEXT("keys"), Keys);
+		const float DefaultValue = Rich.GetDefaultValue();
+		if (DefaultValue == MAX_flt)
+		{
+			Root->SetField(TEXT("default_value"), MakeShared<FJsonValueNull>());
+		}
+		else
+		{
+			Root->SetNumberField(TEXT("default_value"), DefaultValue);
+		}
+		Root->SetStringField(TEXT("pre_infinity"), ExtrapToString(Rich.PreInfinityExtrap.GetValue()));
+		Root->SetStringField(TEXT("post_infinity"), ExtrapToString(Rich.PostInfinityExtrap.GetValue()));
+		Root->SetBoolField(TEXT("is_event_curve"), Curve->bIsEventCurve);
+		if (Keys.Num() > 0)
+		{
+			float MinTime = 0.f, MaxTime = 0.f, MinValue = 0.f, MaxValue = 0.f;
+			Rich.GetTimeRange(MinTime, MaxTime);
+			Rich.GetValueRange(MinValue, MaxValue);
+			Root->SetNumberField(TEXT("min_time"), MinTime);
+			Root->SetNumberField(TEXT("max_time"), MaxTime);
+			Root->SetNumberField(TEXT("min_value"), MinValue);
+			Root->SetNumberField(TEXT("max_value"), MaxValue);
+		}
+		return Root;
+	}
+
+	struct FParsedFloatKey
+	{
+		float Time = 0.f;
+		float Value = 0.f;
+		ERichCurveInterpMode Interp = RCIM_Cubic;
+		ERichCurveTangentMode TangentMode = RCTM_Auto;
+		bool bHasArrive = false;
+		bool bHasLeave = false;
+		float Arrive = 0.f;
+		float Leave = 0.f;
+	};
+}
+
+FMonolithActionResult FMonolithBlueprintCurveTableActions::HandleGetCurveFloatKeys(const TSharedPtr<FJsonObject>& Params)
+{
+	const FString AssetPath = Params->GetStringField(TEXT("asset_path"));
+	if (AssetPath.IsEmpty())
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required parameter: asset_path"));
+	}
+
+	UCurveFloat* Curve = FMonolithAssetUtils::LoadAssetByPath<UCurveFloat>(AssetPath);
+	if (!Curve)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("CurveFloat not found: %s"), *AssetPath));
+	}
+
+	return FMonolithActionResult::Success(MonolithCurveFloatInternal::SerializeCurveFloat(Curve, AssetPath));
+}
+
+FMonolithActionResult FMonolithBlueprintCurveTableActions::HandleSetCurveFloatKeys(const TSharedPtr<FJsonObject>& Params)
+{
+	using namespace MonolithCurveFloatInternal;
+
+	const FString AssetPath = Params->GetStringField(TEXT("asset_path"));
+	if (AssetPath.IsEmpty())
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required parameter: asset_path"));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* KeysArray = nullptr;
+	if (!Params->TryGetArrayField(TEXT("keys"), KeysArray) || !KeysArray)
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required parameter: keys (array of {time, value, interp?, tangent_mode?})"));
+	}
+
+	UCurveFloat* Curve = FMonolithAssetUtils::LoadAssetByPath<UCurveFloat>(AssetPath);
+	if (!Curve)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("CurveFloat not found: %s"), *AssetPath));
+	}
+
+	bool bReplace = true;
+	Params->TryGetBoolField(TEXT("replace"), bReplace);
+
+	// Validate every key before mutating, so a bad entry never leaves a half-written curve.
+	TArray<FParsedFloatKey> Parsed;
+	for (int32 Index = 0; Index < KeysArray->Num(); ++Index)
+	{
+		const TSharedPtr<FJsonValue>& KeyVal = (*KeysArray)[Index];
+		const TSharedPtr<FJsonObject>* KeyObjPtr = nullptr;
+		if (!KeyVal.IsValid() || !KeyVal->TryGetObject(KeyObjPtr) || !KeyObjPtr || !(*KeyObjPtr).IsValid())
+		{
+			return FMonolithActionResult::Error(FString::Printf(TEXT("keys[%d] is not an object"), Index));
+		}
+		const TSharedPtr<FJsonObject>& KeyObj = *KeyObjPtr;
+
+		FParsedFloatKey Key;
+		double Time = 0.0, Value = 0.0;
+		if (!KeyObj->TryGetNumberField(TEXT("time"), Time) || !KeyObj->TryGetNumberField(TEXT("value"), Value))
+		{
+			return FMonolithActionResult::Error(FString::Printf(TEXT("keys[%d] needs numeric 'time' and 'value'"), Index));
+		}
+		Key.Time = static_cast<float>(Time);
+		Key.Value = static_cast<float>(Value);
+
+		FString InterpStr;
+		if (KeyObj->TryGetStringField(TEXT("interp"), InterpStr) || KeyObj->TryGetStringField(TEXT("interp_mode"), InterpStr))
+		{
+			if (!MonolithCurveTableInternal::ParseInterpMode(InterpStr, Key.Interp))
+			{
+				return FMonolithActionResult::Error(FString::Printf(
+					TEXT("keys[%d]: unsupported interp '%s'. Use \"linear\", \"constant\", or \"cubic\"."), Index, *InterpStr));
+			}
+		}
+
+		FString TangentStr;
+		if (KeyObj->TryGetStringField(TEXT("tangent_mode"), TangentStr) && !ParseTangentMode(TangentStr, Key.TangentMode))
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("keys[%d]: unsupported tangent_mode '%s'. Use \"auto\", \"smart_auto\", \"user\", or \"break\"."), Index, *TangentStr));
+		}
+
+		double Arrive = 0.0, Leave = 0.0;
+		Key.bHasArrive = KeyObj->TryGetNumberField(TEXT("arrive_tangent"), Arrive);
+		Key.bHasLeave = KeyObj->TryGetNumberField(TEXT("leave_tangent"), Leave);
+		Key.Arrive = static_cast<float>(Arrive);
+		Key.Leave = static_cast<float>(Leave);
+		if ((Key.bHasArrive || Key.bHasLeave) && Key.TangentMode != RCTM_User && Key.TangentMode != RCTM_Break)
+		{
+			// Explicit tangents only stick on user/break keys; auto modes recompute them.
+			Key.TangentMode = RCTM_User;
+		}
+		Parsed.Add(Key);
+	}
+
+	Curve->SetFlags(RF_Transactional);
+	FScopedTransaction Transaction(NSLOCTEXT(
+		"MonolithBlueprintCurveTableActions", "SetCurveFloatKeys", "Monolith Set CurveFloat Keys"));
+	Curve->Modify();
+
+	FRichCurve& Rich = Curve->FloatCurve;
+	if (bReplace)
+	{
+		Rich.Reset();
+	}
+
+	int32 KeysAdded = 0;
+	int32 KeysUpdated = 0;
+	for (const FParsedFloatKey& Key : Parsed)
+	{
+		FKeyHandle Handle = bReplace ? FKeyHandle::Invalid() : Rich.FindKey(Key.Time);
+		if (Rich.IsKeyHandleValid(Handle))
+		{
+			Rich.SetKeyValue(Handle, Key.Value, /*bAutoSetTangents=*/false);
+			++KeysUpdated;
+		}
+		else
+		{
+			Handle = Rich.AddKey(Key.Time, Key.Value);
+			++KeysAdded;
+		}
+		Rich.SetKeyInterpMode(Handle, Key.Interp, /*bAutoSetTangents=*/false);
+		Rich.SetKeyTangentMode(Handle, Key.TangentMode, /*bAutoSetTangents=*/false);
+
+		FRichCurveKey& RawKey = Rich.GetKey(Handle);
+		if (Key.bHasArrive)
+		{
+			RawKey.ArriveTangent = Key.Arrive;
+		}
+		if (Key.bHasLeave)
+		{
+			RawKey.LeaveTangent = Key.Leave;
+		}
+		else if (Key.bHasArrive && Key.TangentMode == RCTM_User)
+		{
+			// A user (unbroken) tangent is a single slope.
+			RawKey.LeaveTangent = Key.Arrive;
+		}
+	}
+
+	// Recompute auto / smart-auto tangents; user and break keys are left as written.
+	Rich.AutoSetTangents();
+
+	Curve->PostEditChange();
+	Curve->MarkPackageDirty();
+
+	bool bSave = false;
+	Params->TryGetBoolField(TEXT("save"), bSave);
+	const bool bSaved = bSave ? UEditorAssetLibrary::SaveLoadedAsset(Curve, false) : false;
+
+	TSharedPtr<FJsonObject> Root = SerializeCurveFloat(Curve, AssetPath);
+	Root->SetNumberField(TEXT("keys_added"), KeysAdded);
+	Root->SetNumberField(TEXT("keys_updated"), KeysUpdated);
+	Root->SetBoolField(TEXT("replaced"), bReplace);
+	Root->SetBoolField(TEXT("saved"), bSaved);
 	return FMonolithActionResult::Success(Root);
 }

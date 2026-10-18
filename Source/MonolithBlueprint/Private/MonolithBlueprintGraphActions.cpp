@@ -7,8 +7,11 @@
 #include "BlueprintEditorLibrary.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_EditablePinBase.h"
 #include "K2Node_Event.h"
 #include "K2Node_CreateDelegate.h"
+#include "K2Node_CallFunction.h"
+#include "Kismet2/Kismet2NameValidators.h"
 #include "EdGraphSchema_K2.h"
 #include "UObject/UObjectIterator.h"
 
@@ -17,7 +20,7 @@
 void FMonolithBlueprintGraphActions::RegisterActions(FMonolithToolRegistry& Registry)
 {
 	Registry.RegisterAction(TEXT("blueprint"), TEXT("add_function"),
-		TEXT("Add a new function graph to a Blueprint"),
+		TEXT("Add a new function graph to a Blueprint. Optionally seed its parameters from a prototype UFunction (prototype_class + prototype_function), which copies by-reference / const parameter flags exactly."),
 		FMonolithActionHandler::CreateStatic(&HandleAddFunction),
 		FParamSchemaBuilder()
 			.RequiredAssetPath(TEXT("asset_path"), TEXT("Blueprint asset path"))
@@ -31,6 +34,8 @@ void FMonolithBlueprintGraphActions::RegisterActions(FMonolithToolRegistry& Regi
 			.Optional(TEXT("access"), TEXT("string"), TEXT("Access specifier: Public, Protected, or Private"), TEXT("Public"))
 			.Optional(TEXT("replication"), TEXT("string"), TEXT("Replication mode: none, multicast, server, client (default: none)"))
 			.Optional(TEXT("reliable"), TEXT("bool"), TEXT("Use reliable replication (default: false)"))
+			.Optional(TEXT("prototype_class"), TEXT("string"), TEXT("Class declaring a prototype UFunction whose signature seeds the new function's entry/result pins (native name e.g. AnimExecutionContextLibrary, /Script/Module.Class path, or Blueprint asset path). Requires prototype_function."))
+			.Optional(TEXT("prototype_function"), TEXT("string"), TEXT("Prototype function name on prototype_class (or a full /Script/Module.Class:Function path, in which case prototype_class may be omitted). Pins copy name, type, by-reference and const exactly. Errors if not found; never falls back to an empty signature."))
 			.Build());
 
 	Registry.RegisterAction(TEXT("blueprint"), TEXT("set_function_thread_safe"),
@@ -58,8 +63,30 @@ void FMonolithBlueprintGraphActions::RegisterActions(FMonolithToolRegistry& Regi
 			.Required(TEXT("name"), TEXT("string"), TEXT("Function name to remove"))
 			.Build());
 
+	Registry.RegisterAction(TEXT("blueprint"), TEXT("set_function_flags"),
+		TEXT("Edit flags and metadata on an existing Blueprint function graph: pure, const, Call In Editor, access specifier, category, description. Only the fields you pass change. Mirrors the My Blueprint details panel (function entry node extra flags + metadata, plus the skeleton UFunction) and marks the Blueprint structurally modified. Returns the resulting is_pure / is_const / call_in_editor / access."),
+		FMonolithActionHandler::CreateStatic(&HandleSetFunctionFlags),
+		FParamSchemaBuilder()
+			.RequiredAssetPath(TEXT("asset_path"), TEXT("Blueprint asset path"))
+			.Required(TEXT("function_name"), TEXT("string"), TEXT("Function graph name"), {TEXT("name")})
+			.Optional(TEXT("is_pure"), TEXT("bool"), TEXT("Set or clear BlueprintPure"))
+			.Optional(TEXT("is_const"), TEXT("bool"), TEXT("Set or clear Const (rejected on static functions)"))
+			.Optional(TEXT("call_in_editor"), TEXT("bool"), TEXT("Set or clear the 'Call In Editor' metadata"))
+			.Optional(TEXT("access"), TEXT("string"), TEXT("Access specifier: Public, Protected, or Private"))
+			.Optional(TEXT("category"), TEXT("string"), TEXT("Function category (empty string clears it)"))
+			.Optional(TEXT("description"), TEXT("string"), TEXT("Function tooltip/description (empty string clears it)"))
+			.Build());
+
+	Registry.RegisterAction(TEXT("blueprint"), TEXT("add_event_graph"),
+		TEXT("Add a new Event Graph (ubergraph page) to a Blueprint, like 'Add New > Event Graph' in the editor. The new page uses the same schema as the Blueprint's existing event graph. Returns graph_name."),
+		FMonolithActionHandler::CreateStatic(&HandleAddEventGraph),
+		FParamSchemaBuilder()
+			.RequiredAssetPath(TEXT("asset_path"), TEXT("Blueprint asset path"))
+			.Optional(TEXT("name"), TEXT("string"), TEXT("Event graph name (default: a unique 'NewEventGraph' name)"), {TEXT("graph_name")})
+			.Build());
+
 	Registry.RegisterAction(TEXT("blueprint"), TEXT("rename_function"),
-		TEXT("Rename an existing function graph in a Blueprint"),
+		TEXT("Rename an existing function graph in a Blueprint. Function flags (pure, const, access, ...) and metadata (Call In Editor, category, tooltip, thread safe) are preserved."),
 		FMonolithActionHandler::CreateStatic(&HandleRenameFunction),
 		FParamSchemaBuilder()
 			.RequiredAssetPath(TEXT("asset_path"), TEXT("Blueprint asset path"))
@@ -101,13 +128,13 @@ void FMonolithBlueprintGraphActions::RegisterActions(FMonolithToolRegistry& Regi
 			.Build());
 
 	Registry.RegisterAction(TEXT("blueprint"), TEXT("set_function_params"),
-		TEXT("Add input/output parameters to a Blueprint function"),
+		TEXT("Add input/output parameters to a Blueprint function. Inputs accept optional is_reference / is_const for by-reference and const-reference parameters."),
 		FMonolithActionHandler::CreateStatic(&HandleSetFunctionParams),
 		FParamSchemaBuilder()
 			.RequiredAssetPath(TEXT("asset_path"), TEXT("Blueprint asset path"))
 			.Required(TEXT("function_name"), TEXT("string"), TEXT("Function graph name"))
-			.Optional(TEXT("inputs"), TEXT("array"), TEXT("Array of {name, type} objects for inputs"))
-			.Optional(TEXT("outputs"), TEXT("array"), TEXT("Array of {name, type} objects for outputs"))
+			.Optional(TEXT("inputs"), TEXT("array"), TEXT("Array of {name, type, is_reference?, is_const?} objects for inputs. is_reference=true makes the parameter pass-by-reference; is_const=true (requires is_reference) makes it a const reference, e.g. 'const FAnimUpdateContext&'"))
+			.Optional(TEXT("outputs"), TEXT("array"), TEXT("Array of {name, type} objects for outputs (is_reference / is_const are rejected on outputs)"))
 			.Build());
 
 	Registry.RegisterAction(TEXT("blueprint"), TEXT("implement_interface"),
@@ -167,6 +194,86 @@ void FMonolithBlueprintGraphActions::RegisterActions(FMonolithToolRegistry& Regi
 
 // --- add_function ---
 
+namespace
+{
+	/** Resolves a class from a native name (with or without U/A prefix), a /Script/ path, or a Blueprint asset path. */
+	UClass* MonolithGraphActionsResolvePrototypeClass(const FString& ClassName)
+	{
+		if (ClassName.IsEmpty())
+		{
+			return nullptr;
+		}
+		if (ClassName.Contains(TEXT("/")))
+		{
+			if (UClass* ByPath = FindObject<UClass>(nullptr, *ClassName))
+			{
+				return ByPath;
+			}
+			if (UClass* Loaded = LoadObject<UClass>(nullptr, *ClassName, nullptr, LOAD_NoWarn | LOAD_Quiet))
+			{
+				return Loaded;
+			}
+			if (UBlueprint* ProtoBP = LoadObject<UBlueprint>(nullptr, *ClassName, nullptr, LOAD_NoWarn | LOAD_Quiet))
+			{
+				return ProtoBP->GeneratedClass ? ProtoBP->GeneratedClass.Get() : ProtoBP->SkeletonGeneratedClass.Get();
+			}
+			return nullptr;
+		}
+		if (UClass* Found = FindFirstObject<UClass>(*ClassName, EFindFirstObjectOptions::NativeFirst))
+		{
+			return Found;
+		}
+		// Accept C++-style prefixed names (UFoo / AFoo -> Foo).
+		if (ClassName.Len() > 1 && (ClassName[0] == TEXT('U') || ClassName[0] == TEXT('A')) && FChar::IsUpper(ClassName[1]))
+		{
+			return FindFirstObject<UClass>(*ClassName.Mid(1), EFindFirstObjectOptions::NativeFirst);
+		}
+		return nullptr;
+	}
+
+	UFunction* MonolithGraphActionsResolvePrototypeFunction(const FString& ClassName, const FString& FuncName, FString& OutError)
+	{
+		if (FuncName.IsEmpty())
+		{
+			OutError = TEXT("prototype_class was given without prototype_function");
+			return nullptr;
+		}
+
+		// Full object path form: /Script/Module.Class:Function (or Class.Function).
+		if (ClassName.IsEmpty())
+		{
+			if (!FuncName.Contains(TEXT("/")))
+			{
+				OutError = TEXT("prototype_function needs prototype_class, or must be a full path like /Script/Module.Class:Function");
+				return nullptr;
+			}
+			UFunction* ByPath = FindObject<UFunction>(nullptr, *FuncName);
+			if (!ByPath)
+			{
+				ByPath = FindObject<UFunction>(nullptr, *FuncName.Replace(TEXT(":"), TEXT(".")));
+			}
+			if (!ByPath)
+			{
+				OutError = FString::Printf(TEXT("Prototype function not found: %s"), *FuncName);
+			}
+			return ByPath;
+		}
+
+		UClass* ProtoClass = MonolithGraphActionsResolvePrototypeClass(ClassName);
+		if (!ProtoClass)
+		{
+			OutError = FString::Printf(TEXT("Prototype class not found: %s"), *ClassName);
+			return nullptr;
+		}
+		UFunction* Func = ProtoClass->FindFunctionByName(FName(*FuncName));
+		if (!Func)
+		{
+			OutError = FString::Printf(TEXT("Prototype function '%s' not found on class %s"), *FuncName, *ProtoClass->GetPathName());
+		}
+		return Func;
+	}
+}
+
 FMonolithActionResult FMonolithBlueprintGraphActions::HandleAddFunction(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -191,6 +298,26 @@ FMonolithActionResult FMonolithBlueprintGraphActions::HandleAddFunction(const TS
 		}
 	}
 
+	// Optional signature prototype. Resolved BEFORE creating the graph so a bad
+	// prototype leaves the Blueprint untouched; there is deliberately no fallback
+	// to the unseeded path.
+	FString PrototypeClassName, PrototypeFuncName;
+	Params->TryGetStringField(TEXT("prototype_class"), PrototypeClassName);
+	Params->TryGetStringField(TEXT("prototype_function"), PrototypeFuncName);
+	PrototypeClassName.TrimStartAndEndInline();
+	PrototypeFuncName.TrimStartAndEndInline();
+
+	UFunction* Prototype = nullptr;
+	if (!PrototypeClassName.IsEmpty() || !PrototypeFuncName.IsEmpty())
+	{
+		FString PrototypeError;
+		Prototype = MonolithGraphActionsResolvePrototypeFunction(PrototypeClassName, PrototypeFuncName, PrototypeError);
+		if (!Prototype)
+		{
+			return FMonolithActionResult::Error(PrototypeError);
+		}
+	}
+
 	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
 		BP, FName(*FuncName), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 
@@ -199,7 +326,16 @@ FMonolithActionResult FMonolithBlueprintGraphActions::HandleAddFunction(const TS
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to create function graph: %s"), *FuncName));
 	}
 
-	FBlueprintEditorUtils::AddFunctionGraph<UClass>(BP, NewGraph, /*bIsUserCreated=*/true, nullptr);
+	if (Prototype)
+	{
+		// UFunction overload = copy-signature: entry/result get user-defined pins
+		// mirroring the prototype's parameters (incl. bIsReference / bIsConst).
+		FBlueprintEditorUtils::AddFunctionGraph<UFunction>(BP, NewGraph, /*bIsUserCreated=*/true, Prototype);
+	}
+	else
+	{
+		FBlueprintEditorUtils::AddFunctionGraph<UClass>(BP, NewGraph, /*bIsUserCreated=*/true, nullptr);
+	}
 
 	// Find the entry node to set metadata and flags
 	UK2Node_FunctionEntry* EntryNode = nullptr;
@@ -277,6 +413,41 @@ FMonolithActionResult FMonolithBlueprintGraphActions::HandleAddFunction(const TS
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetStringField(TEXT("graph_name"), NewGraph->GetName());
 	Root->SetNumberField(TEXT("node_count"), NewGraph->Nodes.Num());
+	if (Prototype)
+	{
+		Root->SetStringField(TEXT("prototype"), Prototype->GetPathName());
+
+		// Report the seeded parameters so callers can confirm ref/const flags.
+		TArray<TSharedPtr<FJsonValue>> ParamArr;
+		for (UEdGraphNode* Node : NewGraph->Nodes)
+		{
+			const UK2Node_EditablePinBase* Editable = Cast<UK2Node_EditablePinBase>(Node);
+			if (!Editable)
+			{
+				continue;
+			}
+			const bool bEntry = Node->IsA<UK2Node_FunctionEntry>();
+			for (const TSharedPtr<FUserPinInfo>& PinInfo : Editable->UserDefinedPins)
+			{
+				if (!PinInfo.IsValid())
+				{
+					continue;
+				}
+				TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+				P->SetStringField(TEXT("name"), PinInfo->PinName.ToString());
+				P->SetStringField(TEXT("direction"), bEntry ? TEXT("input") : TEXT("output"));
+				P->SetStringField(TEXT("category"), PinInfo->PinType.PinCategory.ToString());
+				if (const UObject* SubObj = PinInfo->PinType.PinSubCategoryObject.Get())
+				{
+					P->SetStringField(TEXT("sub_type"), SubObj->GetName());
+				}
+				P->SetBoolField(TEXT("is_reference"), PinInfo->PinType.bIsReference);
+				P->SetBoolField(TEXT("is_const"), PinInfo->PinType.bIsConst);
+				ParamArr.Add(MakeShared<FJsonValueObject>(P));
+			}
+		}
+		Root->SetArrayField(TEXT("params"), ParamArr);
+	}
 	return FMonolithActionResult::Success(Root);
 }
 
@@ -502,6 +673,42 @@ FMonolithActionResult FMonolithBlueprintGraphActions::HandleSetFunctionThreadSaf
 	return FMonolithActionResult::Success(Root);
 }
 
+// --- function entry / flag helpers (rename_function, set_function_flags) ---
+
+namespace
+{
+	UK2Node_FunctionEntry* MonolithGraphActionsFindFunctionEntry(UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return nullptr;
+		}
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(Node))
+			{
+				return EntryNode;
+			}
+		}
+		return nullptr;
+	}
+
+	void MonolithGraphActionsWriteFunctionFlags(const UK2Node_FunctionEntry* EntryNode, const TSharedPtr<FJsonObject>& Out)
+	{
+		const uint32 Flags = (uint32)EntryNode->GetFunctionFlags();
+		Out->SetBoolField(TEXT("is_pure"), (Flags & FUNC_BlueprintPure) != 0);
+		Out->SetBoolField(TEXT("is_const"), (Flags & FUNC_Const) != 0);
+		Out->SetBoolField(TEXT("is_static"), (Flags & FUNC_Static) != 0);
+		Out->SetBoolField(TEXT("call_in_editor"), EntryNode->MetaData.bCallInEditor);
+		Out->SetBoolField(TEXT("thread_safe"), EntryNode->MetaData.bThreadSafe);
+
+		const TCHAR* AccessStr = TEXT("Public");
+		if (Flags & FUNC_Private)        AccessStr = TEXT("Private");
+		else if (Flags & FUNC_Protected) AccessStr = TEXT("Protected");
+		Out->SetStringField(TEXT("access"), AccessStr);
+	}
+}
+
 // --- rename_function ---
 
 FMonolithActionResult FMonolithBlueprintGraphActions::HandleRenameFunction(const TSharedPtr<FJsonObject>& Params)
@@ -546,11 +753,285 @@ FMonolithActionResult FMonolithBlueprintGraphActions::HandleRenameFunction(const
 		}
 	}
 
+	// Snapshot the entry node's user-facing flags and metadata so the rename
+	// cannot lose pure/const/access/CallInEditor/category/tooltip/thread-safe.
+	UK2Node_FunctionEntry* EntryNode = MonolithGraphActionsFindFunctionEntry(Graph);
+	const int32 SavedExtraFlags = EntryNode ? EntryNode->GetExtraFlags() : 0;
+	const FKismetUserDeclaredFunctionMetadata SavedMetaData =
+		EntryNode ? EntryNode->MetaData : FKismetUserDeclaredFunctionMetadata();
+
 	FBlueprintEditorUtils::RenameGraph(Graph, NewName);
+
+	// RenameGraph returns silently (leaving the old name) when the rename test fails.
+	if (Graph->GetName() != NewName)
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("Rename of '%s' to '%s' was rejected (name collides with an existing object in the Blueprint)"),
+			*OldName, *NewName));
+	}
+
+	if (EntryNode)
+	{
+		EntryNode->Modify();
+		EntryNode->SetExtraFlags(SavedExtraFlags);
+		EntryNode->MetaData = SavedMetaData;
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	}
 
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetStringField(TEXT("old_name"), OldName);
 	Root->SetStringField(TEXT("new_name"), Graph->GetName());
+	if (EntryNode)
+	{
+		MonolithGraphActionsWriteFunctionFlags(EntryNode, Root);
+	}
+	return FMonolithActionResult::Success(Root);
+}
+
+// --- set_function_flags ---
+// Edits pure / const / access / CallInEditor / category / tooltip on an existing function graph.
+// Mirrors FBlueprintGraphActionDetails (BlueprintDetailsCustomization.cpp): the entry node's
+// ExtraFlags and MetaData are the persistent source of truth, and the skeleton UFunction is
+// updated alongside so call sites see the new purity before the next compile.
+
+FMonolithActionResult FMonolithBlueprintGraphActions::HandleSetFunctionFlags(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	UBlueprint* BP = MonolithBlueprintInternal::LoadBlueprintFromParams(Params, AssetPath);
+	if (!BP)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath));
+	}
+
+	FString FuncName;
+	if (!Params->TryGetStringField(TEXT("function_name"), FuncName) || FuncName.IsEmpty())
+	{
+		Params->TryGetStringField(TEXT("name"), FuncName);
+	}
+	if (FuncName.IsEmpty())
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required parameter: function_name"));
+	}
+
+	UEdGraph* Graph = nullptr;
+	for (UEdGraph* G : BP->FunctionGraphs)
+	{
+		if (G && G->GetName() == FuncName)
+		{
+			Graph = G;
+			break;
+		}
+	}
+	if (!Graph)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Function not found: %s"), *FuncName));
+	}
+
+	UK2Node_FunctionEntry* EntryNode = MonolithGraphActionsFindFunctionEntry(Graph);
+	if (!EntryNode)
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("No function entry node found in graph: %s"), *FuncName));
+	}
+
+	bool bSetPure = false, bPure = false;
+	bool bSetConst = false, bConst = false;
+	bool bSetCallInEditor = false, bCallInEditor = false;
+	bSetPure         = Params->TryGetBoolField(TEXT("is_pure"), bPure);
+	bSetConst        = Params->TryGetBoolField(TEXT("is_const"), bConst);
+	bSetCallInEditor = Params->TryGetBoolField(TEXT("call_in_editor"), bCallInEditor);
+
+	FString Access;
+	const bool bSetAccess = Params->TryGetStringField(TEXT("access"), Access) && !Access.IsEmpty();
+	FString Category;
+	const bool bSetCategory = Params->TryGetStringField(TEXT("category"), Category);
+	FString Description;
+	const bool bSetDescription = Params->TryGetStringField(TEXT("description"), Description);
+
+	if (!bSetPure && !bSetConst && !bSetCallInEditor && !bSetAccess && !bSetCategory && !bSetDescription)
+	{
+		return FMonolithActionResult::Error(TEXT(
+			"Nothing to change: pass at least one of is_pure, is_const, call_in_editor, access, category, description"));
+	}
+
+	if ((bSetPure || bSetConst || bSetAccess) && !EntryNode->IsEditable())
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("Function '%s' has a non-editable signature (override or interface function); pure/const/access cannot be changed"),
+			*FuncName));
+	}
+
+	uint32 AccessFlag = 0;
+	if (bSetAccess)
+	{
+		if (Access.Equals(TEXT("Public"), ESearchCase::IgnoreCase))          AccessFlag = FUNC_Public;
+		else if (Access.Equals(TEXT("Protected"), ESearchCase::IgnoreCase))  AccessFlag = FUNC_Protected;
+		else if (Access.Equals(TEXT("Private"), ESearchCase::IgnoreCase))    AccessFlag = FUNC_Private;
+		else
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Invalid access '%s' (expected Public, Protected, or Private)"), *Access));
+		}
+	}
+
+	if (bSetConst && bConst && (EntryNode->GetFunctionFlags() & FUNC_Static))
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("Function '%s' is static; static functions cannot be const"), *FuncName));
+	}
+
+	UFunction* SkeletonFunction = BP->SkeletonGeneratedClass
+		? BP->SkeletonGeneratedClass->FindFunctionByName(Graph->GetFName(), EIncludeSuperFlag::ExcludeSuper)
+		: nullptr;
+
+	const bool bWasPure = (EntryNode->GetFunctionFlags() & FUNC_BlueprintPure) != 0;
+
+	EntryNode->Modify();
+	if (SkeletonFunction)
+	{
+		SkeletonFunction->Modify();
+	}
+
+	uint32 ExtraFlags = (uint32)EntryNode->GetExtraFlags();
+	uint32 SetMask = 0;
+	uint32 ClearMask = 0;
+
+	if (bSetPure)
+	{
+		if (bPure) SetMask |= FUNC_BlueprintPure; else ClearMask |= FUNC_BlueprintPure;
+	}
+	if (bSetConst)
+	{
+		if (bConst) SetMask |= FUNC_Const; else ClearMask |= FUNC_Const;
+	}
+	if (bSetAccess)
+	{
+		ClearMask |= FUNC_AccessSpecifiers;
+		SetMask |= AccessFlag;
+	}
+
+	ExtraFlags = (ExtraFlags & ~ClearMask) | SetMask;
+	EntryNode->SetExtraFlags((int32)ExtraFlags);
+	if (SkeletonFunction)
+	{
+		SkeletonFunction->FunctionFlags &= (EFunctionFlags)~ClearMask;
+		SkeletonFunction->FunctionFlags |= (EFunctionFlags)SetMask;
+	}
+
+	if (bSetCallInEditor)
+	{
+		EntryNode->MetaData.bCallInEditor = bCallInEditor;
+	}
+	if (bSetCategory)
+	{
+		EntryNode->MetaData.Category = FText::FromString(Category);
+	}
+	if (bSetDescription)
+	{
+		EntryNode->MetaData.ToolTip = FText::FromString(Description);
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+
+	// A purity change adds or removes exec pins on this Blueprint's own call sites.
+	const bool bIsPureNow = (EntryNode->GetFunctionFlags() & FUNC_BlueprintPure) != 0;
+	int32 RefreshedCallSites = 0;
+	if (bIsPureNow != bWasPure)
+	{
+		TArray<UK2Node_CallFunction*> CallNodes;
+		FBlueprintEditorUtils::GetAllNodesOfClass<UK2Node_CallFunction>(BP, CallNodes);
+		for (UK2Node_CallFunction* CallNode : CallNodes)
+		{
+			if (CallNode && CallNode->FunctionReference.IsSelfContext() &&
+				CallNode->FunctionReference.GetMemberName() == Graph->GetFName())
+			{
+				CallNode->ReconstructNode();
+				++RefreshedCallSites;
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("function_name"), FuncName);
+	MonolithGraphActionsWriteFunctionFlags(EntryNode, Root);
+	Root->SetStringField(TEXT("category"), EntryNode->MetaData.Category.ToString());
+	Root->SetStringField(TEXT("description"), EntryNode->MetaData.ToolTip.ToString());
+	if (RefreshedCallSites > 0)
+	{
+		Root->SetNumberField(TEXT("refreshed_call_sites"), RefreshedCallSites);
+	}
+	return FMonolithActionResult::Success(Root);
+}
+
+// --- add_event_graph ---
+// Mirrors FBlueprintEditor::NewDocument_OnClicked(CGT_NewEventGraph): CreateNewGraph +
+// AddUbergraphPage (which marks the Blueprint structurally modified).
+
+FMonolithActionResult FMonolithBlueprintGraphActions::HandleAddEventGraph(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	UBlueprint* BP = MonolithBlueprintInternal::LoadBlueprintFromParams(Params, AssetPath);
+	if (!BP)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath));
+	}
+
+	if (!FBlueprintEditorUtils::DoesSupportEventGraphs(BP))
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("Blueprint '%s' does not support event graphs (e.g. function libraries, interfaces, macro libraries)"),
+			*BP->GetName()));
+	}
+
+	FString RequestedName;
+	if (!Params->TryGetStringField(TEXT("name"), RequestedName) || RequestedName.IsEmpty())
+	{
+		Params->TryGetStringField(TEXT("graph_name"), RequestedName);
+	}
+
+	FName GraphName;
+	if (RequestedName.IsEmpty())
+	{
+		GraphName = FBlueprintEditorUtils::FindUniqueKismetName(BP, TEXT("NewEventGraph"));
+	}
+	else
+	{
+		FKismetNameValidator Validator(BP);
+		const EValidatorResult Result = Validator.IsValid(RequestedName);
+		if (Result != EValidatorResult::Ok)
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Invalid event graph name '%s': %s"),
+				*RequestedName, *INameValidatorInterface::GetErrorString(RequestedName, Result)));
+		}
+		GraphName = FName(*RequestedName);
+	}
+
+	// Reuse the schema of the existing event graph (AnimBPs use a K2 subclass).
+	TSubclassOf<UEdGraphSchema> SchemaClass = UEdGraphSchema_K2::StaticClass();
+	for (const UEdGraph* Existing : BP->UbergraphPages)
+	{
+		if (Existing && Existing->Schema)
+		{
+			SchemaClass = Existing->Schema;
+			break;
+		}
+	}
+
+	BP->Modify();
+	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(BP, GraphName, UEdGraph::StaticClass(), SchemaClass);
+	if (!NewGraph)
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("Failed to create event graph: %s"), *GraphName.ToString()));
+	}
+
+	FBlueprintEditorUtils::AddUbergraphPage(BP, NewGraph);
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("graph_name"), NewGraph->GetName());
+	Root->SetStringField(TEXT("graph_type"), TEXT("event_graph"));
+	Root->SetNumberField(TEXT("event_graph_count"), BP->UbergraphPages.Num());
 	return FMonolithActionResult::Success(Root);
 }
 
@@ -823,7 +1304,7 @@ FMonolithActionResult FMonolithBlueprintGraphActions::HandleSetFunctionParams(co
 	// typo'd type used to fall back to a silent bool pin — and a type error found
 	// mid-loop would otherwise leave the function with a partial pin set that a
 	// retry then duplicates.
-	auto ParsePinArray = [&Params](const TCHAR* FieldName, const TCHAR* Label,
+	auto ParsePinArray = [&Params](const TCHAR* FieldName, const TCHAR* Label, bool bAllowRefFlags,
 		TArray<TPair<FName, FEdGraphPinType>>& OutParsed, FString& OutError) -> bool
 	{
 		const TArray<TSharedPtr<FJsonValue>>* PinArray = nullptr;
@@ -851,6 +1332,29 @@ FMonolithActionResult FMonolithBlueprintGraphActions::HandleSetFunctionParams(co
 					Label, *PinName, *TypeStr, *TypeError);
 				return false;
 			}
+			// Optional pass-by-reference / const flags (FEdGraphPinType::bIsReference /
+			// bIsConst). Only meaningful on inputs (entry-node pins): a `const FFoo&`
+			// parameter is bIsReference + bIsConst. Outputs are already passed by
+			// reference by the compiler, so the flags are rejected there.
+			bool bIsReference = false;
+			bool bIsConstPin = false;
+			const bool bHasRef = (*PinObj)->TryGetBoolField(TEXT("is_reference"), bIsReference);
+			const bool bHasConst = (*PinObj)->TryGetBoolField(TEXT("is_const"), bIsConstPin);
+			if (!bAllowRefFlags && ((bHasRef && bIsReference) || (bHasConst && bIsConstPin)))
+			{
+				OutError = FString::Printf(TEXT("%s '%s': is_reference / is_const are only supported on inputs"),
+					Label, *PinName);
+				return false;
+			}
+			if (bIsConstPin && !bIsReference && !PinType.bIsReference)
+			{
+				OutError = FString::Printf(TEXT("%s '%s': is_const requires is_reference=true (Blueprint const parameters are const references)"),
+					Label, *PinName);
+				return false;
+			}
+			if (bHasRef)   PinType.bIsReference = bIsReference;
+			if (bHasConst) PinType.bIsConst = bIsConstPin;
+
 			OutParsed.Emplace(FName(*PinName), MoveTemp(PinType));
 		}
 		return true;
@@ -859,8 +1363,8 @@ FMonolithActionResult FMonolithBlueprintGraphActions::HandleSetFunctionParams(co
 	TArray<TPair<FName, FEdGraphPinType>> NewInputs;
 	TArray<TPair<FName, FEdGraphPinType>> NewOutputs;
 	FString ParseError;
-	if (!ParsePinArray(TEXT("inputs"), TEXT("Input"), NewInputs, ParseError) ||
-		!ParsePinArray(TEXT("outputs"), TEXT("Output"), NewOutputs, ParseError))
+	if (!ParsePinArray(TEXT("inputs"), TEXT("Input"), /*bAllowRefFlags=*/true, NewInputs, ParseError) ||
+		!ParsePinArray(TEXT("outputs"), TEXT("Output"), /*bAllowRefFlags=*/false, NewOutputs, ParseError))
 	{
 		return FMonolithActionResult::Error(ParseError);
 	}

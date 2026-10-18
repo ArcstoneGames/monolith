@@ -45,4 +45,8 @@ public:
 	// read is resolved thread-safe (or game-thread-cached) by the AnimBP property-access
 	// compiler. The class is MinimalAPI/unlinkable, so it is created reflectively.
 	static FMonolithActionResult HandleAddPropertyAccessNode(const TSharedPtr<FJsonObject>& Params);
+
+	// set_property_access_path -- re-points an existing UK2Node_PropertyAccess node's path
+	// (same reflective Path write as add_property_access_node), then reconstructs the node.
+	static FMonolithActionResult HandleSetPropertyAccessPath(const TSharedPtr<FJsonObject>& Params);
 };

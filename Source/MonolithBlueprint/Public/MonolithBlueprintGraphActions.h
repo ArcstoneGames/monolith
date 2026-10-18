@@ -12,6 +12,8 @@ public:
 	static FMonolithActionResult HandleRemoveFunction(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleRenameFunction(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleSetFunctionThreadSafe(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult HandleSetFunctionFlags(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult HandleAddEventGraph(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleAddMacro(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleRemoveMacro(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleRenameMacro(const TSharedPtr<FJsonObject>& Params);

@@ -33,4 +33,8 @@ public:
 	static FMonolithActionResult HandleAddCurveTableRow(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleRemoveCurveTableRow(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleRenameCurveTableRow(const TSharedPtr<FJsonObject>& Params);
+
+	// Standalone UCurveFloat assets (FloatCurve is an FRichCurve that is not script-exposed)
+	static FMonolithActionResult HandleGetCurveFloatKeys(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult HandleSetCurveFloatKeys(const TSharedPtr<FJsonObject>& Params);
 };

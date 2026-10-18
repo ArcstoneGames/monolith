@@ -214,6 +214,11 @@ namespace MonolithBlueprintInternal
 		{
 			PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
 		}
+		// Text pins keep their literal in DefaultTextValue, not DefaultValue
+		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Text && !Pin->DefaultTextValue.IsEmpty())
+		{
+			PinObj->SetStringField(TEXT("default_text"), Pin->DefaultTextValue.ToString());
+		}
 		if (Pin->DefaultObject)
 		{
 			PinObj->SetStringField(TEXT("default_object"), Pin->DefaultObject->GetPathName());

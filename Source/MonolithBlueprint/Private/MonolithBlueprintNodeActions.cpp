@@ -12,6 +12,8 @@
 #include "MonolithParamSchema.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Features/IModularFeatures.h"
+#include "IPropertyAccessEditor.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CallArrayFunction.h"
 #include "K2Node_CallDataTableFunction.h"
@@ -659,7 +661,10 @@ void FMonolithBlueprintNodeActions::RegisterActions(FMonolithToolRegistry& Regis
 				TEXT("Default value as string. For class-typed (PC_Class) and object-typed (PC_Object) pins, "
 				     "accepts native class names ('APawn'), object/class paths ('/Script/Engine.Pawn'), "
 				     "or Blueprint class paths ('/Game/Foo/BP_Bar.BP_Bar_C', or '/Game/Foo/BP_Bar' — "
-				     "auto-retries with '_C' suffix). Type-constraint-checked against the pin's declared base type."))
+				     "auto-retries with '_C' suffix). Type-constraint-checked against the pin's declared base type. "
+				     "Pass 'None', 'null' or an empty string to clear an object/class/interface/soft-object/soft-class pin. "
+				     "Text (PC_Text) pins are set through the K2 schema so DefaultTextValue is written; plain strings and "
+				     "INVTEXT/NSLOCTEXT/LOCTEXT literals are accepted. Empty strings are also accepted on text/string/name pins."))
 			.Optional(TEXT("graph_name"),  TEXT("string"), TEXT("Graph name (searches all graphs if omitted)"))
 			.Build());
 
@@ -690,7 +695,7 @@ void FMonolithBlueprintNodeActions::RegisterActions(FMonolithToolRegistry& Regis
 			.Build());
 
 	Registry.RegisterAction(TEXT("blueprint"), TEXT("batch_execute"),
-		TEXT("Execute multiple Blueprint write operations on a single asset in one transaction. Each operation is { \"op\": \"action_name\", ...action_params_minus_asset_path }. Supported ops: add_node, remove_node, connect_pins, disconnect_pins, set_pin_default, set_node_position, add_variable, remove_variable, rename_variable, set_variable_type, set_variable_defaults, add_local_variable, remove_local_variable, add_component, remove_component, rename_component, reparent_component, set_component_property, duplicate_component, add_function, remove_function, rename_function, add_macro, remove_macro, rename_macro, add_event_dispatcher, set_function_params, implement_interface, remove_interface, scaffold_interface_implementation, add_timeline, add_event_node, add_comment_node, promote_pin_to_variable, add_replicated_variable, save_asset."),
+		TEXT("Execute multiple Blueprint write operations on a single asset in one transaction. Each operation is { \"op\": \"action_name\", ...action_params_minus_asset_path }. Supported ops: add_node, remove_node, connect_pins, disconnect_pins, set_pin_default, set_node_position, add_variable, remove_variable, rename_variable, set_variable_type, set_variable_defaults, add_local_variable, remove_local_variable, add_component, remove_component, rename_component, reparent_component, set_component_property, duplicate_component, add_function, remove_function, rename_function, set_function_flags, add_macro, remove_macro, rename_macro, add_event_dispatcher, set_function_params, implement_interface, remove_interface, scaffold_interface_implementation, add_timeline, add_event_node, add_comment_node, promote_pin_to_variable, add_replicated_variable, save_asset."),
 		FMonolithActionHandler::CreateStatic(&HandleBatchExecute),
 		FParamSchemaBuilder()
 			.RequiredAssetPath(TEXT("asset_path"),         TEXT("Blueprint asset path"))
@@ -859,6 +864,20 @@ void FMonolithBlueprintNodeActions::RegisterActions(FMonolithToolRegistry& Regis
 			.Optional(TEXT("graph_name"),  TEXT("string"), TEXT("Target graph/function name. Defaults to the first ubergraph if omitted; pass a function name (e.g. 'BlueprintThreadSafeUpdateAnimation' or 'UpdateEssentialValues') to author into that function graph."), {TEXT("target_graph"), TEXT("function_name")})
 			.Optional(TEXT("context_id"),  TEXT("string"), TEXT("Optional Property Access ContextId (FName). Leave empty for the default unbatched worker-thread context (matches the Game Animation Sample)."))
 			.Optional(TEXT("position"),    TEXT("array"),  TEXT("Node position as [x, y] (default: [0, 0])"))
+			.Build());
+
+	Registry.RegisterAction(TEXT("blueprint"), TEXT("set_property_access_path"),
+		TEXT("Re-point an EXISTING Property Access node (UK2Node_PropertyAccess) to a new path, in place. Uses the same verbatim path "
+		     "semantics as add_property_access_node, refreshes the node's display text, then reconstructs the node so the 'Value' pin "
+		     "re-resolves; existing links on 'Value' are kept where the engine's reconstruct can preserve them. Returns old_path, path, "
+		     "value_pin_id and a warning if the new path does not resolve."),
+		FMonolithActionHandler::CreateStatic(&HandleSetPropertyAccessPath),
+		FParamSchemaBuilder()
+			.RequiredAssetPath(TEXT("asset_path"), TEXT("Blueprint / Animation Blueprint asset path"))
+			.Required(TEXT("node_id"), TEXT("string"), TEXT("Property Access node name (node_id from get_graph_data / add_property_access_node)"))
+			.Required(TEXT("path"), TEXT("array"), TEXT("New verbatim resolution chain (array of non-empty strings), same format as add_property_access_node"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node. Matches nested graphs too (state-machine transition / state graphs). Searches every graph if omitted; errors if the node_id is ambiguous."), {TEXT("target_graph"), TEXT("function_name")})
+			.Optional(TEXT("node_guid"), TEXT("string"), TEXT("Optional NodeGuid to disambiguate when the same node_id exists in several graphs"))
 			.Build());
 }
 
@@ -1947,6 +1966,210 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleAddPropertyAccessNode
 }
 
 // ============================================================
+//  set_property_access_path
+//
+//  Re-points an existing UK2Node_PropertyAccess. The engine's own
+//  UK2Node_PropertyAccess::SetPath is not exported (MinimalAPI, private
+//  header), so this replays what it does: write Path reflectively (same
+//  FScriptArrayHelper idiom as add_property_access_node), refresh the
+//  display TextPath via the PropertyAccessEditor modular feature, mark the
+//  Blueprint structurally modified, then ReconstructNode() so the 'Value'
+//  pin re-resolves and existing links are carried over where possible.
+// ============================================================
+
+FMonolithActionResult FMonolithBlueprintNodeActions::HandleSetPropertyAccessPath(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	UBlueprint* BP = MonolithBlueprintInternal::LoadBlueprintFromParams(Params, AssetPath);
+	if (!BP)
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath));
+	}
+
+	FString NodeId;
+	Params->TryGetStringField(TEXT("node_id"), NodeId);
+	if (NodeId.IsEmpty())
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required parameter: node_id"));
+	}
+
+	TArray<FString> NewPath;
+	const TArray<TSharedPtr<FJsonValue>>* PathArr = nullptr;
+	if (!Params->TryGetArrayField(TEXT("path"), PathArr) || !PathArr || PathArr->Num() == 0)
+	{
+		return FMonolithActionResult::Error(TEXT("set_property_access_path requires a non-empty 'path' array of strings"));
+	}
+	for (const TSharedPtr<FJsonValue>& Elem : *PathArr)
+	{
+		FString S;
+		if (!Elem.IsValid() || !Elem->TryGetString(S) || S.IsEmpty())
+		{
+			return FMonolithActionResult::Error(TEXT("Each 'path' element must be a non-empty string"));
+		}
+		NewPath.Add(S);
+	}
+
+	FString GraphName;
+	Params->TryGetStringField(TEXT("graph_name"), GraphName);
+	FString NodeGuidStr;
+	Params->TryGetStringField(TEXT("node_guid"), NodeGuidStr);
+	FGuid NodeGuid;
+	if (!NodeGuidStr.IsEmpty() && !FGuid::Parse(NodeGuidStr, NodeGuid))
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid node_guid: %s"), *NodeGuidStr));
+	}
+
+	static const TCHAR* PropertyAccessClassPath = TEXT("/Script/PropertyAccessNode.K2Node_PropertyAccess");
+	UClass* PAClass = FindObject<UClass>(nullptr, PropertyAccessClassPath);
+	if (!PAClass)
+	{
+		PAClass = LoadClass<UObject>(nullptr, PropertyAccessClassPath);
+	}
+	if (!PAClass)
+	{
+		return FMonolithActionResult::Error(
+			TEXT("UK2Node_PropertyAccess class not resolvable (/Script/PropertyAccessNode.K2Node_PropertyAccess). "
+			     "The PropertyAccessNode editor module is required."));
+	}
+
+	FArrayProperty* PathProp = FindFProperty<FArrayProperty>(PAClass, TEXT("Path"));
+	FStrProperty* InnerStr = PathProp ? CastField<FStrProperty>(PathProp->Inner) : nullptr;
+	if (!InnerStr)
+	{
+		return FMonolithActionResult::Error(
+			TEXT("UK2Node_PropertyAccess::Path (TArray<FString>) not found via reflection — engine layout changed."));
+	}
+
+	// Search every graph, nested ones included: Property Access nodes commonly live in
+	// state-machine transition graphs, which are not in any top-level graph array.
+	TArray<UEdGraph*> AllGraphs;
+	BP->GetAllGraphs(AllGraphs);
+	TArray<UK2Node*> Matches;
+	bool bNameMatchedWrongClass = false;
+	for (UEdGraph* G : AllGraphs)
+	{
+		if (!G || (!GraphName.IsEmpty() && G->GetName() != GraphName))
+		{
+			continue;
+		}
+		for (UEdGraphNode* N : G->Nodes)
+		{
+			if (!N || N->GetName() != NodeId)
+			{
+				continue;
+			}
+			if (NodeGuid.IsValid() && N->NodeGuid != NodeGuid)
+			{
+				continue;
+			}
+			if (!N->IsA(PAClass))
+			{
+				bNameMatchedWrongClass = true;
+				continue;
+			}
+			Matches.AddUnique(CastChecked<UK2Node>(N));
+		}
+	}
+
+	if (Matches.Num() == 0)
+	{
+		return FMonolithActionResult::Error(bNameMatchedWrongClass
+			? FString::Printf(TEXT("Node '%s' exists but is not a K2Node_PropertyAccess"), *NodeId)
+			: FString::Printf(TEXT("Property Access node not found: %s%s"), *NodeId,
+				GraphName.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (graph '%s')"), *GraphName)));
+	}
+	if (Matches.Num() > 1)
+	{
+		TArray<FString> Where;
+		for (const UK2Node* M : Matches)
+		{
+			Where.Add(FString::Printf(TEXT("%s [node_guid %s]"),
+				M->GetGraph() ? *M->GetGraph()->GetName() : TEXT("?"), *M->NodeGuid.ToString()));
+		}
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("node_id '%s' is ambiguous (%d matches): %s. Pass graph_name and/or node_guid."),
+			*NodeId, Matches.Num(), *FString::Join(Where, TEXT(", "))));
+	}
+
+	UK2Node* Node = Matches[0];
+	void* ArrayValuePtr = PathProp->ContainerPtrToValuePtr<void>(Node);
+
+	TArray<FString> OldPath;
+	{
+		FScriptArrayHelper Reader(PathProp, ArrayValuePtr);
+		for (int32 i = 0; i < Reader.Num(); ++i)
+		{
+			OldPath.Add(InnerStr->GetPropertyValue(Reader.GetRawPtr(i)));
+		}
+	}
+
+	Node->Modify();
+	{
+		FScriptArrayHelper Helper(PathProp, ArrayValuePtr);
+		Helper.Resize(NewPath.Num());
+		for (int32 i = 0; i < NewPath.Num(); ++i)
+		{
+			InnerStr->SetPropertyValue(Helper.GetRawPtr(i), NewPath[i]);
+		}
+	}
+
+	// Refresh the display path (TextPath) the same way the engine's SetPath does. Purely
+	// cosmetic; skipped if the PropertyAccessEditor feature is unavailable.
+	if (FTextProperty* TextPathProp = FindFProperty<FTextProperty>(PAClass, TEXT("TextPath")))
+	{
+		FText NewTextPath = FText::FromString(FString::Join(NewPath, TEXT(".")));
+		if (IModularFeatures::Get().IsModularFeatureAvailable(TEXT("PropertyAccessEditor")))
+		{
+			IPropertyAccessEditor& PropertyAccessEditor =
+				IModularFeatures::Get().GetModularFeature<IPropertyAccessEditor>(TEXT("PropertyAccessEditor"));
+			NewTextPath = PropertyAccessEditor.MakeTextPath(NewPath, BP->SkeletonGeneratedClass.Get());
+		}
+		TextPathProp->SetPropertyValue_InContainer(Node, NewTextPath);
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	Node->ReconstructNode();
+
+	UEdGraphPin* ValuePin = nullptr;
+	for (UEdGraphPin* P : Node->Pins)
+	{
+		if (P && P->Direction == EGPD_Output && P->PinName == TEXT("Value"))
+		{
+			ValuePin = P;
+			break;
+		}
+	}
+
+	auto ToJsonArray = [](const TArray<FString>& In)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		for (const FString& S : In) { Out.Add(MakeShared<FJsonValueString>(S)); }
+		return Out;
+	};
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("asset_path"), AssetPath);
+	Root->SetStringField(TEXT("graph"), Node->GetGraph() ? Node->GetGraph()->GetName() : FString());
+	Root->SetStringField(TEXT("node_id"), Node->GetName());
+	Root->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
+	Root->SetArrayField(TEXT("old_path"), ToJsonArray(OldPath));
+	Root->SetArrayField(TEXT("path"), ToJsonArray(NewPath));
+	Root->SetStringField(TEXT("value_pin_id"), ValuePin ? ValuePin->PinId.ToString() : FString());
+	Root->SetNumberField(TEXT("value_link_count"), ValuePin ? ValuePin->LinkedTo.Num() : 0);
+	if (ValuePin)
+	{
+		Root->SetStringField(TEXT("value_pin_category"), ValuePin->PinType.PinCategory.ToString());
+	}
+	else
+	{
+		Root->SetStringField(TEXT("warning"),
+			TEXT("Path written but the 'Value' pin did not resolve. Verify element 0 is a member/function on the access root and "
+			     "struct field elements use exact internal names. Links that could not be carried over were dropped or orphaned."));
+	}
+	return FMonolithActionResult::Success(Root);
+}
+
+// ============================================================
 //  remove_node
 // ============================================================
 
@@ -2214,10 +2437,18 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleSetPinDefault(const T
 		return FMonolithActionResult::Error(TEXT("Missing required parameter: pin_name"));
 	}
 
-	FString Value = Params->GetStringField(TEXT("value"));
-	if (Value.IsEmpty())
+	// The value field must be present, but an empty string (or JSON null) is a
+	// legitimate value: it clears object/class/interface/soft-reference pins and
+	// empties text/string/name pins. Per-category validation happens below.
+	const TSharedPtr<FJsonValue> ValueField = Params->TryGetField(TEXT("value"));
+	if (!ValueField.IsValid())
 	{
 		return FMonolithActionResult::Error(TEXT("Missing required parameter: value"));
+	}
+	FString Value;
+	if (!ValueField->IsNull())
+	{
+		ValueField->TryGetString(Value);
 	}
 
 	FString GraphName = Params->GetStringField(TEXT("graph_name"));
@@ -2248,11 +2479,56 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleSetPinDefault(const T
 			TEXT("Pin '%s' has active connections — disconnect it first before setting a default value"), *PinName));
 	}
 
-	const bool bIsRefPin =
-		(Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class) ||
-		(Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Object);
+	const FName Category = Pin->PinType.PinCategory;
 
-	if (bIsRefPin)
+	const bool bIsRefPin =
+		(Category == UEdGraphSchema_K2::PC_Class) ||
+		(Category == UEdGraphSchema_K2::PC_Object);
+
+	// Pin categories whose default can be cleared back to None.
+	const bool bIsClearablePin = bIsRefPin ||
+		(Category == UEdGraphSchema_K2::PC_Interface) ||
+		(Category == UEdGraphSchema_K2::PC_SoftObject) ||
+		(Category == UEdGraphSchema_K2::PC_SoftClass);
+
+	const bool bIsTextPin = (Category == UEdGraphSchema_K2::PC_Text);
+
+	// Categories where an empty string is itself a meaningful default.
+	const bool bEmptyAllowed = bIsClearablePin || bIsTextPin ||
+		(Category == UEdGraphSchema_K2::PC_String) ||
+		(Category == UEdGraphSchema_K2::PC_Name);
+
+	if (Value.IsEmpty() && !bEmptyAllowed)
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("Pin '%s' (category=%s) needs a non-empty value. Empty values are only accepted on object/class/interface/soft-reference pins (clears to None) and text/string/name pins."),
+			*PinName, *Category.ToString()));
+	}
+
+	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
+	bool bCleared = false;
+
+	if (bIsClearablePin &&
+		(Value.IsEmpty() || Value.Equals(TEXT("None"), ESearchCase::IgnoreCase) || Value.Equals(TEXT("null"), ESearchCase::IgnoreCase)))
+	{
+		// Clear to None through the schema so DefaultObject, DefaultValue and
+		// DefaultTextValue are reset together and the node is notified. For soft
+		// pins TrySetDefaultObject forwards to TrySetDefaultValue with an empty path.
+		const FString ValidationError = K2Schema->IsPinDefaultValid(Pin, FString(), nullptr, FText::GetEmpty());
+		if (!ValidationError.IsEmpty())
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Pin '%s' cannot be cleared to None: %s"), *PinName, *ValidationError));
+		}
+		K2Schema->TrySetDefaultObject(*Pin, nullptr, /*bMarkAsModified=*/false);
+		if (Pin->DefaultObject != nullptr || !Pin->DefaultValue.IsEmpty())
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Pin '%s' default could not be cleared (schema rejected the change)"), *PinName));
+		}
+		bCleared = true;
+	}
+	else if (bIsRefPin)
 	{
 		FString ResolveError;
 		UObject* Resolved = MonolithBlueprintInternal::ResolveDefaultObjectForPin(Pin, Value, ResolveError);
@@ -2262,12 +2538,32 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleSetPinDefault(const T
 		}
 		Pin->DefaultObject = Resolved;
 		Pin->DefaultValue.Reset();
+		Node->PinDefaultValueChanged(Pin);
+	}
+	else if (bIsTextPin)
+	{
+		// Text pins are read from DefaultTextValue by the editor and the compiler.
+		// TrySetDefaultValue parses the string the same way the pin widget does:
+		// INVTEXT/NSLOCTEXT/LOCTEXT literals keep their identity, plain strings
+		// become a text literal in the package namespace.
+		const FString ValidationError = K2Schema->IsPinDefaultValid(Pin, FString(), nullptr, FText::FromString(Value));
+		if (!ValidationError.IsEmpty())
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Pin '%s' rejected text value: %s"), *PinName, *ValidationError));
+		}
+		K2Schema->TrySetDefaultValue(*Pin, Value, /*bMarkAsModified=*/false);
+		if (!Value.IsEmpty() && Pin->DefaultTextValue.IsEmpty())
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Pin '%s' text default was not applied (schema rejected the value)"), *PinName));
+		}
 	}
 	else
 	{
 		Pin->DefaultValue = Value;
+		Node->PinDefaultValueChanged(Pin);
 	}
-	Node->PinDefaultValueChanged(Pin);
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
@@ -2275,6 +2571,14 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleSetPinDefault(const T
 	Root->SetStringField(TEXT("node_id"), NodeId);
 	Root->SetStringField(TEXT("pin_name"), PinName);
 	Root->SetStringField(TEXT("value"), Value);
+	if (bCleared)
+	{
+		Root->SetBoolField(TEXT("cleared"), true);
+	}
+	if (bIsTextPin)
+	{
+		Root->SetStringField(TEXT("default_text"), Pin->DefaultTextValue.ToString());
+	}
 	Root->SetBoolField(TEXT("success"), true);
 	return FMonolithActionResult::Success(Root);
 }
@@ -2462,6 +2766,7 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleBatchExecute(const TS
 		else if (OpName == TEXT("add_function"))           SubResult = FMonolithBlueprintGraphActions::HandleAddFunction(SubParams);
 		else if (OpName == TEXT("remove_function"))        SubResult = FMonolithBlueprintGraphActions::HandleRemoveFunction(SubParams);
 		else if (OpName == TEXT("rename_function"))        SubResult = FMonolithBlueprintGraphActions::HandleRenameFunction(SubParams);
+		else if (OpName == TEXT("set_function_flags"))     SubResult = FMonolithBlueprintGraphActions::HandleSetFunctionFlags(SubParams);
 		else if (OpName == TEXT("add_macro"))              SubResult = FMonolithBlueprintGraphActions::HandleAddMacro(SubParams);
 		else if (OpName == TEXT("add_event_dispatcher"))   SubResult = FMonolithBlueprintGraphActions::HandleAddEventDispatcher(SubParams);
 		else if (OpName == TEXT("set_function_params"))    SubResult = FMonolithBlueprintGraphActions::HandleSetFunctionParams(SubParams);
@@ -2926,6 +3231,11 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleResolveNode(const TSh
 		if (!Pin->DefaultValue.IsEmpty())
 		{
 			PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+		}
+		// Text pins keep their literal in DefaultTextValue, not DefaultValue
+		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Text && !Pin->DefaultTextValue.IsEmpty())
+		{
+			PinObj->SetStringField(TEXT("default_text"), Pin->DefaultTextValue.ToString());
 		}
 		if (Pin->DefaultObject)
 		{

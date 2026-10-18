@@ -35,14 +35,17 @@ void FMonolithBlueprintCDOActions::RegisterActions(FMonolithToolRegistry& Regist
 	Registry.RegisterAction(TEXT("blueprint"), TEXT("get_cdo_properties"),
 		TEXT("Read all CDO (Class Default Object) properties from a Blueprint or any UObject asset. "
 			 "Essential for GameplayEffects (Duration, Modifiers, Tags, Stacking), AbilitySets, InputActions, "
-			 "and any asset whose config is stored as UPROPERTY defaults rather than Blueprint graph nodes."),
+			 "and any asset whose config is stored as UPROPERTY defaults rather than Blueprint graph nodes. "
+			 "Narrow the output with property_names (exact) or name_pattern / name_filter (substring); unrecognised params are "
+			 "not applied as filters and come back in the response 'warnings' array."),
 		FMonolithActionHandler::CreateStatic(&HandleGetCDOProperties),
 		FParamSchemaBuilder()
 			.RequiredAssetPath(TEXT("asset_path"), TEXT("Asset path (e.g. /Game/Blueprints/BP_MyActor or /Game/Data/DA_MyData)"))
 			.Optional(TEXT("category_filter"), TEXT("string"), TEXT("Only include properties whose category contains this string"))
 			.Optional(TEXT("include_parent_defaults"), TEXT("boolean"), TEXT("If true, include properties inherited from native parent class (default: true)"))
 			.Optional(TEXT("owner_class_filter"), TEXT("string"), TEXT("Only include properties whose owner_class name contains this string (case-insensitive). Lets you skip everything inherited from AActor/APawn/ACharacter when only project-level props matter."))
-			.Optional(TEXT("name_pattern"), TEXT("string"), TEXT("Only include properties whose name contains this substring (case-insensitive)"))
+			.Optional(TEXT("name_pattern"), TEXT("string"), TEXT("Only include properties whose name contains this substring (case-insensitive)"), {TEXT("name_filter")})
+			.Optional(TEXT("property_names"), TEXT("array"), TEXT("Only include these properties (case-insensitive exact names). Names that match no property are listed in missing_property_names."))
 			.Optional(TEXT("exclude_categories"), TEXT("array"), TEXT("List of category names to skip entirely (case-insensitive exact match — e.g. [\"Replication\", \"Cooking\", \"HLOD\", \"Lighting\"])"))
 			.Build());
 
@@ -197,6 +200,27 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleGetCDOProperties(const
 	{
 		NamePattern = Params->GetStringField(TEXT("name_pattern"));
 	}
+	else if (Params->HasField(TEXT("name_filter")))
+	{
+		// Alias; normally rewritten by the registry, read directly for batch callers.
+		NamePattern = Params->GetStringField(TEXT("name_filter"));
+	}
+
+	// property_names: case-insensitive exact-name allow-list. Tracks which names matched
+	// so a typo is reported instead of silently returning nothing for it.
+	TMap<FString, bool> PropertyNameSet;
+	const TArray<TSharedPtr<FJsonValue>>* PropNamesArr = nullptr;
+	if (Params->TryGetArrayField(TEXT("property_names"), PropNamesArr) && PropNamesArr)
+	{
+		for (const TSharedPtr<FJsonValue>& Val : *PropNamesArr)
+		{
+			FString Name;
+			if (Val.IsValid() && Val->TryGetString(Name) && !Name.IsEmpty())
+			{
+				PropertyNameSet.Add(Name.ToLower(), false);
+			}
+		}
+	}
 
 	TArray<FString> ExcludeCategories;
 	const TArray<TSharedPtr<FJsonValue>>* ExcludeCatArr = nullptr;
@@ -238,6 +262,14 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleGetCDOProperties(const
 		if (!NamePattern.IsEmpty() && !Prop->GetName().Contains(NamePattern, ESearchCase::IgnoreCase))
 			continue;
 
+		if (PropertyNameSet.Num() > 0)
+		{
+			bool* Matched = PropertyNameSet.Find(Prop->GetName().ToLower());
+			if (!Matched)
+				continue;
+			*Matched = true;
+		}
+
 		FString Category = Prop->GetMetaData(TEXT("Category"));
 
 		// exclude_categories — case-insensitive exact match on the property's category
@@ -267,6 +299,21 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleGetCDOProperties(const
 
 	Root->SetArrayField(TEXT("properties"), PropsArr);
 	Root->SetNumberField(TEXT("property_count"), PropsArr.Num());
+
+	if (PropertyNameSet.Num() > 0)
+	{
+		// A name can also be "missing" because another filter (category, owner class,
+		// transient) excluded it; the list only says it was not returned.
+		TArray<TSharedPtr<FJsonValue>> Missing;
+		for (const TPair<FString, bool>& Pair : PropertyNameSet)
+		{
+			if (!Pair.Value)
+			{
+				Missing.Add(MakeShared<FJsonValueString>(Pair.Key));
+			}
+		}
+		Root->SetArrayField(TEXT("missing_property_names"), Missing);
+	}
 
 	return FMonolithActionResult::Success(Root);
 }
@@ -337,6 +384,16 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleSetCDOProperty(const T
 	{
 		return FMonolithActionResult::Error(FString::Printf(
 			TEXT("Property '%s' not found on %s"), *PropertyName, *TargetClass->GetName()));
+	}
+
+	// Deprecated storage (e.g. UInputMappingContext::Mappings since UE 5.7) is not read
+	// by the engine, so a write would look applied and do nothing. Issue #148.
+	{
+		FString DeprecatedReason;
+		if (FMonolithReflectionWalker::IsDeprecatedProperty(Prop, DeprecatedReason))
+		{
+			return FMonolithActionResult::Error(DeprecatedReason);
+		}
 	}
 
 	// --- Read old value ---
@@ -682,6 +739,7 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleSetPropertyAtPath(cons
 			const FString PackageFilename = FPackageName::LongPackageNameToFilename(
 				Package->GetName(), FPackageName::GetAssetPackageExtension());
 			FSavePackageArgs SaveArgs;
+			SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 			SaveArgs.SaveFlags = SAVE_NoError;
 			bSaved = UPackage::SavePackage(Package, nullptr, *PackageFilename, SaveArgs);
