@@ -223,8 +223,10 @@ bool FDecisionStalenessFlagTest::RunTest(const FString& /*Parameters*/)
 
 	// Copy one fixture file into a transient working dir so we can age it
 	// without polluting the source tree.
-	const FString WorkDir = FPaths::AutomationTransientDir()
-		/ FString::Printf(TEXT("decision-stale-%s"), *FGuid::NewGuid().ToString());
+	// Absolute: the indexer resolves a relative root against the project dir, but
+	// AutomationTransientDir() can be relative to the engine binaries.
+	const FString WorkDir = FPaths::ConvertRelativePathToFull(FPaths::AutomationTransientDir()
+		/ FString::Printf(TEXT("decision-stale-%s"), *FGuid::NewGuid().ToString()));
 	FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*WorkDir);
 
 	const FString Src = CorpusDir / TEXT("01_decision_with_rationale.md");
