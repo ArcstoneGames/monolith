@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-18 — OPEN: carried out of 0.24.0
+
+1. **The Windows swap script prompts twice.** `monolith_swap.bat` asks `Install update? (Y/N)` (by design), but its `.git` / `.github` preserve steps call `xcopy` without `/y`, so when both the backup and the staged release contain `.github` the user also gets an `Overwrite ...FUNDING.yml (Yes/No/All)?` prompt mid-install. Found in the v0.24.0 end-to-end rehearsal. Harmless, but this is the auto-update path: any fix needs its own end-to-end rehearsal before it ships.
+2. **`Scripts/verify_release_body.ps1` must be given `-ArtifactDir` under Windows PowerShell 5.1.** `$PSScriptRoot` is empty inside a `param()` default there, so the derived default throws before the gate runs. Either resolve the default in the body or document the flag in the release checklist.
+3. **`blueprint set_property_access_path` is not a `batch_execute` op.**
+4. **Niagara stack-chain breakage after `remove_module` is detected, not prevented.** `add_module` / `move_module` now validate the chain and refuse instead of asserting, but the root cause of the dangling chain inside `RemoveModuleFromStack` was not found.
+5. **#142 (Smart App Control blocks unsigned DLLs) stays open.** Needs a code-signing certificate (or Microsoft Trusted Signing), not a code change.
+
 ## 2026-10-18 — OPEN: source index follow-ups (after the #155 / #156 parser and lookup fixes)
 
 1. **Parser gaps that remain after parser v2.** Template out-of-line definitions (`TFoo<T>::Bar`), out-of-line operator definitions, and caller bodies whose definition header spans several lines (the reference pass matches single-line headers only) are still missed. Call references also resolve callees by bare name through a first-wins map, so a call is attributed to one same-named symbol rather than the right overload or owner.
