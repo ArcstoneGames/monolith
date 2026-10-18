@@ -22,7 +22,7 @@ Source actions:
     get_class_hierarchy <symbol> [--direction up|down|both] [--depth N]
     get_module_info <module_name>
     get_symbol_context <symbol> [--context-lines N]
-    read_file <file_path> [--start N] [--end N]
+    read_file <file_path> [<start> [<end>]] [--start N] [--end N]
 
 Project actions:
     search <query> [--limit N]
@@ -576,12 +576,51 @@ class SourceActions:
                 result = "\n".join(lines[:max_lines]) + f"\n[...truncated, {remaining} more lines]"
         print(result)
 
+    # --- qualified-name lookup (mirrors MonolithSourceQualifiedLookup in the live module) ---
+
+    @staticmethod
+    def split_tail(symbol):
+        """'A::B::Method' -> 'Method'; None for an unqualified name."""
+        scope = symbol.rfind("::")
+        if scope < 0 or scope + 2 >= len(symbol):
+            return None
+        return symbol[scope + 2:]
+
+    @staticmethod
+    def qualified_name_matches(requested, stored):
+        return requested == stored or requested.endswith("::" + stored)
+
+    def resolve_symbol_rows(self, symbol, kind=None):
+        """Rows for a possibly-qualified name, plus an owner_unmatched flag set when a
+        Class::Method request fell back to every trailing-identifier match."""
+        def by_name(name):
+            if kind:
+                return self.db.execute(
+                    "SELECT id, name, qualified_name FROM symbols WHERE name = ? AND kind = ?",
+                    (name, kind)).fetchall()
+            return self.db.execute(
+                "SELECT id, name, qualified_name FROM symbols WHERE name = ?", (name,)).fetchall()
+
+        rows = by_name(symbol)
+        tail = self.split_tail(symbol)
+        if rows or tail is None:
+            return rows, False
+        tail_rows = by_name(tail)
+        owner_rows = [r for r in tail_rows if self.qualified_name_matches(symbol, r["qualified_name"])]
+        if owner_rows:
+            return owner_rows, False
+        return tail_rows, bool(tail_rows)
+
+    def owner_fallback_note(self, symbol):
+        tail = self.split_tail(symbol)
+        return f"Note: no indexed '{symbol}' with that owner; showing every '{tail}' match.\n"
+
     def find_references(self, args):
         symbol = args.symbol
         ref_kind = getattr(args, 'ref_kind', None) or ""
         limit = args.limit
 
-        sym_rows = self.db.execute("SELECT id, name FROM symbols WHERE name = ?", (symbol,)).fetchall()
+        sym_rows, owner_unmatched = self.resolve_symbol_rows(symbol)
         if not sym_rows:
             fts_q = escape_fts(symbol)
             sym_rows = self.db.execute(
@@ -611,13 +650,14 @@ class SourceActions:
             for ref in refs:
                 lines.append(f"[{ref['ref_kind']}] {self.short_path(ref['path'])}:{ref['line']} (from {ref['from_name']})")
 
-        print("\n".join(lines) if lines else f"No references found for '{symbol}'.")
+        text = "\n".join(lines) if lines else f"No references found for '{symbol}'."
+        print((self.owner_fallback_note(symbol) if owner_unmatched else "") + text)
 
     def find_callers(self, args):
         symbol = args.symbol
         limit = args.limit
 
-        sym_rows = self.db.execute("SELECT id FROM symbols WHERE name = ? AND kind = 'function'", (symbol,)).fetchall()
+        sym_rows, owner_unmatched = self.resolve_symbol_rows(symbol, "function")
         if not sym_rows:
             fts_q = escape_fts(symbol)
             sym_rows = self.db.execute(
@@ -639,13 +679,14 @@ class SourceActions:
             for ref in refs:
                 lines.append(f"{ref['from_name']} -- {self.short_path(ref['path'])}:{ref['line']}")
 
-        print("\n".join(lines) if lines else f"No callers found for '{symbol}'.")
+        text = "\n".join(lines) if lines else f"No callers found for '{symbol}'."
+        print((self.owner_fallback_note(symbol) if owner_unmatched else "") + text)
 
     def find_callees(self, args):
         symbol = args.symbol
         limit = args.limit
 
-        sym_rows = self.db.execute("SELECT id FROM symbols WHERE name = ? AND kind = 'function'", (symbol,)).fetchall()
+        sym_rows, owner_unmatched = self.resolve_symbol_rows(symbol, "function")
         if not sym_rows:
             fts_q = escape_fts(symbol)
             sym_rows = self.db.execute(
@@ -667,7 +708,8 @@ class SourceActions:
             for ref in refs:
                 lines.append(f"{ref['to_name']} -- {self.short_path(ref['path'])}:{ref['line']}")
 
-        print("\n".join(lines) if lines else f"No callees found for '{symbol}'.")
+        text = "\n".join(lines) if lines else f"No callees found for '{symbol}'."
+        print((self.owner_fallback_note(symbol) if owner_unmatched else "") + text)
 
     def get_class_hierarchy(self, args):
         symbol = args.symbol
@@ -807,21 +849,63 @@ class SourceActions:
 
     def read_file(self, args):
         file_path = args.file_path
-        start = args.start
-        end = args.end
 
+        # Line range: --start/--end, or positional <start> [<end>]. Mirrors the
+        # exe: a non-integer or a conflicting duplicate fails loudly.
+        def parse_line(s, what):
+            try:
+                if s.strip() != s or s == "":
+                    raise ValueError
+                return int(s)
+            except ValueError:
+                print(f"read_file: {what} line must be an integer, got '{s}'", file=sys.stderr)
+                sys.exit(1)
+
+        if args.start_pos is not None and args.start is not None:
+            print("read_file: start line given both positionally and via --start", file=sys.stderr)
+            sys.exit(1)
+        if args.end_pos is not None and args.end is not None:
+            print("read_file: end line given both positionally and via --end", file=sys.stderr)
+            sys.exit(1)
+        if args.start_pos is not None:
+            start = parse_line(args.start_pos, "start")
+        else:
+            start = args.start if args.start is not None else 1
+        if args.end_pos is not None:
+            end = parse_line(args.end_pos, "end")
+        else:
+            end = args.end if args.end is not None else 0
+
+        # The index stores forward-slash absolute paths. Look up with forward
+        # slashes first (exact, then suffix anchored at a separator, so an
+        # engine-relative "Engine/Source/..." path resolves), then the legacy
+        # backslash form for older indexes. Same order as the exe.
         resolved = None
-        if os.path.isfile(file_path):
+        if os.path.exists(file_path):
             resolved = file_path
         else:
-            normalized = file_path.replace("/", "\\")
-            row = self.db.execute("SELECT path FROM files WHERE path = ?", (normalized,)).fetchone()
+            fwd = file_path.replace("\\", "/")
+            while fwd.startswith("./"):
+                fwd = fwd[2:]
+            fwd = fwd.lstrip("/")
+            back = fwd.replace("/", "\\")
+            row = self.db.execute("SELECT path FROM files WHERE path = ?", (fwd,)).fetchone()
+            if not row:
+                row = self.db.execute("SELECT path FROM files WHERE path LIKE ? LIMIT 1", (f"%/{fwd}",)).fetchone()
+            if not row:
+                row = self.db.execute("SELECT path FROM files WHERE path = ?", (back,)).fetchone()
+            if not row:
+                row = self.db.execute("SELECT path FROM files WHERE path LIKE ? LIMIT 1", (f"%{back}",)).fetchone()
             if row:
                 resolved = row["path"]
-            else:
-                row = self.db.execute("SELECT path FROM files WHERE path LIKE ? LIMIT 1", (f"%{normalized}",)).fetchone()
-                if row:
-                    resolved = row["path"]
+            elif fwd.startswith("Engine/"):
+                # Not indexed: join onto the engine root derived from any indexed engine file.
+                er = self.db.execute("SELECT path FROM files WHERE path LIKE ? LIMIT 1", ("%/Engine/Source/%",)).fetchone()
+                if er:
+                    p = er["path"]
+                    candidate = p[:p.find("/Engine/Source/") + 1] + fwd
+                    if os.path.exists(candidate):
+                        resolved = candidate
 
         if not resolved:
             print(f"No file found matching '{file_path}'.", file=sys.stderr)
@@ -1040,15 +1124,39 @@ class SourceActions:
             print("Deprecation index is empty (schema v2 landed but not yet populated). "
                   "Run source.trigger_reindex to populate it.")
             return
+        # Mirrors the live handler (#155): a Class::Method with no exact row is retried
+        # with its trailing identifier; an owner-confirmed hit needs the linked symbol's
+        # qualified_name to match; a name with no row and no symbol is "not found".
+        def dep_rows(name):
+            return self.db.execute(
+                "SELECT d.version, d.message, d.kind, COALESCE(s.qualified_name, '') AS linked "
+                "FROM symbol_deprecations d LEFT JOIN symbols s ON s.id = d.symbol_id "
+                "WHERE d.symbol_name = ? ORDER BY d.id", (name,)).fetchall()
+
+        def has_symbol(name):
+            return self.db.execute("SELECT 1 FROM symbols WHERE name = ? LIMIT 1", (name,)).fetchone() is not None
+
         lines = []
         for name in symbols:
-            row = self.db.execute(
-                "SELECT version, message, kind FROM symbol_deprecations WHERE symbol_name = ? LIMIT 1",
-                (name,)).fetchone()
-            if row:
-                lines.append(f"{name}: DEPRECATED ({row['version']}) [{row['kind']}] {row['message']}")
+            tail = self.split_tail(name)
+            rows = dep_rows(name)
+            if not rows and tail is not None:
+                rows = dep_rows(tail)
+            if rows:
+                chosen = rows[0]
+                owner_confirmed = False
+                if tail is not None:
+                    for r in rows:
+                        if r["linked"] and self.qualified_name_matches(name, r["linked"]):
+                            chosen = r
+                            owner_confirmed = True
+                            break
+                suffix = " (matched by bare name; owner not verified)" if (tail is not None and not owner_confirmed) else ""
+                lines.append(f"{name}: DEPRECATED ({chosen['version']}) [{chosen['kind']}] {chosen['message']}{suffix}")
             else:
-                lines.append(f"{name}: not deprecated")
+                found = has_symbol(name) or (tail is not None and has_symbol(tail))
+                lines.append(f"{name}: not deprecated" if found
+                             else f"{name}: not found in the source index (deprecation status unknown)")
         print("\n".join(lines))
 
     # --- shared composition helpers (mirror FMonolithSourceActions) ---
@@ -2662,8 +2770,10 @@ def build_parser():
 
     p = src_sub.add_parser("read_file")
     p.add_argument("file_path")
-    p.add_argument("--start", type=int, default=1)
-    p.add_argument("--end", type=int, default=0)
+    p.add_argument("start_pos", nargs="?", default=None)
+    p.add_argument("end_pos", nargs="?", default=None)
+    p.add_argument("--start", type=int, default=None)
+    p.add_argument("--end", type=int, default=None)
 
     p = src_sub.add_parser("get_include_path")
     p.add_argument("symbol")

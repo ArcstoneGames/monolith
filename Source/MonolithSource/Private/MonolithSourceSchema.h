@@ -14,6 +14,13 @@ namespace MonolithSourceSchema
 	// v3: symbol_deprecations.file_id (per-file purge on incremental project reindex).
 	static const int32 SchemaVersion = 3;
 
+	// Bump whenever MonolithCppParser / MonolithReferenceBuilder output changes, so an
+	// index built by an older parser can be detected (meta.parser_version) and rebuilt
+	// with source.trigger_reindex. The table layout is unaffected (SchemaVersion stays).
+	//   2: class-body members of UCLASS/USTRUCT/UINTERFACE types, allman out-of-line
+	//      definitions (incl. constructors) and allman caller bodies (issue #156).
+	static const int32 ParserVersion = 2;
+
 	// ----------------------------------------------------------------
 	// Core tables + indexes
 	// ----------------------------------------------------------------
@@ -85,10 +92,10 @@ namespace MonolithSourceSchema
 		TEXT(");")
 
 		// Schema v2 (item 3): UE_DEPRECATED extraction. symbol_id is NULLABLE —
-		// class-body method declarations are NOT indexed as `symbols` rows
-		// (Step-0 finding), so the extractor parses the symbol NAME from the
-		// declaration text after the macro and stores symbol_id = NULL when it
-		// cannot resolve a symbols row. Lookups (check_deprecations) key on
+		// the extractor parses the symbol NAME from the declaration text after the
+		// macro and stores symbol_id = NULL when it cannot resolve a symbols row.
+		// (The original "Step-0 finding" that class-body methods had no rows was a
+		// parser bug, fixed in ParserVersion 2 — issue #156.) Lookups (check_deprecations) key on
 		// symbol_name, so a NULL symbol_id does not break the read path.
 		//
 		// Schema v3: file_id links each row to the file it was extracted from, so an

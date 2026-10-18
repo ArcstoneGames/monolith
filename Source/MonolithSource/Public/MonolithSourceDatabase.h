@@ -79,6 +79,8 @@ struct FMonolithDeprecationRow
 	FString Version;
 	FString Message;
 	FString Kind;
+	/** qualified_name of the linked symbols row (empty when symbol_id is NULL). Filled by GetDeprecationRows only. */
+	FString LinkedQualifiedName;
 };
 
 /**
@@ -199,8 +201,17 @@ public:
 	void InsertDeprecation(int64 SymbolId, const FString& SymbolName, const FString& Version, const FString& Message, const FString& Kind, int64 FileId = 0);
 	/** Returns the deprecation row for the first matching symbol, or unset when not deprecated. */
 	TOptional<FMonolithDeprecationRow> GetDeprecation(const FString& SymbolName);
-	/** Batch lookup: maps each input symbol name that IS deprecated to its row. Absent keys = not deprecated. */
+	/**
+	 * Batch lookup: maps each input symbol name that has a deprecation row to that row.
+	 * Keys are exact bare names (symbol_name never holds `Class::`). An absent key means
+	 * "no deprecation row for that exact string" — NOT proof the symbol exists and is
+	 * current; use HasSymbolNamed to tell an unindexed name from a non-deprecated one.
+	 */
 	TMap<FString, FMonolithDeprecationRow> GetDeprecationsBatch(const TArray<FString>& SymbolNames);
+	/** Every deprecation row for an exact bare name, with the linked symbol's qualified_name (LEFT JOIN symbols). */
+	TArray<FMonolithDeprecationRow> GetDeprecationRows(const FString& SymbolName);
+	/** True when any symbols row has exactly this bare name. */
+	bool HasSymbolNamed(const FString& Name);
 	/** Total rows in symbol_deprecations (used to detect the "index empty" state — Decision 3). */
 	int32 GetDeprecationCount();
 

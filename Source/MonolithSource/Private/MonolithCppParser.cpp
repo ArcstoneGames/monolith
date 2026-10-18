@@ -4,6 +4,140 @@
 #include "Misc/FileHelper.h"
 #include "Internationalization/Regex.h"
 
+namespace MonolithCppParserDetail
+{
+	/**
+	 * Walk forward from (StartLine, StartCol) — which must sit on an opening '(' —
+	 * until the parentheses balance. Text after a `//` on a line is ignored. Returns
+	 * false when the parens do not balance within MaxLines. On success OutLine/OutCol
+	 * address the character just past the matching ')'.
+	 */
+	static bool FindMatchingParen(const TArray<FString>& Lines, int32 StartLine, int32 StartCol,
+		int32 MaxLines, int32& OutLine, int32& OutCol)
+	{
+		int32 Depth = 0;
+		const int32 LastLine = FMath::Min(Lines.Num() - 1, StartLine + MaxLines);
+		for (int32 L = StartLine; L <= LastLine; ++L)
+		{
+			const FString& Text = Lines[L];
+			for (int32 C = (L == StartLine ? StartCol : 0); C < Text.Len(); ++C)
+			{
+				const TCHAR Ch = Text[C];
+				if (Ch == TEXT('/') && C + 1 < Text.Len() && Text[C + 1] == TEXT('/'))
+				{
+					break; // rest of the line is a comment
+				}
+				if (Ch == TEXT('('))
+				{
+					++Depth;
+				}
+				else if (Ch == TEXT(')'))
+				{
+					if (--Depth == 0)
+					{
+						OutLine = L;
+						OutCol = C + 1;
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}
+
+	/** Net '(' minus ')' count on one line, ignoring anything after `//`. */
+	static int32 ParenBalance(const FString& Text)
+	{
+		int32 Balance = 0;
+		for (int32 C = 0; C < Text.Len(); ++C)
+		{
+			const TCHAR Ch = Text[C];
+			if (Ch == TEXT('/') && C + 1 < Text.Len() && Text[C + 1] == TEXT('/'))
+			{
+				break;
+			}
+			if (Ch == TEXT('(')) { ++Balance; }
+			else if (Ch == TEXT(')')) { --Balance; }
+		}
+		return Balance;
+	}
+
+	/** Strip a trailing `// comment` from a line. */
+	static FString StripLineComment(const FString& Text)
+	{
+		const int32 Idx = Text.Find(TEXT("//"), ESearchCase::CaseSensitive);
+		return Idx == INDEX_NONE ? Text : Text.Left(Idx);
+	}
+
+	/**
+	 * True when Tail (the text between a function's closing ')' and its body '{')
+	 * holds only trailing function qualifiers: const, noexcept, override, final,
+	 * volatile, ref-qualifiers, or a trailing return type (`-> T`).
+	 */
+	static bool IsQualifierTail(const FString& Tail)
+	{
+		static const TCHAR* Qualifiers[] = {
+			TEXT("const"), TEXT("noexcept"), TEXT("override"), TEXT("final"), TEXT("volatile"),
+		};
+
+		FString Rest = Tail.TrimStartAndEnd();
+		while (!Rest.IsEmpty())
+		{
+			bool bConsumed = false;
+			if (Rest.StartsWith(TEXT("&")))
+			{
+				Rest = Rest.Mid(1).TrimStart();
+				continue;
+			}
+			if (Rest.StartsWith(TEXT("->")))
+			{
+				// Trailing return type: accept identifier/template/pointer characters only.
+				for (int32 C = 2; C < Rest.Len(); ++C)
+				{
+					const TCHAR Ch = Rest[C];
+					if (!(FChar::IsAlnum(Ch) || Ch == TEXT('_') || Ch == TEXT(':') || Ch == TEXT('<')
+						|| Ch == TEXT('>') || Ch == TEXT('*') || Ch == TEXT('&') || Ch == TEXT(',')
+						|| FChar::IsWhitespace(Ch)))
+					{
+						return false;
+					}
+				}
+				return true;
+			}
+			for (const TCHAR* Q : Qualifiers)
+			{
+				const int32 QLen = FCString::Strlen(Q);
+				if (Rest.StartsWith(Q, ESearchCase::CaseSensitive)
+					&& (Rest.Len() == QLen || !(FChar::IsAlnum(Rest[QLen]) || Rest[QLen] == TEXT('_'))))
+				{
+					Rest = Rest.Mid(QLen).TrimStart();
+					bConsumed = true;
+					break;
+				}
+			}
+			if (!bConsumed)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** True when a qualified name is a constructor or destructor (`A::B::B` / `A::~A`). */
+	static bool IsQualifiedCtorOrDtor(const FString& QualifiedName)
+	{
+		TArray<FString> Parts;
+		QualifiedName.ParseIntoArray(Parts, TEXT("::"), true);
+		if (Parts.Num() < 2)
+		{
+			return false;
+		}
+		FString Last = Parts.Last();
+		Last.RemoveFromStart(TEXT("~"));
+		return Last == Parts[Parts.Num() - 2];
+	}
+}
+
 // ============================================================
 // ParseFile — main entry point
 // ============================================================
@@ -141,8 +275,14 @@ void FMonolithCppParser::ExtractClassesAndStructs(const TArray<FString>& OrigLin
 				// Result.Symbols.Last().Name by reference is a use-after-free: ExtractMembers
 				// Adds member symbols to Result.Symbols, and a reallocation frees the backing
 				// store the reference points into (AV when the next member reads ParentClass).
+				//
+				// BraceLineIdx is a 0-based index and ExtractMembers takes 1-based lines, so
+				// the first line AFTER the `{` is BraceLineIdx + 2 (same as Phase B). Passing
+				// BraceLineIdx + 1 started the scan ON the `{` line: its brace pushed
+				// ExtractMembers' depth to 1, the matching `}` lies past BodyEndLine, and
+				// every member of every UCLASS/USTRUCT/UINTERFACE body was skipped (issue #156).
 				const FString ParentName = Result.Symbols.Last().Name;
-				ExtractMembers(OrigLines, BraceLineIdx + 1, CloseLine - 1,
+				ExtractMembers(OrigLines, BraceLineIdx + 2, CloseLine - 1,
 					ParentName, DefaultAccess, Result);
 			}
 			else
@@ -428,31 +568,45 @@ void FMonolithCppParser::ExtractEnums(const TArray<FString>& OrigLines, const TA
 
 void FMonolithCppParser::ExtractFreeFunctions(const TArray<FString>& OrigLines, const TArray<FString>& CleanLines, FParsedFileResult& Result)
 {
+	using namespace MonolithCppParserDetail;
+
 	const int32 NumLines = CleanLines.Num();
 
-	// Build a set of class/struct body line ranges to skip
-	// (member functions are extracted by ExtractMembers)
-	TSet<FString> KnownClassNames;
+	// Class/struct line ranges (1-based, inclusive) to skip — member functions are
+	// extracted by ExtractMembers. Collected once: this pass only appends functions.
+	TArray<TPair<int32, int32>> ClassRanges;
 	for (const FParsedSourceSymbol& Sym : Result.Symbols)
 	{
 		if (Sym.Kind == TEXT("class") || Sym.Kind == TEXT("struct"))
 		{
-			KnownClassNames.Add(Sym.Name);
+			ClassRanges.Emplace(Sym.LineStart, Sym.LineEnd);
 		}
 	}
 
-	// Function pattern: return_type name(params) [const] [override] {
-	// We do a simpler two-step: find lines ending with { that look like function defs
-	FRegexPattern FuncPattern(TEXT("^\\s*(?:static\\s+|inline\\s+|virtual\\s+|FORCEINLINE\\s+|constexpr\\s+)*(\\w[\\w:*&<>\\s,]*?)\\s+(\\w+(?:::\\w+)*)\\s*\\(([^)]*)\\)\\s*(?:const)?\\s*(?:override)?\\s*(?:->\\s*\\w[\\w:*&<>\\s,]*?)?\\s*\\{"));
+	// Definition head: [specifiers] return-type name(   — name may be qualified (A::B).
+	// Only the head is matched here; the parameter list is walked with balanced-paren
+	// scanning so it may span lines and contain nested parens (TFunction<void()>).
+	FRegexPattern HeadPattern(TEXT("^\\s*(?:(?:static|inline|virtual|FORCEINLINE|FORCENOINLINE|constexpr|explicit)\\s+)*(\\w[\\w:*&<>\\s,]*?)\\s+(\\w+(?:::\\w+)*)\\s*\\("));
+	// Out-of-line constructor / destructor head (no return type): A::A(  /  A::~A(
+	FRegexPattern CtorPattern(TEXT("^\\s*((?:\\w+::)+~?\\w+)\\s*\\("));
+
+	static const TSet<FString> NonFunctionNames = {
+		TEXT("if"), TEXT("for"), TEXT("while"), TEXT("switch"), TEXT("catch"), TEXT("else"),
+		TEXT("return"), TEXT("sizeof"), TEXT("alignof"), TEXT("decltype"), TEXT("static_assert"),
+		TEXT("new"), TEXT("delete"), TEXT("throw"),
+	};
+	static const TSet<FString> NonReturnTypeWords = {
+		TEXT("return"), TEXT("else"), TEXT("new"), TEXT("delete"), TEXT("throw"), TEXT("case"),
+		TEXT("goto"), TEXT("typedef"), TEXT("using"), TEXT("co_return"), TEXT("co_yield"), TEXT("co_await"),
+	};
 
 	for (int32 i = 0; i < NumLines; ++i)
 	{
 		// Skip lines inside known class bodies
 		bool bInsideClass = false;
-		for (const FParsedSourceSymbol& Sym : Result.Symbols)
+		for (const TPair<int32, int32>& Range : ClassRanges)
 		{
-			if ((Sym.Kind == TEXT("class") || Sym.Kind == TEXT("struct")) &&
-				(i + 1) >= Sym.LineStart && (i + 1) <= Sym.LineEnd)
+			if ((i + 1) >= Range.Key && (i + 1) <= Range.Value)
 			{
 				bInsideClass = true;
 				break;
@@ -463,19 +617,129 @@ void FMonolithCppParser::ExtractFreeFunctions(const TArray<FString>& OrigLines, 
 			continue;
 		}
 
-		FRegexMatcher Matcher(FuncPattern, CleanLines[i]);
-		if (!Matcher.FindNext())
+		const FString& Clean = CleanLines[i];
+		if (!Clean.Contains(TEXT("(")))
+		{
+			continue; // cheap reject before running the regexes
+		}
+
+		FString ReturnType;
+		FString FuncName;
+		int32 ParenCol = INDEX_NONE;
+		{
+			FRegexMatcher Matcher(HeadPattern, Clean);
+			if (Matcher.FindNext())
+			{
+				ReturnType = Matcher.GetCaptureGroup(1).TrimStartAndEnd();
+				FuncName = Matcher.GetCaptureGroup(2);
+				ParenCol = Matcher.GetMatchEnding() - 1; // the pattern ends on '('
+			}
+		}
+		if (ParenCol == INDEX_NONE)
+		{
+			FRegexMatcher Matcher(CtorPattern, Clean);
+			if (Matcher.FindNext() && IsQualifiedCtorOrDtor(Matcher.GetCaptureGroup(1)))
+			{
+				FuncName = Matcher.GetCaptureGroup(1);
+				ParenCol = Matcher.GetMatchEnding() - 1;
+			}
+		}
+		if (ParenCol == INDEX_NONE || !Clean.IsValidIndex(ParenCol) || Clean[ParenCol] != TEXT('('))
 		{
 			continue;
 		}
 
-		FString ReturnType = Matcher.GetCaptureGroup(1).TrimStartAndEnd();
-		FString FuncName = Matcher.GetCaptureGroup(2);
-		FString Params = Matcher.GetCaptureGroup(3);
+		// Skip things that look like control flow, statements or macros
+		if (NonFunctionNames.Contains(FuncName))
+		{
+			continue;
+		}
+		{
+			int32 WordEnd = 0;
+			while (WordEnd < ReturnType.Len() && (FChar::IsAlnum(ReturnType[WordEnd]) || ReturnType[WordEnd] == TEXT('_')))
+			{
+				++WordEnd;
+			}
+			if (NonReturnTypeWords.Contains(ReturnType.Left(WordEnd)))
+			{
+				continue;
+			}
+		}
 
-		// Skip things that look like control flow or macros
-		if (FuncName == TEXT("if") || FuncName == TEXT("for") || FuncName == TEXT("while") ||
-			FuncName == TEXT("switch") || FuncName == TEXT("catch") || FuncName == TEXT("else"))
+		const bool bIsCtor = IsQualifiedCtorOrDtor(FuncName);
+
+		// Walk the parameter list to its closing ')'.
+		int32 ParamsEndLine = INDEX_NONE;
+		int32 ParamsEndCol = INDEX_NONE;
+		if (!FindMatchingParen(CleanLines, i, ParenCol, /*MaxLines=*/15, ParamsEndLine, ParamsEndCol))
+		{
+			continue;
+		}
+
+		// Locate the body's opening brace. Between ')' and '{' only trailing qualifiers
+		// may appear (or, for a constructor, an initializer list). Epic's allman style puts
+		// the '{' on the next line; K&R puts it on the same line. A ';' first means a
+		// prototype or a statement — not a definition.
+		int32 BraceLine = INDEX_NONE;
+		bool bRejected = false;
+		FString Tail;
+		for (int32 L = ParamsEndLine; L < FMath::Min(NumLines, ParamsEndLine + 4); ++L)
+		{
+			const FString Text = StripLineComment(L == ParamsEndLine ? CleanLines[L].Mid(ParamsEndCol) : CleanLines[L]);
+			int32 BraceIdx = INDEX_NONE;
+			int32 SemiIdx = INDEX_NONE;
+			Text.FindChar(TEXT('{'), BraceIdx);
+			Text.FindChar(TEXT(';'), SemiIdx);
+
+			if (SemiIdx != INDEX_NONE && (BraceIdx == INDEX_NONE || SemiIdx < BraceIdx))
+			{
+				bRejected = true;
+				break;
+			}
+
+			const FString Before = (BraceIdx != INDEX_NONE) ? Text.Left(BraceIdx) : Text;
+			Tail += TEXT(" ") + Before;
+
+			// Constructor initializer list: `: Super(X)` (possibly over several lines)
+			// precedes the body. Find the body as the first line that opens with '{' or
+			// ends with '{'.
+			if (bIsCtor && Tail.TrimStart().StartsWith(TEXT(":")))
+			{
+				for (int32 K = L; K < FMath::Min(NumLines, L + 40); ++K)
+				{
+					const FString KText = StripLineComment(K == ParamsEndLine ? CleanLines[K].Mid(ParamsEndCol) : CleanLines[K]).TrimStartAndEnd();
+					if (K > L && KText.Contains(TEXT(";")))
+					{
+						bRejected = true;
+						break;
+					}
+					if (KText.StartsWith(TEXT("{")) || KText.EndsWith(TEXT("{")))
+					{
+						BraceLine = K;
+						break;
+					}
+				}
+				if (BraceLine == INDEX_NONE)
+				{
+					bRejected = true;
+				}
+				break;
+			}
+
+			if (BraceIdx != INDEX_NONE)
+			{
+				if (IsQualifierTail(Tail))
+				{
+					BraceLine = L;
+				}
+				else
+				{
+					bRejected = true;
+				}
+				break;
+			}
+		}
+		if (bRejected || BraceLine == INDEX_NONE)
 		{
 			continue;
 		}
@@ -509,11 +773,20 @@ void FMonolithCppParser::ExtractFreeFunctions(const TArray<FString>& OrigLines, 
 			Sym.Name = FuncName;
 		}
 
-		// Find closing brace
-		int32 CloseLine = FindClosingBrace(CleanLines, i);
-		Sym.LineEnd = CloseLine;
+		// Find closing brace (1-based; NumLines when the body is unterminated)
+		const int32 BodyEnd = FindClosingBrace(CleanLines, BraceLine);
+		Sym.LineEnd = BodyEnd;
 
 		Result.Symbols.Add(MoveTemp(Sym));
+
+		// Skip the body: statements inside it are never definitions, and scanning them
+		// is where false positives would come from. An unterminated body (brace mismatch,
+		// e.g. a definition head duplicated across #if branches) does NOT skip, so one bad
+		// brace count cannot hide the rest of the file.
+		if (BodyEnd < NumLines)
+		{
+			i = FMath::Max(i, BodyEnd - 1);
+		}
 	}
 }
 
@@ -630,24 +903,36 @@ void FMonolithCppParser::ExtractMembers(const TArray<FString>& OrigLines, int32 
 	FRegexPattern AccessPattern(TEXT("^\\s*(public|protected|private)\\s*:"));
 	FRegexPattern FuncDeclPattern(TEXT("^\\s*(?:virtual\\s+|static\\s+|inline\\s+|FORCEINLINE\\s+|explicit\\s+|constexpr\\s+)*(\\w[\\w:*&<>,\\s]*?)\\s+(\\w+)\\s*\\([^)]*\\)"));
 	FRegexPattern VarDeclPattern(TEXT("^\\s*(\\w[\\w:*&<>,\\s]*?)\\s+(\\w+)\\s*(?:=\\s*[^;]+)?\\s*;"));
+	// Head of a declaration whose parameter list continues on the following lines
+	// (`UE_API void Foo(int32 A,` / `    int32 B);`). Only tried when the line leaves a
+	// '(' unclosed, so single-line forms keep going through FuncDeclPattern.
+	FRegexPattern FuncHeadPattern(TEXT("^\\s*(?:virtual\\s+|static\\s+|inline\\s+|FORCEINLINE\\s+|explicit\\s+|constexpr\\s+)*(\\w[\\w:*&<>,\\s]*?)\\s+(\\w+)\\s*\\("));
+
+	auto CountBraces = [&BraceDepth](const FString& Text)
+	{
+		for (TCHAR Ch : Text)
+		{
+			if (Ch == TEXT('{')) { ++BraceDepth; }
+			else if (Ch == TEXT('}')) { --BraceDepth; }
+		}
+		if (BraceDepth < 0) { BraceDepth = 0; }
+	};
 
 	for (int32 i = StartIdx; i <= EndIdx; ++i)
 	{
 		const FString& Line = OrigLines[i];
 		FString Trimmed = Line.TrimStartAndEnd();
 
-		// Track brace depth — skip nested class/struct/enum bodies
-		for (TCHAR Ch : Trimmed)
-		{
-			if (Ch == TEXT('{')) { ++BraceDepth; }
-			else if (Ch == TEXT('}')) { --BraceDepth; }
-		}
-		if (BraceDepth > 0)
+		// Track brace depth — skip nested class/struct/enum bodies and inline method
+		// bodies. The decision uses the depth BEFORE this line, so a line that OPENS a
+		// body (`void Foo() {`) is still examined as a declaration; only lines inside the
+		// body (and its closing `}`) are skipped.
+		const int32 DepthBefore = BraceDepth;
+		CountBraces(Trimmed);
+		if (DepthBefore > 0)
 		{
 			continue; // Inside a nested scope, skip
 		}
-		// Reset if we went negative (shouldn't happen but be safe)
-		if (BraceDepth < 0) { BraceDepth = 0; }
 
 		// Skip empty lines
 		if (Trimmed.IsEmpty())
@@ -675,6 +960,15 @@ void FMonolithCppParser::ExtractMembers(const TArray<FString>& OrigLines, int32 
 		if (Trimmed.StartsWith(TEXT("UFUNCTION(")) || Trimmed.StartsWith(TEXT("UPROPERTY(")))
 		{
 			bNextIsUEMacro = true;
+			// Multi-line specifier list: consume continuation lines until the parens
+			// balance, so the flag survives to the declaration that follows.
+			int32 Balance = MonolithCppParserDetail::ParenBalance(Trimmed);
+			for (int32 Guard = 0; Balance > 0 && i < EndIdx && Guard < 30; ++Guard)
+			{
+				++i;
+				CountBraces(OrigLines[i]);
+				Balance += MonolithCppParserDetail::ParenBalance(OrigLines[i]);
+			}
 			continue;
 		}
 
@@ -702,32 +996,70 @@ void FMonolithCppParser::ExtractMembers(const TArray<FString>& OrigLines, int32 
 			continue;
 		}
 
+		// Type aliases are not functions (`typedef void (*FFn)(int32);`)
+		if (Trimmed.StartsWith(TEXT("typedef ")) || Trimmed.StartsWith(TEXT("using ")))
+		{
+			bNextIsUEMacro = false;
+			continue;
+		}
+
 		// Function declaration (with semicolon — declaration, not definition)
 		{
-			FRegexMatcher Matcher(FuncDeclPattern, Line);
-			if (Matcher.FindNext())
-			{
-				FString RetType = Matcher.GetCaptureGroup(1).TrimStartAndEnd();
-				FString FuncName = Matcher.GetCaptureGroup(2);
+			const int32 OpenParens = MonolithCppParserDetail::ParenBalance(Trimmed);
 
-				// Filter out things that aren't function names
-				if (FuncName != TEXT("if") && FuncName != TEXT("for") && FuncName != TEXT("while") &&
-					FuncName != TEXT("switch") && FuncName != TEXT("return"))
+			FString FuncName;
+			{
+				FRegexMatcher Matcher(FuncDeclPattern, Line);
+				if (Matcher.FindNext())
 				{
-					FParsedSourceSymbol Sym;
-					Sym.Kind = TEXT("function");
-					Sym.Name = FuncName;
-					Sym.ParentClass = ParentClass;
-					Sym.Access = CurrentAccess;
-					Sym.bIsUEMacro = bNextIsUEMacro;
-					Sym.LineStart = i + 1;
-					Sym.LineEnd = i + 1;
-					Sym.Signature = Trimmed;
-					Sym.Docstring = ExtractDocstring(OrigLines, i, bNextIsUEMacro);
-					Result.Symbols.Add(MoveTemp(Sym));
-					bNextIsUEMacro = false;
-					continue;
+					FuncName = Matcher.GetCaptureGroup(2);
 				}
+			}
+			if (FuncName.IsEmpty() && OpenParens > 0)
+			{
+				FRegexMatcher Matcher(FuncHeadPattern, Line);
+				if (Matcher.FindNext())
+				{
+					FuncName = Matcher.GetCaptureGroup(2);
+				}
+			}
+
+			// Filter out things that aren't function names
+			if (!FuncName.IsEmpty() && FuncName != TEXT("if") && FuncName != TEXT("for") && FuncName != TEXT("while") &&
+				FuncName != TEXT("switch") && FuncName != TEXT("return"))
+			{
+				FParsedSourceSymbol Sym;
+				Sym.Kind = TEXT("function");
+				Sym.Name = FuncName;
+				Sym.ParentClass = ParentClass;
+				Sym.Access = CurrentAccess;
+				Sym.bIsUEMacro = bNextIsUEMacro;
+				Sym.LineStart = i + 1;
+				Sym.Docstring = ExtractDocstring(OrigLines, i, bNextIsUEMacro);
+
+				// Multi-line parameter list: fold the continuation lines into the
+				// signature and step past them so they are not re-read as members.
+				FString Signature = Trimmed;
+				int32 Balance = OpenParens;
+				for (int32 Guard = 0; Balance > 0 && i < EndIdx && Guard < 20; ++Guard)
+				{
+					++i;
+					const FString Next = OrigLines[i].TrimStartAndEnd();
+					CountBraces(Next);
+					Balance += MonolithCppParserDetail::ParenBalance(Next);
+					if (!Next.IsEmpty())
+					{
+						Signature += TEXT(" ") + Next;
+					}
+				}
+
+				// Declarations keep LineEnd == LineStart even when wrapped: the indexer and
+				// read_source treat LineEnd > LineStart as "has a body" (a definition).
+				Sym.LineEnd = Sym.LineStart;
+				Sym.Signature = Signature;
+				Result.Symbols.Add(MoveTemp(Sym));
+				bNextIsUEMacro = false;
+				continue;
 			}
 		}
 

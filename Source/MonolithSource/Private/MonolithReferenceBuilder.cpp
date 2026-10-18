@@ -193,21 +193,103 @@ int32 FMonolithReferenceBuilder::ExtractCallReferences(const TArray<FString>& Li
 	FRegexPattern FuncDefPattern(
 		TEXT("\\b(\\w+(?:::\\w+)*)\\s*\\([^;]*\\)\\s*(?:const\\s*)?(?:override\\s*)?(?:final\\s*)?(?:noexcept\\s*)?\\{"));
 
+	// Pattern: allman definition header — the whole `name(params) [qualifiers]` ends the
+	// line and the body's `{` opens the next non-blank line (Epic coding standard). The
+	// same-line pattern above never matched these, so most engine function bodies were
+	// invisible as callers (issue #156).
+	FRegexPattern FuncHeadPattern(
+		TEXT("\\b(\\w+(?:::\\w+)*)\\s*\\([^;{}]*\\)\\s*(?:const\\s*)?(?:override\\s*)?(?:final\\s*)?(?:noexcept\\s*)?$"));
+
 	// Pattern: call expression  word(  or  word::word(
 	FRegexPattern CallPattern(TEXT("\\b(\\w+(?:::\\w+)*)\\s*\\("));
+
+	// Index of the next non-blank line after From, or INDEX_NONE within Window lines.
+	auto NextNonBlank = [&Lines, NumLines](int32 From, int32 Window) -> int32
+	{
+		for (int32 L = From + 1; L < NumLines && L <= From + Window; ++L)
+		{
+			if (!Lines[L].TrimStartAndEnd().IsEmpty())
+			{
+				return L;
+			}
+		}
+		return INDEX_NONE;
+	};
+
+	// `A::A` / `A::~A` — a constructor or destructor, the only heads that may be
+	// followed by an initializer list.
+	auto IsCtorOrDtor = [](const FString& QualifiedName) -> bool
+	{
+		TArray<FString> Parts;
+		QualifiedName.ParseIntoArray(Parts, TEXT("::"), true);
+		if (Parts.Num() < 2)
+		{
+			return false;
+		}
+		FString Last = Parts.Last();
+		Last.RemoveFromStart(TEXT("~"));
+		return Last == Parts[Parts.Num() - 2];
+	};
 
 	for (int32 LineIdx = 0; LineIdx < NumLines; ++LineIdx)
 	{
 		const FString& Line = Lines[LineIdx];
 
-		FRegexMatcher FuncMatcher(FuncDefPattern, Line);
-		if (!FuncMatcher.FindNext())
-		{
-			continue;
-		}
+		FString CallerName;
+		int32 OpenLine = INDEX_NONE; // line holding the body's opening '{'
 
-		// Found a function definition on this line
-		const FString CallerName = FuncMatcher.GetCaptureGroup(1);
+		FRegexMatcher FuncMatcher(FuncDefPattern, Line);
+		if (FuncMatcher.FindNext())
+		{
+			CallerName = FuncMatcher.GetCaptureGroup(1);
+			OpenLine = LineIdx;
+		}
+		else
+		{
+			FRegexMatcher HeadMatcher(FuncHeadPattern, Line);
+			if (!HeadMatcher.FindNext())
+			{
+				continue;
+			}
+			CallerName = HeadMatcher.GetCaptureGroup(1);
+			if (IsSkippedKeyword(CallerName))
+			{
+				continue;
+			}
+
+			const int32 Next = NextNonBlank(LineIdx, 2);
+			if (Next == INDEX_NONE)
+			{
+				continue;
+			}
+			const FString NextTrimmed = Lines[Next].TrimStartAndEnd();
+			if (NextTrimmed.StartsWith(TEXT("{")))
+			{
+				OpenLine = Next;
+			}
+			else if (NextTrimmed.StartsWith(TEXT(":")) && IsCtorOrDtor(CallerName))
+			{
+				// Constructor initializer list — the body opens on the first line that
+				// starts or ends with '{'.
+				for (int32 K = Next; K < NumLines && K <= Next + 40; ++K)
+				{
+					const FString KTrimmed = Lines[K].TrimStartAndEnd();
+					if (K > Next && KTrimmed.Contains(TEXT(";")))
+					{
+						break;
+					}
+					if (KTrimmed.StartsWith(TEXT("{")) || KTrimmed.EndsWith(TEXT("{")))
+					{
+						OpenLine = K;
+						break;
+					}
+				}
+			}
+			if (OpenLine == INDEX_NONE)
+			{
+				continue;
+			}
+		}
 
 		// Skip obvious non-function matches: control flow, casts, etc.
 		if (IsSkippedKeyword(CallerName))
@@ -217,13 +299,13 @@ int32 FMonolithReferenceBuilder::ExtractCallReferences(const TArray<FString>& Li
 
 		const int64 CallerId = ResolveSymbol(CallerName);
 
-		// Determine brace depth — the opening { is on LineIdx.
+		// Determine brace depth — the opening { is on OpenLine.
 		// Walk forward tracking depth until we find the matching close.
 		int32 BraceDepth  = 0;
-		int32 BodyEndLine = LineIdx; // will be updated
+		int32 BodyEndLine = OpenLine; // will be updated
 
-		// Count braces on the definition line itself first
-		for (TCHAR Ch : Line)
+		// Count braces on the opening line itself first
+		for (TCHAR Ch : Lines[OpenLine])
 		{
 			if      (Ch == TEXT('{')) ++BraceDepth;
 			else if (Ch == TEXT('}')) --BraceDepth;
@@ -232,12 +314,12 @@ int32 FMonolithReferenceBuilder::ExtractCallReferences(const TArray<FString>& Li
 		// If already balanced (rare: empty inline function), body is just this line
 		if (BraceDepth <= 0)
 		{
-			BodyEndLine = LineIdx;
+			BodyEndLine = OpenLine;
 		}
 		else
 		{
 			// Walk subsequent lines to find closing brace
-			int32 ScanLine = LineIdx + 1;
+			int32 ScanLine = OpenLine + 1;
 			while (ScanLine < NumLines && BraceDepth > 0)
 			{
 				for (TCHAR Ch : Lines[ScanLine])

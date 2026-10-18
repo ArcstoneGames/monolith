@@ -1462,6 +1462,38 @@ TMap<FString, FMonolithDeprecationRow> FMonolithSourceDatabase::GetDeprecationsB
 	return Result;
 }
 
+TArray<FMonolithDeprecationRow> FMonolithSourceDatabase::GetDeprecationRows(const FString& SymbolName)
+{
+	FScopeLock Lock(&DbLock);
+	TArray<FMonolithDeprecationRow> Result;
+	if (!Database || !Database->IsValid()) return Result;
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("SELECT d.version, d.message, d.kind, COALESCE(s.qualified_name, '') FROM symbol_deprecations d LEFT JOIN symbols s ON s.id = d.symbol_id WHERE d.symbol_name = ? ORDER BY d.id;"));
+	Stmt.SetBindingValueByIndex(1, SymbolName);
+	while (Stmt.Step() == ESQLitePreparedStatementStepResult::Row)
+	{
+		FMonolithDeprecationRow Row;
+		Stmt.GetColumnValueByIndex(0, Row.Version);
+		Stmt.GetColumnValueByIndex(1, Row.Message);
+		Stmt.GetColumnValueByIndex(2, Row.Kind);
+		Stmt.GetColumnValueByIndex(3, Row.LinkedQualifiedName);
+		Result.Add(MoveTemp(Row));
+	}
+	return Result;
+}
+
+bool FMonolithSourceDatabase::HasSymbolNamed(const FString& Name)
+{
+	FScopeLock Lock(&DbLock);
+	if (!Database || !Database->IsValid()) return false;
+
+	FSQLitePreparedStatement Stmt;
+	Stmt.Create(*Database, TEXT("SELECT 1 FROM symbols WHERE name = ? LIMIT 1;"));
+	Stmt.SetBindingValueByIndex(1, Name);
+	return Stmt.Step() == ESQLitePreparedStatementStepResult::Row;
+}
+
 int32 FMonolithSourceDatabase::GetDeprecationCount()
 {
 	FScopeLock Lock(&DbLock);

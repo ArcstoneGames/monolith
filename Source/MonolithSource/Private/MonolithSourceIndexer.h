@@ -108,6 +108,7 @@ private:
 	TMap<FString, TPair<int32, int32>> ClassSpans;
 	TMap<FString, TArray<FString>> PendingBaseClasses; // className -> [baseClassName, ...]
 	TSet<int64> NewFileIds;
+	TSet<FString> IndexedFilePaths; // paths parsed this run (dedupes overlapping module roots)
 
 	// Stats
 	mutable FCriticalSection DiagLock;

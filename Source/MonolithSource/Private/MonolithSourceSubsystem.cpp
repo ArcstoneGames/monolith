@@ -1,5 +1,7 @@
 #include "MonolithSourceSubsystem.h"
 #include "MonolithSourceIndexer.h"
+#include "MonolithSourceDatabase.h"
+#include "MonolithSourceSchema.h"
 #include "MonolithSettings.h"
 #include "Misc/Paths.h"
 #include "HAL/PlatformFileManager.h"
@@ -35,6 +37,16 @@ void UMonolithSourceSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		if (Database->Open(DbPath))
 		{
 			UE_LOG(LogMonolithSource, Log, TEXT("Engine source DB loaded from %s"), *DbPath);
+
+			// An index built by an older parser misses symbols the current one extracts
+			// (e.g. UCLASS member functions before parser v2) — say so once at startup.
+			const int32 IndexedParser = FCString::Atoi(*Database->GetMeta(TEXT("parser_version")));
+			if (IndexedParser < MonolithSourceSchema::ParserVersion)
+			{
+				UE_LOG(LogMonolithSource, Warning,
+					TEXT("Engine source DB was built by parser v%d (current v%d); some symbols and call references are missing. Run source.trigger_reindex to rebuild it."),
+					IndexedParser, MonolithSourceSchema::ParserVersion);
+			}
 		}
 	}
 	else

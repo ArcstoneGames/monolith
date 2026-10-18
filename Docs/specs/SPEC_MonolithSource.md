@@ -62,14 +62,14 @@ Purging by path prefix rather than by the discovered module set is what catches 
 | Action | Params | Description |
 |--------|--------|-------------|
 | `read_source` | `symbol`, `include_header`, `max_lines`, `members_only` | Get source code for a class/function/struct. FTS fallback if exact match fails |
-| `find_references` | `symbol`, `ref_kind`, `limit` | Find all usage sites |
-| `find_callers` | `symbol`, `limit` | All functions that call the given function |
-| `find_callees` | `symbol`, `limit` | All functions called by the given function |
+| `find_references` | `symbol`, `ref_kind`, `limit` | Find all usage sites. `symbol` may be `Class::Method` (see Qualified Names) |
+| `find_callers` | `symbol`, `limit` | All functions that call the given function. Accepts `Class::Method` |
+| `find_callees` | `symbol`, `limit` | All functions called by the given function. Accepts `Class::Method` |
 | `search_source` | `query`, `scope`, `limit`, `mode`, `module`, `path_filter`, `symbol_kind` | Dual search: symbol FTS + source line FTS |
 | `get_class_hierarchy` | `class_name`, `direction`, `depth` | Inheritance tree (both/ancestors/descendants, max 80 shown) |
 | `get_module_info` | `module_name` | Module stats: file count, symbol counts, key classes |
 | `get_symbol_context` | `symbol`, `context_lines` | Definition with surrounding context |
-| `read_file` | `file_path`, `start_line`, `end_line` | Read source lines by path (absolute -> DB exact -> DB suffix match) |
+| `read_file` | `file_path`, `start_line`, `end_line` | Read source lines by path. Order: existing absolute path -> forward-slash exact -> forward-slash suffix anchored at `/` -> backslash exact -> backslash suffix -> unindexed `Engine/...` joined onto the engine root of an indexed engine file. Same order as the offline `monolith_query.exe read_file` |
 | `trigger_reindex` | none | Trigger full C++ engine source re-index (replaces entire EngineSource.db) |
 | `trigger_project_reindex` | none | Trigger incremental project-only C++ source re-index: purges all previously indexed project rows, then re-indexes project source, without touching engine rows |
 | `get_include_path` | `symbol` | Canonical `#include` form for a symbol, derived from its indexed file path (Phase 1). See contract below. |
@@ -98,13 +98,13 @@ Three demand-proven lookups added so an agent can resolve an include, a signatur
 **`get_signature`** — declaration-read is the PRIMARY mechanism. The handler resolves the symbol via the owning class row + source-line FTS over `source_fts` (the same FTS fallback `read_source` uses), reads the declaration line(s) from the file (forward to the closing paren), and strips any trailing macro `\` and inline body. The indexed `symbols.signature` column is used as an opportunistic fast path ONLY when present AND body-free. The response reports which source was used in a `source` field: `"declaration_read"` | `"column"`. Overloads are returned as separate entries.
   - Rationale: `symbols.signature` is populated only for inline-defined functions and captures the body + macro continuations; class-body method declarations (`UGameplayStatics::ApplyDamage`, `UWorld::SpawnActor`, …) are not indexed as symbols at all, so column-only resolution would miss the bulk of the engine API.
 
-**`check_deprecations`** — accepts `symbols[]`, batch-reads `symbol_deprecations`, returns per-symbol `{deprecated, version, message, kind}`. When the table has zero rows (schema v2 landed but no reindex yet) it returns `{ index_state: "empty", hint: "run source.trigger_reindex" }` and OMITS per-symbol verdicts — never a false "no symbol is deprecated" clean bill.
+**`check_deprecations`** — accepts `symbols[]`, reads `symbol_deprecations`, returns per-symbol `{deprecated, found, version, message, kind}`. `symbol_name` holds bare identifiers only, so a `Class::Method` input with no exact row is retried with its trailing identifier (#155); qualified inputs then carry `match: "qualified"` (the row's linked `symbols.qualified_name` matches the requested owner) or `match: "name"` (bare-name hit, owner not verified), plus `matched_name` when the tail was used. `found: false` means no `symbols` row has that name (or its tail) at all, so `deprecated: false` is not a verdict there; `found: true` + `deprecated: false` is a real "not deprecated". When the table has zero rows (schema v2 landed but no reindex yet) it returns `{ index_state: "empty", hint: "run source.trigger_reindex" }` and OMITS per-symbol verdicts — never a false "no symbol is deprecated" clean bill.
 
 ### Phase 2 Action Contracts (Round-Trip Compression)
 
 Three actions that collapse multiple lookups into a single round-trip. `verify_symbols` + `find_example_usage` live in `MonolithSource` and are offline-served (`monolith_query.exe` / `monolith_offline.py`); `suggest_build_cs_deps` lives in `MonolithReflectionIntel` and is **NOT offline-served** (it needs the live cached query DB + on-disk Build.cs walk — same as `audit_module_dep_reality`).
 
-**`verify_symbols`** — accepts `symbols[]`; per symbol composes the Phase-1 logic via shared C++ helpers (NOT by re-parsing the JSON handlers) into one record: `exists`, `include` / `includable` / `module` / `warning`, `signature` / `signature_source`, and `deprecated` / `deprecation_version` / `deprecation_message` / `deprecation_kind`. **`exists` for a `Class::Method` is decided by the owning class row + a source-line declaration hit (`Name(`), NEVER `symbols`-table presence** — engine class-body methods have no symbols row (Step-0 finding), so a symbols-only check would false-negative the bulk of the engine API. A missing symbol reports `exists: false` with no error and no further fields. When the deprecation index is empty (Decision 3) the record carries `deprecation_index: "empty"` instead of a verdict.
+**`verify_symbols`** — accepts `symbols[]`; per symbol composes the Phase-1 logic via shared C++ helpers (NOT by re-parsing the JSON handlers) into one record: `exists`, `include` / `includable` / `module` / `warning`, `signature` / `signature_source`, and `deprecated` / `deprecation_version` / `deprecation_message` / `deprecation_kind`. **`exists` for a `Class::Method` is decided by the owning class row + a source-line declaration hit (`Name(`), NEVER `symbols`-table presence** — indexes built before parser v2 have no member rows for reflected types (#156), so a symbols-only check would false-negative the bulk of the engine API on them. A missing symbol reports `exists: false` with no error and no further fields. When the deprecation index is empty (Decision 3) the record carries `deprecation_index: "empty"` instead of a verdict.
 
 **`find_example_usage`** — substrate is source-line FTS over `source_fts` (NOT the `references` table, which is `to_symbol_id`-keyed and empty for engine API methods — Step-0). Runs an FTS query for the symbol, keeps hits whose line matches the call pattern `Name(`, reads ±3 context lines via `LoadFileToStringArray`, ranks per Decision 4, and cursor-paginates via `MonolithCursorCodec` + the rerun-slice scheme (the same moving-FTS-index rationale as `search_source`).
   - Ranking (`prefer`, default `"engine"`): `"engine"` → (0) engine `Runtime` modules, (1) other engine modules, (2) project; `"project"` → project first, then engine `Runtime`, then other engine. Tie-break by file path, then line. Engine-vs-project is decided by whether the file path is under the engine dir; the `Runtime` sub-rank by a `/Source/Runtime/` path segment.
@@ -136,7 +136,7 @@ Two actions for header pre-flight + class scaffolding. Both are read-only / idem
 | Column | Note |
 |--------|------|
 | `id` | INTEGER PK AUTOINCREMENT |
-| `symbol_id` | **NULLABLE** — class-body methods have no `symbols` row; stored NULL when the name does not resolve. Lookups key on `symbol_name`, not this column. |
+| `symbol_id` | **NULLABLE** — stored NULL when the name does not resolve to a `symbols` row (parser v2 prefers the row the same file declares at that line). Lookups key on `symbol_name`, not this column. |
 | `symbol_name` | NOT NULL — parsed identifier before `(` in the declaration |
 | `version` | e.g. `"5.4"` — may be empty |
 | `message` | the deprecation message string |
@@ -147,16 +147,33 @@ Two actions for header pre-flight + class scaffolding. Both are read-only / idem
 
 **`build_cs_path` backfill:** the same Phase 1 indexer change backfills the `modules.build_cs_path` column (previously inserted empty). `DiscoverProjectModules` / `DiscoverEngineModules` derive each module's `<Module>.Build.cs` path from its `Source/<Module>/` dir. `get_include_path`'s `build_cs_note` reads this populated column. Existing DBs pick up the value on the same full `trigger_reindex` bootstrap.
 
+### Qualified Names (`Class::Method`)
+
+`symbols.name` and `symbol_deprecations.symbol_name` store bare identifiers; `symbols.qualified_name` stores `Parent::Name` with only the innermost parent scope. `find_references` / `find_callers` / `find_callees` resolve a qualified request by exact name first, then by the trailing identifier narrowed to rows whose `qualified_name` equals the request or is a `::`-suffix of it (so `UE::Foo::Bar::Method` matches a stored `Bar::Method`). If no row has that owner, every trailing-identifier match is used and the text output starts with a note saying so.
+
 ### Class/Struct Indexer Coverage (allman + K&R)
 
 `FMonolithCppParser::ExtractClassesAndStructs` extracts class/struct rows in two passes:
 
-- **Phase A** — UCLASS/USTRUCT/UINTERFACE-anchored reflected types. Already allman-tolerant (looks ahead ≤5 lines for the declaration, ≤2 more for the brace), so reflected coverage is unaffected by the change below.
+- **Phase A** — UCLASS/USTRUCT/UINTERFACE-anchored reflected types. Allman-tolerant (looks ahead ≤5 lines for the declaration, ≤2 more for the brace). Until parser v2 Phase A passed the `{` line itself as the first body line to `ExtractMembers`, so the member brace depth never returned to 0 and **no member of any reflected type was indexed** (#156 — `UCommonUserWidget`, every `UCLASS` method). Phase A now starts on the line after the brace, like Phase B.
 - **Phase B** — plain (non-reflected) classes/structs. Previously required the opening `{` **on the declaration line**, so the entire allman-style plain surface (Epic's coding standard — brace on the next line) was structurally excluded: `>99%` of exported non-reflected engine types (e.g. `FCollisionShape`, `FSceneView`, `FPrimitiveSceneProxy`) had no `symbols` row and no extracted members. Phase B is now allman-tolerant: the pattern's trailing token is a `{`-or-end-of-line alternation (so allman decls AND today's same-line/inline one-liners both match), and a ≤3-clean-line lookahead confirms the opening brace OPENS a following line. Behaviour:
   - **Forward declarations stay excluded** — `class FFoo;` fails the regex, and any match with no opening brace found in the lookahead window is DROPPED (Phase B has no UE-macro anchor proving a definition follows, unlike Phase A).
   - **Template-parameter guard** — a multi-line template parameter list can place `class T` alone on a line ahead of the real class's `{`; if the nearest preceding non-empty clean line ends with `<` or `,`, the match is treated as a template parameter and skipped (the SUBSEQUENT real declaration still indexes).
 
 **Bootstrap requirement:** the parser change is indexer-side, no schema change. Existing `EngineSource.db` files enrich with the previously-missing plain-class rows and their members on the next full `source.trigger_reindex` (the project-only F17/`trigger_project_reindex` pass enriches project symbols only). No offline-tool change — `monolith_query.exe` / `monolith_offline.py` read the same DB and return the richer results automatically after reindex.
+
+### Parser v2 (#156)
+
+`MonolithSourceSchema::ParserVersion` = 2, stamped as `meta.parser_version` by a full (clean) index. The subsystem logs a warning on DB open when the stamp is older; table layout is unchanged (`SchemaVersion` stays 3). Changes:
+
+- **Reflected-type members** — the Phase A off-by-one above.
+- **Member extractor** — skips a line only when it starts inside a nested/inline body (a line that opens one, e.g. `int32 Get() const {`, is still read); folds multi-line parameter lists into one declaration (signature joined, `LineEnd == LineStart` kept for declarations); consumes multi-line `UFUNCTION(...)`/`UPROPERTY(...)` specifier lists so the flag reaches the declaration; ignores `typedef`/`using` lines.
+- **Out-of-line definitions** (`ExtractFreeFunctions`) — matches the head (`[specifiers] Ret Name(` or an `A::A(` / `A::~A(` constructor/destructor), walks the parameter list with balanced parens (≤15 lines), then requires the `{` on the same or a following line with only qualifiers between (`const`, `noexcept`, `override`, `final`, ref-qualifiers, `-> T`), or a constructor initializer list. A `;` first rejects (prototypes, `TAutoConsoleVariable` globals). Bodies are skipped after a match. Previously only same-line-`{` definitions matched, so allman `.cpp` files produced no symbols.
+- **Call references** (`MonolithReferenceBuilder`) — a definition header ending its line followed by a line opening with `{` (or a constructor initializer list) now starts a caller body; previously only same-line-`{` bodies produced `call` references.
+- **Deprecation linking** — `symbol_id` prefers the symbol this file declares between the macro line and the parsed declaration line, so `qualified_name` through the link names the real owner.
+- **Duplicate files** — a path reachable from two discovered module roots (a nested `Source` dir) is parsed once per run; before, its rows were inserted twice and `meta.total_files` exceeded `COUNT(*) FROM files`.
+
+Not handled: template out-of-line definitions (`TFoo<T>::Bar`), operator definitions, caller bodies whose header spans several lines in the reference pass. Existing databases need one full `source.trigger_reindex`.
 
 **Measured enrichment (full reindex 2026-06-11):** `symbols` rows `301,590 → 967,491` — plain classes `1,584 → 40,454`, plain structs `2,754 → 36,832`, functions `77,451 → 411,303` (member extraction of the newly indexed classes). DB file size unchanged at ~7.0 GB (SQLite page reuse); full-reindex wall time ~28.5 min, comparable to prior full passes. The fix also hardened the member extractor against two latent crash classes it exposed (an unterminated-brace-at-EOF out-of-bounds read and a use-after-free when the symbol array reallocates mid-extraction — both previously reachable from Phase A as well).
 

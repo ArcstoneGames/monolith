@@ -528,7 +528,7 @@ static Args parse_args(int argc, char* argv[]) {
                   << "  get_class_hierarchy <symbol> [--direction=up|down|both] [--depth=N]\n"
                   << "  get_module_info <module_name>\n"
                   << "  get_symbol_context <symbol> [--context-lines=N]\n"
-                  << "  read_file <file_path> [--start=N] [--end=N]\n"
+                  << "  read_file <file_path> [<start> [<end>]] [--start=N] [--end=N]\n"
                   << "  get_include_path <symbol>\n"
                   << "  get_signature <symbol> [--limit=N]\n"
                   << "  check_deprecations <symbol> [<symbol> ...]\n"
@@ -853,6 +853,50 @@ public:
         std::cout << result << std::endl;
     }
 
+    // --- qualified-name lookup (mirrors MonolithSourceQualifiedLookup in the live module) ---
+
+    // "A::B::Method" -> "Method"; false for an unqualified name.
+    static bool split_tail(const std::string& symbol, std::string& out_tail) {
+        size_t scope = symbol.rfind("::");
+        if (scope == std::string::npos || scope + 2 >= symbol.size()) return false;
+        out_tail = symbol.substr(scope + 2);
+        return true;
+    }
+
+    static bool qualified_name_matches(const std::string& requested, const std::string& stored) {
+        if (requested == stored) return true;
+        const std::string suffix = "::" + stored;
+        return requested.size() >= suffix.size()
+            && requested.compare(requested.size() - suffix.size(), suffix.size(), suffix) == 0;
+    }
+
+    // Rows (id, name, qualified_name) for a possibly-qualified name. owner_unmatched is
+    // set when a Class::Method request fell back to every trailing-identifier match.
+    Rows resolve_symbol_rows(const std::string& symbol, const std::string& kind, bool& owner_unmatched) {
+        owner_unmatched = false;
+        auto by_name = [&](const std::string& name) -> Rows {
+            if (!kind.empty())
+                return query(db, "SELECT id, name, qualified_name FROM symbols WHERE name = ? AND kind = ?", {name, kind});
+            return query(db, "SELECT id, name, qualified_name FROM symbols WHERE name = ?", {name});
+        };
+        Rows rows = by_name(symbol);
+        std::string tail;
+        if (!rows.empty() || !split_tail(symbol, tail)) return rows;
+        Rows tail_rows = by_name(tail);
+        Rows owner_rows;
+        for (auto& r : tail_rows)
+            if (qualified_name_matches(symbol, r.get("qualified_name"))) owner_rows.push_back(r);
+        if (!owner_rows.empty()) return owner_rows;
+        owner_unmatched = !tail_rows.empty();
+        return tail_rows;
+    }
+
+    static std::string owner_fallback_note(const std::string& symbol) {
+        std::string tail;
+        split_tail(symbol, tail);
+        return "Note: no indexed '" + symbol + "' with that owner; showing every '" + tail + "' match.\n";
+    }
+
     // --- find_references ---
     void find_references(const Args& args) {
         if (args.positional.empty()) die("find_references requires a symbol argument");
@@ -860,7 +904,8 @@ public:
         std::string ref_kind = args.opt("ref_kind");
         int limit = args.opt_int("limit", 50);
 
-        auto sym_rows = query(db, "SELECT id, name FROM symbols WHERE name = ?", {symbol});
+        bool owner_unmatched = false;
+        auto sym_rows = resolve_symbol_rows(symbol, "", owner_unmatched);
         if (sym_rows.empty()) {
             std::string fts_q = escape_fts(symbol);
             sym_rows = query(db, "SELECT s.id, s.name FROM symbols_fts f JOIN symbols s ON s.id = f.rowid "
@@ -890,6 +935,7 @@ public:
             }
         }
 
+        if (owner_unmatched) std::cout << owner_fallback_note(symbol);
         if (lines.empty())
             std::cout << "No references found for '" << symbol << "'." << std::endl;
         else
@@ -902,7 +948,8 @@ public:
         std::string symbol = args.positional[0];
         int limit = args.opt_int("limit", 50);
 
-        auto sym_rows = query(db, "SELECT id FROM symbols WHERE name = ? AND kind = 'function'", {symbol});
+        bool owner_unmatched = false;
+        auto sym_rows = resolve_symbol_rows(symbol, "function", owner_unmatched);
         if (sym_rows.empty()) {
             std::string fts_q = escape_fts(symbol);
             sym_rows = query(db,
@@ -922,6 +969,7 @@ public:
                 lines.push_back(ref.get("from_name") + " -- " + short_path(ref.get("path")) + ":" + ref.get("line"));
         }
 
+        if (owner_unmatched) std::cout << owner_fallback_note(symbol);
         if (lines.empty())
             std::cout << "No callers found for '" << symbol << "'." << std::endl;
         else
@@ -934,7 +982,8 @@ public:
         std::string symbol = args.positional[0];
         int limit = args.opt_int("limit", 50);
 
-        auto sym_rows = query(db, "SELECT id FROM symbols WHERE name = ? AND kind = 'function'", {symbol});
+        bool owner_unmatched = false;
+        auto sym_rows = resolve_symbol_rows(symbol, "function", owner_unmatched);
         if (sym_rows.empty()) {
             std::string fts_q = escape_fts(symbol);
             sym_rows = query(db,
@@ -954,6 +1003,7 @@ public:
                 lines.push_back(ref.get("to_name") + " -- " + short_path(ref.get("path")) + ":" + ref.get("line"));
         }
 
+        if (owner_unmatched) std::cout << owner_fallback_note(symbol);
         if (lines.empty())
             std::cout << "No callees found for '" << symbol << "'." << std::endl;
         else
@@ -1116,25 +1166,69 @@ public:
     // --- read_file ---
     void read_file(const Args& args) {
         if (args.positional.empty()) die("read_file requires a file_path argument");
+        if (args.positional.size() > 3)
+            die("read_file takes at most 3 positional arguments: <file_path> [<start> [<end>]]");
         std::string file_path = args.positional[0];
-        int start = args.opt_int("start", 1);
-        int end = args.opt_int("end", 0);
+
+        // Line range: --start/--end, or positional <start> [<end>]. Positional
+        // numbers were previously ignored silently; a non-integer or a
+        // conflicting duplicate now fails loudly instead.
+        auto parse_line = [](const std::string& s, const char* what) -> int {
+            size_t pos = 0;
+            int v = 0;
+            try { v = std::stoi(s, &pos); } catch (...) { pos = 0; }
+            if (pos == 0 || pos != s.size())
+                die(std::string("read_file: ") + what + " line must be an integer, got '" + s + "'");
+            return v;
+        };
+        if (args.positional.size() >= 2 && args.options.count("start"))
+            die("read_file: start line given both positionally and via --start");
+        if (args.positional.size() >= 3 && args.options.count("end"))
+            die("read_file: end line given both positionally and via --end");
+        int start = args.positional.size() >= 2 ? parse_line(args.positional[1], "start")
+                                                : args.opt_int("start", 1);
+        int end = args.positional.size() >= 3 ? parse_line(args.positional[2], "end")
+                                              : args.opt_int("end", 0);
 
         std::string resolved;
 
         if (fs::exists(file_path)) {
             resolved = file_path;
         } else {
-            // Normalize slashes to backslash for DB lookup
-            std::string normalized = file_path;
-            std::replace(normalized.begin(), normalized.end(), '/', '\\');
+            // The index stores forward-slash absolute paths
+            // (C:/Program Files (x86)/UE_5.7/Engine/Source/...). Look up with
+            // forward slashes first (exact, then suffix anchored at a path
+            // separator, so an engine-relative "Engine/Source/..." or
+            // module-relative "Runtime/Engine/..." path resolves), then fall
+            // back to the legacy backslash form for older indexes.
+            std::string fwd = file_path;
+            std::replace(fwd.begin(), fwd.end(), '\\', '/');
+            while (fwd.rfind("./", 0) == 0) fwd.erase(0, 2);
+            while (!fwd.empty() && fwd.front() == '/') fwd.erase(0, 1);
+            std::string back = fwd;
+            std::replace(back.begin(), back.end(), '/', '\\');
 
-            auto rows = query(db, "SELECT path FROM files WHERE path = ?", {normalized});
+            auto rows = query(db, "SELECT path FROM files WHERE path = ?", {fwd});
             if (rows.empty())
-                rows = query(db, "SELECT path FROM files WHERE path LIKE ? LIMIT 1", {"%" + normalized});
+                rows = query(db, "SELECT path FROM files WHERE path LIKE ? LIMIT 1", {"%/" + fwd});
+            if (rows.empty())
+                rows = query(db, "SELECT path FROM files WHERE path = ?", {back});
+            if (rows.empty())
+                rows = query(db, "SELECT path FROM files WHERE path LIKE ? LIMIT 1", {"%" + back});
 
-            if (!rows.empty())
+            if (!rows.empty()) {
                 resolved = rows[0].get("path");
+            } else if (fwd.rfind("Engine/", 0) == 0) {
+                // Not indexed: join an engine-relative path onto the engine
+                // root derived from any indexed engine file.
+                auto er = query(db, "SELECT path FROM files WHERE path LIKE ? LIMIT 1", {"%/Engine/Source/%"});
+                if (!er.empty()) {
+                    std::string p = er[0].get("path");
+                    auto idx = p.find("/Engine/Source/");
+                    std::string candidate = p.substr(0, idx + 1) + fwd;
+                    if (fs::exists(candidate)) resolved = candidate;
+                }
+            }
         }
 
         if (resolved.empty()) die("No file found matching '" + file_path + "'.");
@@ -1399,16 +1493,45 @@ public:
             return;
         }
 
+        // Mirrors the live handler (#155): a Class::Method with no exact row is retried
+        // with its trailing identifier; an owner-confirmed hit needs the linked symbol's
+        // qualified_name to match; a name with no row and no symbol is "not found".
+        auto dep_rows = [&](const std::string& n) -> Rows {
+            return query(db,
+                "SELECT d.version, d.message, d.kind, COALESCE(s.qualified_name, '') AS linked "
+                "FROM symbol_deprecations d LEFT JOIN symbols s ON s.id = d.symbol_id "
+                "WHERE d.symbol_name = ? ORDER BY d.id", {n});
+        };
+        auto has_symbol = [&](const std::string& n) -> bool {
+            return !query(db, "SELECT 1 AS one FROM symbols WHERE name = ? LIMIT 1", {n}).empty();
+        };
+
         std::vector<std::string> lines;
         for (const auto& name : args.positional) {
-            auto rows = query(db,
-                "SELECT version, message, kind FROM symbol_deprecations WHERE symbol_name = ? LIMIT 1",
-                {name});
+            std::string tail;
+            const bool qualified = split_tail(name, tail);
+            Rows rows = dep_rows(name);
+            if (rows.empty() && qualified) rows = dep_rows(tail);
             if (!rows.empty()) {
-                lines.push_back(name + ": DEPRECATED (" + rows[0].get("version") + ") ["
-                    + rows[0].get("kind") + "] " + rows[0].get("message"));
+                const Row* chosen = &rows[0];
+                bool owner_confirmed = false;
+                if (qualified) {
+                    for (const auto& r : rows) {
+                        if (!r.get("linked").empty() && qualified_name_matches(name, r.get("linked"))) {
+                            chosen = &r;
+                            owner_confirmed = true;
+                            break;
+                        }
+                    }
+                }
+                lines.push_back(name + ": DEPRECATED (" + chosen->get("version") + ") ["
+                    + chosen->get("kind") + "] " + chosen->get("message")
+                    + ((qualified && !owner_confirmed) ? " (matched by bare name; owner not verified)" : ""));
             } else {
-                lines.push_back(name + ": not deprecated");
+                const bool found = has_symbol(name) || (qualified && has_symbol(tail));
+                lines.push_back(found
+                    ? name + ": not deprecated"
+                    : name + ": not found in the source index (deprecation status unknown)");
             }
         }
         for (size_t i = 0; i < lines.size(); ++i) {
