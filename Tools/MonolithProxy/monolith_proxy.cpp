@@ -51,9 +51,11 @@ using json = nlohmann::json;
 // ============================================================================
 
 static const char* PROXY_NAME    = "monolith-proxy";
-static const char* PROXY_VERSION = "1.1.1";
+static const char* PROXY_VERSION = "1.2.0";
 
-static constexpr double TIMEOUT                  = 30.0;
+// Default request timeout for forwarded calls; override with MONOLITH_PROXY_TIMEOUT_S.
+static constexpr double DEFAULT_TIMEOUT          = 120.0;
+static constexpr double CONNECT_TIMEOUT          = 10.0;
 static constexpr double POLL_INTERVAL            = 5.0;
 static constexpr double POLL_START_DELAY         = 3.0;
 static constexpr double REPEAT_TOOL_CALL_WINDOW  = 3.0;
@@ -87,6 +89,10 @@ static const std::set<std::string> EDITOR_READ_ACTIONS = {
 static std::string g_monolith_url;        // e.g. "http://localhost:9316/mcp"
 static std::string g_monolith_host;       // e.g. "localhost"
 static int         g_monolith_port = 0;   // e.g. 9316
+static double      g_request_timeout_s = DEFAULT_TIMEOUT;
+
+// Why the last post_monolith() call returned no body.
+enum class PostFailure { None, Timeout, Unreachable };
 static std::string g_monolith_path_mcp;   // e.g. "/mcp"
 static std::string g_monolith_path_health;// e.g. "/health"
 
@@ -560,9 +566,13 @@ static std::wstring to_wide(const std::string& s)
     return ws;
 }
 
-// POST JSON to Monolith. Returns response body or empty string on failure.
-static std::string post_monolith(const std::string& body, double timeout_sec = TIMEOUT)
+// POST JSON to Monolith. Returns response body or empty string on failure; when
+// out_failure is given it says whether the failure was a timeout (the editor accepted
+// the request but did not answer in time) or the editor was unreachable.
+static std::string post_monolith(const std::string& body, PostFailure* out_failure = nullptr)
 {
+    if (out_failure) *out_failure = PostFailure::Unreachable;
+    const double timeout_sec = g_request_timeout_s;
     HINTERNET hSession = WinHttpOpen(
         L"MonolithProxy/1.0",
         WINHTTP_ACCESS_TYPE_NO_PROXY,
@@ -582,9 +592,11 @@ static std::string post_monolith(const std::string& body, double timeout_sec = T
         WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
     if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return {}; }
 
-    // Set timeouts (milliseconds)
-    DWORD timeout_ms = (DWORD)(timeout_sec * 1000);
-    WinHttpSetTimeouts(hRequest, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+    // Set timeouts (milliseconds). Resolve/connect stay short so a closed editor is
+    // reported promptly; send/receive use the full request timeout.
+    const DWORD timeout_ms = (DWORD)(timeout_sec * 1000);
+    const DWORD connect_ms = (DWORD)((std::min)(timeout_sec, CONNECT_TIMEOUT) * 1000);
+    WinHttpSetTimeouts(hRequest, connect_ms, connect_ms, timeout_ms, timeout_ms);
 
     // Send
     const wchar_t* hdrs = L"Content-Type: application/json";
@@ -593,8 +605,11 @@ static std::string post_monolith(const std::string& body, double timeout_sec = T
         (LPVOID)body.c_str(), (DWORD)body.size(),
         (DWORD)body.size(), 0);
 
-    if (!ok || !WinHttpReceiveResponse(hRequest, nullptr))
+    if (ok) ok = WinHttpReceiveResponse(hRequest, nullptr);
+    if (!ok)
     {
+        const DWORD err = GetLastError();
+        if (out_failure && err == ERROR_WINHTTP_TIMEOUT) *out_failure = PostFailure::Timeout;
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -616,6 +631,7 @@ static std::string post_monolith(const std::string& body, double timeout_sec = T
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
+    if (out_failure) *out_failure = response.empty() ? PostFailure::Unreachable : PostFailure::None;
     return response;
 }
 
@@ -1279,12 +1295,23 @@ static std::string handle_tools_call(const json& msg)
     record_tool_call(forwarded_msg);
 
     double t0 = now_seconds();
-    std::string resp = post_monolith(forwarded_msg.dump());
+    PostFailure failure = PostFailure::None;
+    std::string resp = post_monolith(forwarded_msg.dump(), &failure);
     double duration_ms = (now_seconds() - t0) * 1000.0;
     write_call_log_line(forwarded_msg, resp, duration_ms);
 
     if (!resp.empty())
         return resp;
+
+    if (failure == PostFailure::Timeout)
+    {
+        char secs[32];
+        std::snprintf(secs, sizeof(secs), "%g", g_request_timeout_s);
+        return make_tool_error(id,
+            "Monolith request for tool '" + tool_name + "' timed out after " + secs + "s. "
+            "The Unreal Editor is still running and may have completed the action -- "
+            "verify the result before retrying. Raise the limit with MONOLITH_PROXY_TIMEOUT_S.");
+    }
 
     return make_tool_error(id,
         "Monolith MCP is not available (Unreal Editor not running). "
@@ -1304,6 +1331,19 @@ int main()
     // Parse configuration from environment
     std::string url = get_env("MONOLITH_URL", "http://localhost:9316/mcp");
     parse_monolith_url(url);
+
+    {
+        const std::string timeout_env = get_env("MONOLITH_PROXY_TIMEOUT_S");
+        if (!timeout_env.empty())
+        {
+            char* end = nullptr;
+            const double parsed = std::strtod(timeout_env.c_str(), &end);
+            if (end != timeout_env.c_str() && parsed > 0.0 && parsed <= 86400.0)
+                g_request_timeout_s = parsed;
+            else
+                log_msg("ignoring invalid MONOLITH_PROXY_TIMEOUT_S='" + timeout_env + "'");
+        }
+    }
 
     g_split_editor_query   = get_env("MONOLITH_SPLIT_EDITOR_QUERY", "0") == "1";
     g_editor_action_allowlist = parse_csv_env("MONOLITH_EDITOR_ACTION_ALLOWLIST");

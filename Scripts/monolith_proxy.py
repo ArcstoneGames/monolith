@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -33,8 +34,26 @@ from pathlib import Path
 MONOLITH_URL = os.environ.get("MONOLITH_URL", "http://localhost:9316/mcp")
 MONOLITH_HEALTH = MONOLITH_URL.replace("/mcp", "/health")
 PROXY_NAME = "monolith-proxy"
-PROXY_VERSION = "1.1.1"
-TIMEOUT = 30.0
+PROXY_VERSION = "1.2.0"
+
+
+def _read_timeout() -> float:
+    """Request timeout in seconds (MONOLITH_PROXY_TIMEOUT_S, default 120)."""
+    raw = os.environ.get("MONOLITH_PROXY_TIMEOUT_S", "")
+    if raw:
+        try:
+            val = float(raw)
+            if 0.0 < val <= 86400.0:
+                return val
+        except ValueError:
+            pass
+        sys.stderr.write(f"[monolith-proxy] ignoring invalid MONOLITH_PROXY_TIMEOUT_S='{raw}'\n")
+    return 120.0
+
+
+TIMEOUT = _read_timeout()
+# Set by _post_monolith: True when the last failure was a timeout rather than a refused connection.
+_last_post_timed_out = False
 POLL_INTERVAL = 5.0
 POLL_START_DELAY = 3.0
 
@@ -235,6 +254,8 @@ def _write_call_log_line(msg: dict, resp: str | None, duration_ms: float) -> Non
 
 def _post_monolith(body: str, timeout: float = TIMEOUT) -> str | None:
     """POST JSON-RPC to Monolith. Returns response body or None on failure."""
+    global _last_post_timed_out
+    _last_post_timed_out = False
     try:
         req = urllib.request.Request(
             MONOLITH_URL,
@@ -245,7 +266,12 @@ def _post_monolith(body: str, timeout: float = TIMEOUT) -> str | None:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8")
     except (urllib.error.URLError, OSError, TimeoutError) as e:
-        _log(f"Monolith unreachable: {e}")
+        reason = getattr(e, "reason", e)
+        if isinstance(e, (TimeoutError, socket.timeout)) or isinstance(reason, (TimeoutError, socket.timeout)):
+            _last_post_timed_out = True
+            _log(f"Monolith request timed out after {timeout:g}s: {e}")
+        else:
+            _log(f"Monolith unreachable: {e}")
         return None
 
 
@@ -564,6 +590,13 @@ def handle_tools_call(msg: dict) -> str:
     if resp:
         return resp
     tool_name = msg.get("params", {}).get("name", "unknown")
+    if _last_post_timed_out:
+        return _tool_error(
+            msg.get("id"),
+            f"Monolith request for tool '{tool_name}' timed out after {TIMEOUT:g}s. "
+            f"The Unreal Editor is still running and may have completed the action -- "
+            f"verify the result before retrying. Raise the limit with MONOLITH_PROXY_TIMEOUT_S.",
+        )
     return _tool_error(
         msg.get("id"),
         f"Monolith MCP is not available (Unreal Editor not running). "

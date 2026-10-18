@@ -2245,9 +2245,11 @@ FMonolithActionResult FMonolithMaterialActions::ValidateMaterial(const TSharedPt
 		}
 
 		// Subsurface outputs on non-subsurface shading model
-		EMaterialShadingModel SM = Mat->GetShadingModels().GetFirstShadingModel();
-		if (bHasSubsurface && SM != MSM_Subsurface && SM != MSM_SubsurfaceProfile
-			&& SM != MSM_PreintegratedSkin && SM != MSM_TwoSidedFoliage)
+		// Check the whole resolved field, not its first entry: a FromMaterialExpression
+		// material can resolve to several models, and the first one is not representative.
+		const FMaterialShadingModelField SMField = Mat->GetShadingModels();
+		if (bHasSubsurface && !SMField.HasShadingModel(MSM_Subsurface) && !SMField.HasShadingModel(MSM_SubsurfaceProfile)
+			&& !SMField.HasShadingModel(MSM_PreintegratedSkin) && !SMField.HasShadingModel(MSM_TwoSidedFoliage))
 		{
 			AddBlendWarning(TEXT("subsurface_wrong_model"),
 				TEXT("SubsurfaceColor connected but shading model is not Subsurface/SubsurfaceProfile/PreintegratedSkin/TwoSidedFoliage — SubsurfaceColor will be ignored"));
@@ -4576,23 +4578,40 @@ FMonolithActionResult FMonolithMaterialActions::GetMaterialProperties(const TSha
 	const UEnum* BlendEnum = StaticEnum<EBlendMode>();
 	ResultJson->SetStringField(TEXT("blend_mode"), BlendEnum->GetNameStringByIndex(static_cast<int32>(BlendMode)));
 
-	// Get shading model(s)
+	// Shading model: report the AUTHORED value. GetShadingModels() is the resolved field
+	// (graph-gathered for MSM_FromMaterialExpression, domain-overridden for decal / UI /
+	// post-process), so its first entry misreports FromMaterialExpression as DefaultLit.
 	FMaterialShadingModelField ShadingModels = MatInterface->GetShadingModels();
-	EMaterialShadingModel FirstModel = ShadingModels.GetFirstShadingModel();
 	const UEnum* ShadingEnum = StaticEnum<EMaterialShadingModel>();
-	ResultJson->SetStringField(TEXT("shading_model"), ShadingEnum->GetNameStringByIndex(static_cast<int32>(FirstModel)));
+	EMaterialShadingModel AuthoredModel;
+	if (MatInterface->IsShadingModelFromMaterialExpression())
+	{
+		AuthoredModel = MSM_FromMaterialExpression;
+	}
+	else if (const UMaterial* AsMaterial = Cast<UMaterial>(MatInterface))
+	{
+		AuthoredModel = MonolithMaterialShadingModel::GetRaw(AsMaterial);
+	}
+	else
+	{
+		// Material instance with a single (parent or overridden) model.
+		AuthoredModel = ShadingModels.GetFirstShadingModel();
+	}
+	ResultJson->SetStringField(TEXT("shading_model"), ShadingEnum->GetNameStringByValue(static_cast<int64>(AuthoredModel)));
 
-	// If multiple shading models, list them all
+	// Resolved set the renderer actually compiles against.
+	TArray<TSharedPtr<FJsonValue>> ModelsArr;
+	for (int32 i = 0; i < static_cast<int32>(MSM_NUM); ++i)
+	{
+		if (ShadingModels.HasShadingModel(static_cast<EMaterialShadingModel>(i)))
+		{
+			ModelsArr.Add(MakeShared<FJsonValueString>(ShadingEnum->GetNameStringByIndex(i)));
+		}
+	}
+	ResultJson->SetArrayField(TEXT("resolved_shading_models"), ModelsArr);
+	// Kept for compatibility: previously emitted only when more than one model resolved.
 	if (ShadingModels.CountShadingModels() > 1)
 	{
-		TArray<TSharedPtr<FJsonValue>> ModelsArr;
-		for (int32 i = 0; i < static_cast<int32>(MSM_NUM); ++i)
-		{
-			if (ShadingModels.HasShadingModel(static_cast<EMaterialShadingModel>(i)))
-			{
-				ModelsArr.Add(MakeShared<FJsonValueString>(ShadingEnum->GetNameStringByIndex(i)));
-			}
-		}
 		ResultJson->SetArrayField(TEXT("shading_models"), ModelsArr);
 	}
 

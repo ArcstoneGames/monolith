@@ -199,7 +199,7 @@ void FMonolithSourceActions::RegisterAll()
 			.Build());
 
 	Registry.RegisterAction(TEXT("source"), TEXT("check_deprecations"),
-		TEXT("Batch-check whether symbols are UE_DEPRECATED. Accepts bare names or Class::Method (qualified names are matched on the trailing identifier; match:\"qualified\" when the owner is confirmed, \"name\" otherwise). Returns per-symbol {deprecated, found, version, message, kind}; found:false means the name is not in the source index at all, so deprecated:false is not a verdict. If the deprecation index is empty (schema v2 landed but no reindex yet), returns index_state:\"empty\" with a hint to run source.trigger_reindex."),
+		TEXT("Batch-check whether symbols are UE_DEPRECATED. Accepts bare names or Class::Method (qualified names are matched on the trailing identifier; match:\"qualified\" when the owner is confirmed, \"name\" otherwise). Returns per-symbol {deprecated, found, match, version, message, kind}; match is present whenever found:true and omitted when found:false; version/message/kind only when deprecated:true; found:false means the name is not in the source index at all, so deprecated:false is not a verdict. If the deprecation index is empty (schema v2 landed but no reindex yet), returns index_state:\"empty\" with a hint to run source.trigger_reindex."),
 		FMonolithActionHandler::CreateStatic(&FMonolithSourceActions::HandleCheckDeprecations),
 		FParamSchemaBuilder()
 			.Required(TEXT("symbols"), TEXT("array"), TEXT("Array of symbol names to check"))
@@ -2096,10 +2096,9 @@ FMonolithActionResult FMonolithSourceActions::HandleCheckDeprecations(const TSha
 			Obj->SetStringField(TEXT("version"), Chosen->Version);
 			Obj->SetStringField(TEXT("message"), Chosen->Message);
 			Obj->SetStringField(TEXT("kind"), Chosen->Kind);
-			if (bQualified)
-			{
-				Obj->SetStringField(TEXT("match"), bOwnerConfirmed ? TEXT("qualified") : TEXT("name"));
-			}
+			// match is reported on every found:true verdict; an unqualified request is
+			// always a bare-name match.
+			Obj->SetStringField(TEXT("match"), bOwnerConfirmed ? TEXT("qualified") : TEXT("name"));
 			if (LookupName != Name)
 			{
 				Obj->SetStringField(TEXT("matched_name"), LookupName);
@@ -2112,6 +2111,18 @@ FMonolithActionResult FMonolithSourceActions::HandleCheckDeprecations(const TSha
 			const bool bFound = DB->HasSymbolNamed(Name) || (bQualified && DB->HasSymbolNamed(Tail));
 			Obj->SetBoolField(TEXT("deprecated"), false);
 			Obj->SetBoolField(TEXT("found"), bFound);
+			if (bFound)
+			{
+				bool bOwnerConfirmed = false;
+				if (bQualified)
+				{
+					bool bOwnerUnmatched = false;
+					const TArray<FMonolithSourceSymbol> SymRows =
+						MonolithSourceQualifiedLookup::ResolveRows(DB, Name, FString(), bOwnerUnmatched);
+					bOwnerConfirmed = SymRows.Num() > 0 && !bOwnerUnmatched;
+				}
+				Obj->SetStringField(TEXT("match"), bOwnerConfirmed ? TEXT("qualified") : TEXT("name"));
+			}
 			TextLines.Add(bFound
 				? FString::Printf(TEXT("%s: not deprecated"), *Name)
 				: FString::Printf(TEXT("%s: not found in the source index (deprecation status unknown)"), *Name));

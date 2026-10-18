@@ -26,7 +26,8 @@
 | `get_expression_details` | Full property reflection, inputs, outputs for a single expression |
 | `get_full_connection_graph` | Complete connection graph (all wires) of a material |
 | `export_material_graph` | Export complete graph to JSON (round-trippable with build_material_graph) |
-| `validate_material` | BFS reachability check — detects islands, broken textures, missing functions, duplicate params, unused params, high expression count (>200). Optional auto-fix |
+| `validate_material` | BFS reachability check — detects islands, broken textures, missing functions, duplicate params, unused params, high expression count (>200). Optional auto-fix. The subsurface-output warning checks the whole resolved shading-model set, not its first entry |
+| `get_material_properties` | Top-level properties of a material or instance. `shading_model` is the AUTHORED model: `MSM_FromMaterialExpression` when the shading model comes from the graph, otherwise the raw `UMaterial::ShadingModel` (read reflectively; instances report their single resolved model). `resolved_shading_models` always lists the set `GetShadingModels()` resolves to; `shading_models` (same content) is kept for compatibility and only emitted when more than one model resolves |
 | `render_preview` | Save preview PNG to Saved/Monolith/previews/ |
 | `get_thumbnail` | Return thumbnail as base64 PNG or save to file |
 | `get_layer_info` | Material Layer / Material Layer Blend info |

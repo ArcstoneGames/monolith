@@ -1200,6 +1200,7 @@ FMonolithActionResult FMonolithBlueprintActions::HandleGetFunctions(const TShare
 				PObj->SetStringField(TEXT("type"),
 					MonolithBlueprintInternal::ContainerPrefix(Pin->PinType) +
 					MonolithBlueprintInternal::PinTypeToString(Pin->PinType));
+				MonolithBlueprintInternal::SetParamRefConstFields(PObj, Pin->PinType);
 				InputsArr.Add(MakeShared<FJsonValueObject>(PObj));
 			}
 			FObj->SetArrayField(TEXT("inputs"), InputsArr);
@@ -1230,6 +1231,7 @@ FMonolithActionResult FMonolithBlueprintActions::HandleGetFunctions(const TShare
 				PObj->SetStringField(TEXT("type"),
 					MonolithBlueprintInternal::ContainerPrefix(Pin->PinType) +
 					MonolithBlueprintInternal::PinTypeToString(Pin->PinType));
+				MonolithBlueprintInternal::SetParamRefConstFields(PObj, Pin->PinType);
 				OutputsArr.Add(MakeShared<FJsonValueObject>(PObj));
 			}
 		}
@@ -1289,6 +1291,7 @@ FMonolithActionResult FMonolithBlueprintActions::HandleGetEventDispatchers(const
 				PObj->SetStringField(TEXT("type"),
 					MonolithBlueprintInternal::ContainerPrefix(Pin->PinType) +
 					MonolithBlueprintInternal::PinTypeToString(Pin->PinType));
+				MonolithBlueprintInternal::SetParamRefConstFields(PObj, Pin->PinType);
 				PinsArr.Add(MakeShared<FJsonValueObject>(PObj));
 			}
 			break; // only one entry node per graph
@@ -1903,6 +1906,7 @@ FMonolithActionResult FMonolithBlueprintActions::HandleGetFunctionSignature(cons
 				PObj->SetStringField(TEXT("type"),
 					MonolithBlueprintInternal::ContainerPrefix(Pin->PinType) +
 					MonolithBlueprintInternal::PinTypeToString(Pin->PinType));
+				MonolithBlueprintInternal::SetParamRefConstFields(PObj, Pin->PinType);
 				if (!Pin->DefaultValue.IsEmpty())
 				{
 					PObj->SetStringField(TEXT("default"), Pin->DefaultValue);
@@ -1945,6 +1949,7 @@ FMonolithActionResult FMonolithBlueprintActions::HandleGetFunctionSignature(cons
 				PObj->SetStringField(TEXT("type"),
 					MonolithBlueprintInternal::ContainerPrefix(Pin->PinType) +
 					MonolithBlueprintInternal::PinTypeToString(Pin->PinType));
+				MonolithBlueprintInternal::SetParamRefConstFields(PObj, Pin->PinType);
 				OutputsArr.Add(MakeShared<FJsonValueObject>(PObj));
 			}
 		}
@@ -1985,6 +1990,7 @@ FMonolithActionResult FMonolithBlueprintActions::HandleGetFunctionSignature(cons
 				PObj->SetStringField(TEXT("type"),
 					MonolithBlueprintInternal::ContainerPrefix(Pin->PinType) +
 					MonolithBlueprintInternal::PinTypeToString(Pin->PinType));
+				MonolithBlueprintInternal::SetParamRefConstFields(PObj, Pin->PinType);
 				InputsArr.Add(MakeShared<FJsonValueObject>(PObj));
 			}
 			break;
@@ -2037,6 +2043,8 @@ FMonolithActionResult FMonolithBlueprintActions::HandleGetFunctionSignature(cons
 				TSharedPtr<FJsonObject> PObj = MakeShared<FJsonObject>();
 				PObj->SetStringField(TEXT("name"), Prop->GetName());
 				PObj->SetStringField(TEXT("type"), Prop->GetCPPType());
+				PObj->SetBoolField(TEXT("is_reference"), Prop->HasAnyPropertyFlags(CPF_ReferenceParm));
+				PObj->SetBoolField(TEXT("is_const"), Prop->HasAnyPropertyFlags(CPF_ConstParm));
 				if (Prop->PropertyFlags & (CPF_ReturnParm | CPF_OutParm))
 					OutputsArr.Add(MakeShared<FJsonValueObject>(PObj));
 				else

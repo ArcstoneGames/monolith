@@ -867,6 +867,10 @@ Unknown action / unknown namespace dispatch errors now carry a `data.suggestions
 
 **`project_query("search")` cursor pagination (WISHLIST).** Architecturally blocked by `FMonolithIndexDatabase::FullTextSearch` at `MonolithIndexDatabase.cpp:1017-1079`, which performs a UNION-and-resort across multiple FTS tables without a deterministic ordering. A CTE / `UNION ALL` refactor with stable ordering is the prerequisite; deferred to a future Phase 5+ workstream.
 
+#### Proxy request timeout
+
+Forwarded requests use a 120 s request timeout by default (`MONOLITH_PROXY_TIMEOUT_S` overrides it; invalid values are ignored with a stderr note). The native proxy keeps resolve/connect at 10 s so a closed editor is still detected promptly. A timed-out `tools/call` is NOT reported as "Unreal Editor not running": both proxies return `Monolith request for tool '<name>' timed out after Ns. The Unreal Editor is still running and may have completed the action -- verify the result before retrying.` A refused connection still returns the editor-down error. Proxy version 1.2.0 (#147).
+
 ### 14.6 Proxy Call Log (Phase 4, 2026-05-27)
 
 Both proxies now emit a one-line-per-call JSONL log to `Saved/Logs/MonolithCalls.jsonl` (project-root-relative). Local-only, no phone-home.

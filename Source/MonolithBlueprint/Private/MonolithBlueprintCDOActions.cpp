@@ -209,6 +209,8 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleGetCDOProperties(const
 	// property_names: case-insensitive exact-name allow-list. Tracks which names matched
 	// so a typo is reported instead of silently returning nothing for it.
 	TMap<FString, bool> PropertyNameSet;
+	// Lowercased key -> the caller's spelling, so missing_property_names echoes what was asked for.
+	TMap<FString, FString> PropertyNameOriginal;
 	const TArray<TSharedPtr<FJsonValue>>* PropNamesArr = nullptr;
 	if (Params->TryGetArrayField(TEXT("property_names"), PropNamesArr) && PropNamesArr)
 	{
@@ -217,7 +219,9 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleGetCDOProperties(const
 			FString Name;
 			if (Val.IsValid() && Val->TryGetString(Name) && !Name.IsEmpty())
 			{
-				PropertyNameSet.Add(Name.ToLower(), false);
+				const FString Key = Name.ToLower();
+				PropertyNameSet.Add(Key, false);
+				PropertyNameOriginal.FindOrAdd(Key, Name);
 			}
 		}
 	}
@@ -309,7 +313,8 @@ FMonolithActionResult FMonolithBlueprintCDOActions::HandleGetCDOProperties(const
 		{
 			if (!Pair.Value)
 			{
-				Missing.Add(MakeShared<FJsonValueString>(Pair.Key));
+				const FString* Original = PropertyNameOriginal.Find(Pair.Key);
+				Missing.Add(MakeShared<FJsonValueString>(Original ? *Original : Pair.Key));
 			}
 		}
 		Root->SetArrayField(TEXT("missing_property_names"), Missing);

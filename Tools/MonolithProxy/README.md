@@ -39,6 +39,10 @@ Then restart Claude Code.
 - **Backend:** Both connect to the same Monolith HTTP server running in the Unreal Editor
 - **Editor-down startup:** Both proxies return a cached Monolith tool list when available, or a stable seed list of namespace/meta tools. This prevents MCP clients that do not fully refresh on `tools/list_changed` from starting with an empty Monolith catalog.
 
+## Request Timeout
+
+Forwarded requests time out after 120 seconds by default. Set `MONOLITH_PROXY_TIMEOUT_S` (seconds) to change it. A timeout is reported as `timed out after Ns; the Unreal Editor is still running and may have completed the action` rather than as the editor being down, so check the result of long actions (for example `delete_assets` or renames under source control) before retrying. Both proxies honour the variable.
+
 ## Native Proxy Build
 
 Run `build_proxy.bat` from `Tools\MonolithProxy`; `build.bat` is a compatibility entry point that delegates to the same implementation. The build uses `cl.exe` from the active developer environment or discovers the installed x64 Visual C++ toolchain through `vswhere.exe`.
