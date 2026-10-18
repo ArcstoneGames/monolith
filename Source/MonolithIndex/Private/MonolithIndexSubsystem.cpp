@@ -747,6 +747,12 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 	// them would mean one bad asset re-runs the whole index on every launch, which
 	// is the #117 symptom reached from the other direction.
 	TAtomic<bool> bTransactionFailure{false};
+	// A level pass stopped by memory pressure is recorded as degraded in
+	// meta.level_index_state, but it is NOT a cancellation: the remaining
+	// post-pass indexers still run and the index is still marked complete, so a
+	// machine under persistent pressure does not re-run the whole index forever.
+	// A later full reindex retries the skipped maps.
+	bool bLevelPassDegraded = false;
 	auto RequireTransaction = [&bTransactionFailure](bool bOk, const TCHAR* What) -> bool
 	{
 		if (!bOk)
@@ -1414,18 +1420,83 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 			double SentinelStart = FPlatformTime::Seconds();
 			UE_LOG(LogMonolithIndex, Log, TEXT("Running level indexer..."));
 			TSharedPtr<IMonolithIndexer> LevelIndexerCopy = *LevelIndexer;
-			if (FLevelIndexer* LevelRaw = static_cast<FLevelIndexer*>(LevelIndexerCopy.Get()))
+			FLevelIndexer* LevelRaw = static_cast<FLevelIndexer*>(LevelIndexerCopy.Get());
+			if (LevelRaw)
 			{
 				LevelRaw->SetIndexedPaths(IndexedPaths);
 			}
-			if (DispatchToGameThreadAndWait(
-				[DB, LevelIndexerCopy, &RunSentinelInTransaction]()
+
+			bool bLevelBegan = false;
+			if (LevelRaw && DispatchToGameThreadAndWait(
+				[DB, LevelIndexerCopy, &bLevelBegan]()
 			{
-				RunSentinelInTransaction(DB, LevelIndexerCopy);
+				bLevelBegan = static_cast<FLevelIndexer*>(LevelIndexerCopy.Get())->BeginIndex(*DB);
 			}))
 			{
-				UE_LOG(LogMonolithIndex, Log, TEXT("Level indexer completed in %.2fs"), FPlatformTime::Seconds() - SentinelStart);
-				GCBetweenIndexers();
+				if (!bLevelBegan)
+				{
+					bTransactionFailure = true;
+				}
+				else
+				{
+					while (!CheckCancellation())
+					{
+						EMonolithLevelIndexStepResult StepResult = EMonolithLevelIndexStepResult::Failed;
+						if (!DispatchToGameThreadAndWait(
+							[DB, LevelIndexerCopy, &StepResult]()
+						{
+							StepResult = static_cast<FLevelIndexer*>(LevelIndexerCopy.Get())->ProcessNextWorld(*DB);
+						}))
+						{
+							break;
+						}
+
+						if (StepResult == EMonolithLevelIndexStepResult::Continue)
+						{
+							continue;
+						}
+						if (StepResult == EMonolithLevelIndexStepResult::RetryLater)
+						{
+							// Deferred GC: give the engine time to release its GC
+							// lock before the indexer retries the release.
+							constexpr float RetryDelaySeconds = 0.25f;
+							FPlatformProcess::Sleep(RetryDelaySeconds);
+							continue;
+						}
+						if (StepResult == EMonolithLevelIndexStepResult::Degraded)
+						{
+							// level_index_state already records the reason and the
+							// skipped maps; fall through to the remaining indexers.
+							bLevelPassDegraded = true;
+							UE_LOG(LogMonolithIndex, Warning,
+								TEXT("Level indexer stopped early after %.2fs (degraded); continuing with the remaining indexers"),
+								FPlatformTime::Seconds() - SentinelStart);
+							GCBetweenIndexers();
+							break;
+						}
+						if (StepResult == EMonolithLevelIndexStepResult::Failed)
+						{
+							bTransactionFailure = true;
+							break;
+						}
+
+						bool bLevelFinished = false;
+						if (DispatchToGameThreadAndWait(
+							[DB, LevelIndexerCopy, &bLevelFinished]()
+						{
+							bLevelFinished = static_cast<FLevelIndexer*>(LevelIndexerCopy.Get())->FinishIndex(*DB);
+						}) && bLevelFinished)
+						{
+							UE_LOG(LogMonolithIndex, Log, TEXT("Level indexer completed in %.2fs"), FPlatformTime::Seconds() - SentinelStart);
+							GCBetweenIndexers();
+						}
+						else if (!bShouldStop.Load())
+						{
+							bTransactionFailure = true;
+						}
+						break;
+					}
+				}
 			}
 		}
 	}
@@ -1588,6 +1659,9 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 	//
 	// The old `Indexed < 500` guard is gone with it: it made every project with
 	// fewer than 500 assets re-index from scratch on every single launch.
+	//
+	// A degraded level pass is deliberately not a gate either (see
+	// bLevelPassDegraded); it is reported through meta.level_index_state.
 	const bool bStructurallyComplete = !bShouldStop.Load() && !bTransactionFailure.Load();
 	if (bStructurallyComplete)
 	{
@@ -1595,7 +1669,8 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 		// transaction — the only place either happens.
 		if (DB->CompleteFullIndex(FDateTime::UtcNow().ToString()))
 		{
-			UE_LOG(LogMonolithIndex, Log, TEXT("Full index complete (%d assets indexed, %d errors)"), Indexed, Errors);
+			UE_LOG(LogMonolithIndex, Log, TEXT("Full index complete (%d assets indexed, %d errors)%s"), Indexed, Errors,
+				bLevelPassDegraded ? TEXT("; level pass degraded, see level_index_state") : TEXT(""));
 		}
 		else
 		{

@@ -5,6 +5,33 @@
 
 DECLARE_LOG_CATEGORY_EXTERN(LogMonolithMemory, Log, All);
 
+class UPackage;
+
+enum class EMonolithMemoryPressure : uint8
+{
+	None,
+	Soft,
+	Critical
+};
+
+enum class EMonolithMemoryPressureAction : uint8
+{
+	Proceed,
+	CleanupAndReassess,
+	Stop
+};
+
+/** Values used to classify memory pressure. */
+struct MONOLITHINDEX_API FMonolithMemorySnapshot
+{
+	uint64 ProcessPrivateMB = 0;
+	uint64 AvailablePhysicalMB = 0;
+	uint64 TotalPhysicalMB = 0;
+	uint64 GPUBudgetMB = 0;
+	uint64 GPUUsedMB = 0;
+	bool bHasGPUStats = false;
+};
+
 /**
  * Helper utilities for memory management during indexing.
  * Provides memory monitoring, garbage collection, and package unloading.
@@ -13,7 +40,7 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 {
 	/**
 	 * Get the current process memory usage in megabytes.
-	 * Uses physical memory (working set) for accurate pressure detection.
+	 * Uses the platform process-memory metric (private committed bytes on Windows).
 	 */
 	static SIZE_T GetCurrentMemoryUsageMB();
 
@@ -23,11 +50,22 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 	static SIZE_T GetAvailableMemoryMB();
 
 	/**
-	 * Check if memory usage exceeds the given budget and throttling is needed.
+	 * Check if process memory usage exceeds the given budget and throttling is needed.
+	 * Used by the deep pass and per-indexer batches. Deliberately does NOT include
+	 * the system-RAM headroom or VRAM checks of ClassifyMemoryPressure (level pass only).
 	 * @param BudgetMB Maximum memory budget in megabytes
 	 * @return true if current usage exceeds budget and we should throttle
 	 */
 	static bool ShouldThrottle(SIZE_T BudgetMB);
+
+	/** Capture process/system memory and, on the game thread, available RHI budget data. */
+	static FMonolithMemorySnapshot CaptureMemorySnapshot(bool bIncludeGPUStats);
+
+	/** Classify a snapshot for the level pass (process budget, free RAM headroom, VRAM). Critical pressure blocks the next map load. */
+	static EMonolithMemoryPressure ClassifyMemoryPressure(const FMonolithMemorySnapshot& Snapshot, SIZE_T BudgetMB);
+
+	/** Choose the next admission step after a pressure sample. */
+	static EMonolithMemoryPressureAction GetPressureAction(EMonolithMemoryPressure Pressure, bool bCleanupAttempted);
 
 	/**
 	 * Force garbage collection to free unreferenced objects.
@@ -48,10 +86,12 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 	static bool TryUnloadPackage(UObject* Asset, bool bWasAlreadyLoaded);
 
 	/**
-	 * Yield to the editor to allow UI updates and prevent freezing.
-	 * Pumps Slate messages and allows the editor to process input.
-	 * Safe to call from game thread only.
+	 * Release packages created by one indexing load and flush deferred render/RHI deletion.
+	 * The caller must exclude resident packages. RF_Standalone is restored on survivors.
 	 */
+	static bool ReleasePackagesLoadedForIndexing(const TArray<UPackage*>& Packages);
+
+	/** No-op compatibility seam. Batches yield by returning to the editor loop. */
 	static void YieldToEditor();
 
 	/**
@@ -60,10 +100,7 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 	 */
 	static void LogMemoryStats(const FString& Context);
 
-	/**
-	 * Check if we're running low on memory (below 2GB available).
-	 * This is a critical threshold that may cause system instability.
-	 */
+	/** Return whether available system RAM is below 2 GB (deep-pass emergency check). */
 	static bool IsMemoryCritical();
 
 	// ---- RAM tier auto-detect (v0.13.0) ----
@@ -74,9 +111,12 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 	 */
 	static int32 GetInstalledRamGB();
 
+	/** Convert physical bytes to the nearest advertised RAM tier (31.8 GiB -> 32 GB). */
+	static int32 RoundPhysicalBytesToRamGB(uint64 TotalPhysicalBytes);
+
 	/**
 	 * Returns the memory budget in MB, resolving the auto-detect sentinel (0)
-	 * via an RAM-based tier:
+	 * via a RAM-based tier:
 	 *   64+ GB -> 32768 MB    32+ GB -> 16384 MB
 	 *   16+ GB -> 6144 MB     <16 GB -> 3072 MB
 	 * Override via Project Settings > Monolith > Indexing > Performance.
@@ -85,7 +125,7 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 
 	/**
 	 * Returns the deep-index batch size, resolving the auto-detect sentinel (0)
-	 * via an RAM-based tier (32+ GB -> 8, 16 GB -> 4, <16 -> 2).
+	 * via a RAM-based tier (32+ GB -> 8, 16 GB -> 4, <16 -> 2).
 	 */
 	static int32 GetResolvedDeepIndexBatchSize();
 

@@ -1,12 +1,16 @@
 #include "Indexers/LevelIndexer.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
+#include "AssetCompilingManager.h"
 #include "MonolithMemoryHelper.h"
 #include "MonolithSettings.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Containers/Set.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "Engine/Level.h"
+#include "Engine/LevelStreaming.h"
+#include "ExternalPackageHelper.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/WorldSettings.h"
 #include "EngineUtils.h"
@@ -14,15 +18,314 @@
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
 #include "WorldPartition/WorldPartition.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "Misc/ScopeLock.h"
+#include "Runtime/Launch/Resources/Version.h"
+
+namespace
+{
+	const TCHAR* LevelIndexStateMetaKey = TEXT("level_index_state");
+
+	/** Deferred-GC release retries before the pass is recorded as degraded (~5s at 0.25s apart). */
+	constexpr int32 MaxPendingReleaseAttempts = 20;
+	/** Skipped map names written into level_index_state; the full list goes to the log. */
+	constexpr int32 MaxSkippedMapsInState = 10;
+
+	void ForEachPackageObject(UPackage* Package, TFunctionRef<bool(UObject*)> Operation)
+	{
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8)
+		ForEachObjectWithPackage(Package, Operation, EGetObjectsFlags::IncludeNestedObjects);
+#else
+		ForEachObjectWithPackage(Package, Operation, true);
+#endif
+	}
+
+	class FScopedPackageLoadCapture
+	{
+	public:
+		FScopedPackageLoadCapture()
+		{
+			Handle = FCoreUObjectDelegates::PackageCreatedForLoad.AddRaw(this, &FScopedPackageLoadCapture::OnPackageCreated);
+		}
+
+		~FScopedPackageLoadCapture()
+		{
+			Stop();
+		}
+
+		TArray<UPackage*> Stop()
+		{
+			if (Handle.IsValid())
+			{
+				FCoreUObjectDelegates::PackageCreatedForLoad.Remove(Handle);
+				Handle.Reset();
+			}
+
+			FScopeLock Lock(&Mutex);
+			TArray<UPackage*> Result;
+			for (const TWeakObjectPtr<UPackage>& WeakPackage : CapturedPackages)
+			{
+				if (UPackage* Package = WeakPackage.Get())
+				{
+					Result.AddUnique(Package);
+				}
+			}
+			return Result;
+		}
+
+	private:
+		void OnPackageCreated(UPackage* Package)
+		{
+			if (Package && Package != GetTransientPackage())
+			{
+				FScopeLock Lock(&Mutex);
+				CapturedPackages.Add(Package);
+			}
+		}
+
+		FCriticalSection Mutex;
+		FDelegateHandle Handle;
+		TArray<TWeakObjectPtr<UPackage>> CapturedPackages;
+	};
+
+	/**
+	 * PackageCreatedForLoad is global: anything else that loads during the map load
+	 * is captured too. Keep only packages that belong to the map being indexed --
+	 * the map package, its streaming sub-level packages, and the external actor /
+	 * external object packages of those maps. Everything else is left alone.
+	 * RootPackage is only consulted to discover sub-levels; it is never added.
+	 */
+	TArray<UPackage*> FilterToMapOwnedPackages(const TArray<UPackage*>& Captured, const FName& RootMapName, UPackage* RootPackage)
+	{
+		TArray<UPackage*> DiscoveryPackages = Captured;
+		if (RootPackage)
+		{
+			DiscoveryPackages.AddUnique(RootPackage);
+		}
+
+		TSet<FName> MapNames;
+		MapNames.Add(RootMapName);
+		TArray<FString> OwnedPrefixes;
+		TSet<FName> MapsWithPrefixes;
+		auto AddFolderPrefix = [&OwnedPrefixes](FString Folder)
+		{
+			if (Folder.IsEmpty())
+			{
+				return;
+			}
+			if (!Folder.EndsWith(TEXT("/")))
+			{
+				Folder += TEXT("/");
+			}
+			OwnedPrefixes.AddUnique(MoveTemp(Folder));
+		};
+
+		bool bChanged = true;
+		while (bChanged)
+		{
+			bChanged = false;
+			for (UPackage* Package : DiscoveryPackages)
+			{
+				if (!Package || !MapNames.Contains(Package->GetFName()))
+				{
+					continue;
+				}
+				UWorld* World = UWorld::FindWorldInPackage(Package);
+				if (!World)
+				{
+					continue;
+				}
+				for (const ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
+				{
+					if (!StreamingLevel)
+					{
+						continue;
+					}
+					const FName SubLevelName = StreamingLevel->GetWorldAssetPackageFName();
+					if (!SubLevelName.IsNone() && !MapNames.Contains(SubLevelName))
+					{
+						MapNames.Add(SubLevelName);
+						bChanged = true;
+					}
+				}
+			}
+		}
+
+		for (const FName& MapName : MapNames)
+		{
+			if (MapsWithPrefixes.Contains(MapName))
+			{
+				continue;
+			}
+			MapsWithPrefixes.Add(MapName);
+			const FString MapString = MapName.ToString();
+			for (const FString& ActorsPath : ULevel::GetExternalActorsPaths(MapString))
+			{
+				AddFolderPrefix(ActorsPath);
+			}
+			AddFolderPrefix(FExternalPackageHelper::GetExternalObjectsPath(MapString));
+		}
+
+		TArray<UPackage*> Owned;
+		for (UPackage* Package : Captured)
+		{
+			if (!Package)
+			{
+				continue;
+			}
+			bool bOwned = MapNames.Contains(Package->GetFName());
+			if (!bOwned)
+			{
+				const FString PackageName = Package->GetName();
+				for (const FString& Prefix : OwnedPrefixes)
+				{
+					if (PackageName.StartsWith(Prefix))
+					{
+						bOwned = true;
+						break;
+					}
+				}
+			}
+			if (bOwned)
+			{
+				Owned.AddUnique(Package);
+			}
+		}
+		return Owned;
+	}
+
+	void GatherPackageObjects(const TArray<UPackage*>& Packages, TArray<UObject*>& OutObjects)
+	{
+		for (UPackage* Package : Packages)
+		{
+			if (!Package)
+			{
+				continue;
+			}
+			ForEachPackageObject(Package, [&OutObjects](UObject* Object)
+			{
+				if (Object)
+				{
+					OutObjects.AddUnique(Object);
+				}
+				return true;
+			});
+		}
+	}
+
+	void PrepareWorldForIndexingUnload(UWorld* World)
+	{
+		if (!World || (GEditor && World == GEditor->GetEditorWorldContext().World()))
+		{
+			return;
+		}
+
+		static UClass* LandscapeSubsystemClass = FindObject<UClass>(nullptr, TEXT("/Script/Landscape.LandscapeSubsystem"));
+		const bool bContainsLandscape = LandscapeSubsystemClass && World->GetSubsystemBase(LandscapeSubsystemClass) != nullptr;
+		if (bContainsLandscape)
+		{
+			static UClass* LandscapeProxyClass = FindObject<UClass>(nullptr, TEXT("/Script/Landscape.LandscapeProxy"));
+			if (LandscapeProxyClass)
+			{
+				for (TActorIterator<AActor> It(World); It; ++It)
+				{
+					if (AActor* Actor = *It; Actor && Actor->IsA(LandscapeProxyClass))
+					{
+						Actor->UnregisterAllComponents();
+					}
+				}
+			}
+			World->CleanupWorld();
+			return;
+		}
+
+		if (UWorldPartition* WorldPartition = World->GetWorldPartition())
+		{
+			if (WorldPartition->IsInitialized())
+			{
+				WorldPartition->Uninitialize();
+			}
+		}
+	}
+
+	const TCHAR* PressureName(EMonolithMemoryPressure Pressure)
+	{
+		switch (Pressure)
+		{
+		case EMonolithMemoryPressure::Soft: return TEXT("soft");
+		case EMonolithMemoryPressure::Critical: return TEXT("critical");
+		default: return TEXT("none");
+		}
+	}
+
+	FString DescribePressure(const FString& Position, const FName& PackageName, const FMonolithMemorySnapshot& Snapshot)
+	{
+		return FString::Printf(
+			TEXT("critical memory pressure %s %s (process=%llu MB, available RAM=%llu MB, GPU=%llu/%llu MB%s)"),
+			*Position, *PackageName.ToString(), Snapshot.ProcessPrivateMB, Snapshot.AvailablePhysicalMB,
+			Snapshot.GPUUsedMB, Snapshot.GPUBudgetMB,
+			Snapshot.bHasGPUStats ? TEXT("") : TEXT(", GPU stats unavailable"));
+	}
+
+	bool IsReleaseCandidate(UPackage* Package, const TSet<UPackage*>& IndexingOwnedPackages)
+	{
+		return Package && IndexingOwnedPackages.Contains(Package) && Package != GetTransientPackage() &&
+			!Package->IsRooted() && !Package->IsDirty() &&
+			!Package->HasAnyPackageFlags(PKG_ContainsScript | PKG_CompiledIn);
+	}
+
+	bool CanTearDownWorld(UWorld* World, const TSet<UPackage*>& IndexingOwnedPackages)
+	{
+		if (!World || World->IsRooted() || (GEditor && World == GEditor->GetEditorWorldContext().World()))
+		{
+			return false;
+		}
+
+		UPackage* Package = World->GetOutermost();
+		return IsReleaseCandidate(Package, IndexingOwnedPackages);
+	}
+}
 
 bool FLevelIndexer::IndexAsset(const FAssetData& AssetData, UObject* LoadedAsset, FMonolithIndexDatabase& DB, int64 AssetId)
 {
+	if (!BeginIndex(DB))
+	{
+		return false;
+	}
+
+	for (;;)
+	{
+		const EMonolithLevelIndexStepResult Result = ProcessNextWorld(DB);
+		if (Result == EMonolithLevelIndexStepResult::Continue ||
+			Result == EMonolithLevelIndexStepResult::RetryLater)
+		{
+			continue;
+		}
+		if (Result == EMonolithLevelIndexStepResult::Complete)
+		{
+			return FinishIndex(DB);
+		}
+
+		ResetSession();
+		return false;
+	}
+}
+
+bool FLevelIndexer::BeginIndex(FMonolithIndexDatabase& DB)
+{
+	ResetSession();
+	if (!IsInGameThread())
+	{
+		UE_LOG(LogMonolithIndex, Error, TEXT("LevelIndexer: BeginIndex must run on the game thread"));
+		return false;
+	}
+
 	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 
 	// Find all World assets under indexed paths
-	TArray<FAssetData> WorldAssets;
 	FARFilter Filter;
 	if (IndexedPaths.Num() > 0)
 	{
@@ -38,238 +341,409 @@ bool FLevelIndexer::IndexAsset(const FAssetData& AssetData, UObject* LoadedAsset
 	Filter.bRecursivePaths = true;
 	Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
 	Registry.GetAssets(Filter, WorldAssets);
+	WorldAssets.Sort([](const FAssetData& A, const FAssetData& B)
+	{
+		return A.PackageName.LexicalLess(B.PackageName);
+	});
 
-	// Get settings for batching
-	const UMonolithSettings* Settings = GetDefault<UMonolithSettings>();
-	const int32 BatchSize = FMath::Max(1, FMonolithMemoryHelper::GetResolvedPostPassBatchSize());
-	const SIZE_T MemoryBudgetMB = static_cast<SIZE_T>(FMonolithMemoryHelper::GetResolvedMemoryBudgetMB());
-	const bool bLogMemory = Settings->bLogMemoryStats;
+	// Maps are handled separately from bounded post-pass batches because one load
+	// can bring in sublevels and render resources.
+	for (const FAssetData& WorldData : WorldAssets)
+	{
+		const int64 LevelAssetId = DB.GetAssetId(WorldData.PackageName.ToString());
+		if (LevelAssetId >= 0)
+		{
+			CandidateAssetIds.Add(WorldData.PackageName, LevelAssetId);
+		}
+	}
 
-	UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: Found %d World assets to index (batch size: %d)"),
-		WorldAssets.Num(), BatchSize);
+	UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: %d World assets queued; loading one root map per dispatch"),
+		CandidateAssetIds.Num());
 
-	if (bLogMemory)
+	if (GetDefault<UMonolithSettings>()->bLogMemoryStats)
 	{
 		FMonolithMemoryHelper::LogMemoryStats(TEXT("LevelIndexer start"));
 	}
 
-	int32 ActorsInserted = 0;
-	int32 LevelsProcessed = 0;
-	int32 BatchNumber = 0;
-
-	for (int32 i = 0; i < WorldAssets.Num(); i += BatchSize)
+	bSessionInitialized = true;
+	if (!PersistState(DB, TEXT("in_progress")))
 	{
-		// Compiler-idle gate is enforced by FMonolithCompilerSafeDispatch at the call site (see issue #19).
+		UE_LOG(LogMonolithIndex, Error, TEXT("LevelIndexer: failed to persist the initial level-pass state"));
+		ResetSession();
+		return false;
+	}
+	return true;
+}
 
-		// Memory budget check before each batch
-		if (FMonolithMemoryHelper::ShouldThrottle(MemoryBudgetMB))
+EMonolithLevelIndexStepResult FLevelIndexer::ProcessNextWorld(FMonolithIndexDatabase& DB)
+{
+	if (!bSessionInitialized || !IsInGameThread())
+	{
+		return EMonolithLevelIndexStepResult::Failed;
+	}
+
+	// A release Unreal deferred (GC lock held) is retried before anything else
+	// loads. Only a bounded number of failures in a row degrades the pass.
+	if (!RetryPendingRelease())
+	{
+		if (PendingReleaseAttempts >= MaxPendingReleaseAttempts)
 		{
-			UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: Memory budget exceeded, forcing GC..."));
-			FMonolithMemoryHelper::ForceGarbageCollection(true);
-			FMonolithMemoryHelper::YieldToEditor();
-
-			if (bLogMemory)
-			{
-				FMonolithMemoryHelper::LogMemoryStats(TEXT("LevelIndexer after throttle GC"));
-			}
+			return StopDegraded(DB, FString::Printf(
+				TEXT("Unreal deferred resource cleanup after %s %d times"),
+				*PendingReleaseWorld.ToString(), PendingReleaseAttempts));
 		}
+		return EMonolithLevelIndexStepResult::RetryLater;
+	}
 
-		int32 BatchEnd = FMath::Min(i + BatchSize, WorldAssets.Num());
+	while (NextWorldIndex < WorldAssets.Num() &&
+		(!CandidateAssetIds.Contains(WorldAssets[NextWorldIndex].PackageName) ||
+			ProcessedPackages.Contains(WorldAssets[NextWorldIndex].PackageName)))
+	{
+		++NextWorldIndex;
+	}
+	if (NextWorldIndex >= WorldAssets.Num())
+	{
+		return EMonolithLevelIndexStepResult::Complete;
+	}
 
-		// Process batch
-		for (int32 j = i; j < BatchEnd; ++j)
+	const FAssetData& WorldData = WorldAssets[NextWorldIndex];
+	const SIZE_T MemoryBudgetMB = static_cast<SIZE_T>(FMonolithMemoryHelper::GetResolvedMemoryBudgetMB());
+	FMonolithMemorySnapshot Snapshot = FMonolithMemoryHelper::CaptureMemorySnapshot(true);
+	EMonolithMemoryPressure Pressure = FMonolithMemoryHelper::ClassifyMemoryPressure(Snapshot, MemoryBudgetMB);
+	const EMonolithMemoryPressureAction PressureAction =
+		FMonolithMemoryHelper::GetPressureAction(Pressure, bPressureCleanupAttempted);
+	if (PressureAction == EMonolithMemoryPressureAction::CleanupAndReassess)
+	{
+		UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: %s memory pressure before '%s'; cleaning up before reassessment"),
+			PressureName(Pressure), *WorldData.PackageName.ToString());
+		FMonolithMemoryHelper::ForceGarbageCollection(true);
+		bPressureCleanupAttempted = true;
+		if (!PersistState(DB, TEXT("in_progress"), TEXT("waiting for memory cleanup")))
 		{
-			const FAssetData& WorldData = WorldAssets[j];
-
-			int64 LevelAssetId = DB.GetAssetId(WorldData.PackageName.ToString());
-			if (LevelAssetId < 0) continue;
-
-			// Capture residency BEFORE LoadPackage (issue #81): a world already resident
-			// (e.g. an open level) must keep RF_Standalone; only strip what this pass loads.
-			const bool bWasLoaded = FindPackage(nullptr, *WorldData.PackageName.ToString()) != nullptr;
-
-			// Load the package to access level data without initializing gameplay
-			UPackage* Package = LoadPackage(nullptr, *WorldData.PackageName.ToString(), LOAD_NoWarn | LOAD_Quiet);
-			if (!Package) continue;
-
-			UWorld* World = FindObject<UWorld>(Package, *WorldData.AssetName.ToString());
-			if (!World)
-			{
-				// Try the common naming convention
-				World = FindObject<UWorld>(Package, TEXT("World"));
-			}
-			if (!World || !World->PersistentLevel)
-			{
-				// Mark package for unload even if we couldn't find the world
-				FMonolithMemoryHelper::TryUnloadPackage(Package, bWasLoaded);
-				continue;
-			}
-
-			// Only index the persistent level - skip streaming sub-levels for performance
-			ULevel* Level = World->PersistentLevel;
-			ActorsInserted += IndexActorsInLevel(Level, DB, LevelAssetId);
-
-			// Detect whether this world has a landscape subsystem. LoadPackage never calls UWorld::InitWorld, but a
-			// landscape actor's PostRegisterAllComponents lazily creates + Initialize()s a ULandscapeSubsystem on
-			// this never-InitWorld'd world. If we then tear the world down (TryUnloadPackage + GC), the GC destroys
-			// the world while ULandscapeSubsystem is still bInitialized -> handled-but-noisy ensure at
-			// WorldSubsystem.cpp:158 (issue #67).
-			//
-			// The shipped fix kept landscape worlds resident (RF_Standalone intact) to dodge both the ensure and a
-			// fatal crash in ULandscapeSubsystem::Deinitialize (its grass-builder destructor dereferences the null
-			// World->Scene on a no-render-scene Inactive world). That avoided ~80 resident UWorlds per reindex.
-			//
-			// Issue #67 optimization (this branch): tear the landscape world down safely instead of leaving it
-			// resident, by UNREGISTERING every landscape proxy's components FIRST, then driving CleanupWorld:
-			//   1. UnregisterAllComponents() on each ALandscapeProxy cascades to ULandscapeComponent::OnUnregister ->
-			//      ULandscapeSubsystem::UnregisterComponent (Landscape.cpp:2360) -> FLandscapeGrassMapsBuilder::
-			//      UnregisterComponent (LandscapeGrassMapsBuilder.cpp:806-820), which NULLs each FComponentState
-			//      (State->Component = nullptr) and touches NO render scene.
-			//   2. World->CleanupWorld() then Deinitialize()s the WHOLE world subsystem collection. ULandscapeSubsystem::
-			//      Deinitialize deletes the grass builder; its destructor's evict loop now early-exits on every
-			//      Component==nullptr state (the bCancelAndEvictAllImmediately/Component==nullptr branch) and never
-			//      reaches CanCurrentlyRender()/World->Scene -> no crash. Super::Deinitialize clears bInitialized ->
-			//      no GC-time ensure. CleanupWorld also clears RF_Standalone (a superset of TryUnloadPackage) and
-			//      drives WorldPartition uninit, so the landscape branch needs NEITHER the separate WP-uninit NOR
-			//      TryUnloadPackage that the non-landscape branch below still uses.
-			// This is the key reversal vs. the shipped fix: CleanupWorld was previously FATAL precisely because it ran
-			// Deinitialize while grass states still held live components; unregister-first makes it safe.
-			//
-			// RESIDUAL RISK (accepted, covered by the runtime acceptance gate + rollback, NOT pre-guarded here per
-			// issue #67 plan section 6): CleanupWorld drives Deinitialize on EVERY world subsystem, not just landscape.
-			// We cannot call ULandscapeSubsystem::Deinitialize directly (it is private), so full CleanupWorld is the
-			// only lever. Another auto-initialized world subsystem could, in its own Deinitialize, deref the null
-			// World->Scene on this no-render-scene world and crash. If the acceptance gate crashes, roll back to the
-			// shipped resident-skip behavior (do not regress the 0-ensure / 0-crash guarantee for the memory win).
-			//
-			// We detect the ULandscapeSubsystem itself rather than scanning for an ALandscapeProxy actor, because the
-			// subsystem is the thing that ensures at GC, and in World Partition / streaming worlds the landscape actor
-			// can live in a streaming sublevel or as an external WP actor that is NOT present in PersistentLevel->Actors
-			// (issue #67 refinement: LVL_NiagaraDestructionDriver_Demo_Cube still tripped the ensure with a persistent-
-			// level-only actor scan because its landscape lives outside the persistent level, but its ULandscapeSubsystem
-			// was initialized). For the same reason the unregister pass below uses a world-wide TActorIterator (which
-			// covers PersistentLevel + all streaming sublevels) rather than scanning PersistentLevel->Actors only.
-			// Resolve both the subsystem class and the proxy class by script path so we avoid a Landscape Build.cs
-			// dependency (which would force a full rebuild + hard link); if a class can't be resolved (Landscape module
-			// not loaded) there can be no landscape subsystem, so we safely fall back to the original teardown.
-			// GetSubsystemBase(TSubclassOf<UWorldSubsystem>) performs the lookup against the world's subsystem
-			// collection without a compile-time type dependency and returns non-null iff the subsystem instance exists.
-			bool bContainsLandscape = false;
-			{
-				static UClass* LandscapeSubsystemClass = FindObject<UClass>(nullptr, TEXT("/Script/Landscape.LandscapeSubsystem"));
-				if (LandscapeSubsystemClass)
-				{
-					if (World->GetSubsystemBase(LandscapeSubsystemClass) != nullptr)
-					{
-						bContainsLandscape = true;
-					}
-				}
-			}
-
-			// Skip teardown if this is the world currently open in the editor - uninit would stop viewport WP cell streaming and unload would close the level
-			UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
-			if (World != EditorWorld)
-			{
-				if (bContainsLandscape)
-				{
-					// Issue #81 residency guard: only tear a landscape world down if THIS pass freshly loaded
-					// it. If it was already resident (referenced elsewhere), CleanupWorld would Deinitialize a
-					// LIVE world's subsystems AND clear RF_Standalone (a superset of the TryUnloadPackage strip) --
-					// stranding an externally-referenced world so File->Save trips the data-loss guard 0x10000002.
-					// The actively-open editor world is already excluded by the World != EditorWorld guard above;
-					// this additionally covers a world resident via any other outstanding reference. Mirror
-					// TryUnloadPackage's early-return: a world we didn't load is left intact (indexing already ran).
-					if (!bWasLoaded)
-					{
-						// Unregister every landscape proxy's components BEFORE teardown so the grass-builder destructor
-						// (driven by CleanupWorld below) never dereferences the null World->Scene. See the block comment
-						// above for the full mechanism. World-wide iteration (persistent level + all streaming sublevels)
-						// is required because landscape proxies can live outside PersistentLevel->Actors in WP/streaming
-						// worlds. The proxy class is resolved by script path to avoid a Landscape Build.cs dependency.
-						int32 UnregisteredProxies = 0;
-						static UClass* LandscapeProxyClass = FindObject<UClass>(nullptr, TEXT("/Script/Landscape.LandscapeProxy"));
-						if (LandscapeProxyClass)
-						{
-							for (TActorIterator<AActor> It(World); It; ++It)
-							{
-								AActor* Actor = *It;
-								if (Actor && Actor->IsA(LandscapeProxyClass))
-								{
-									Actor->UnregisterAllComponents();
-									++UnregisteredProxies;
-								}
-							}
-						}
-
-						// Now safe: the grass FComponentStates are all NULLed, so ULandscapeSubsystem::Deinitialize's
-						// destructor early-exits without touching the render scene, and Super::Deinitialize clears
-						// bInitialized (no GC-time ensure). CleanupWorld also drives WorldPartition uninit and clears
-						// RF_Standalone (superset of TryUnloadPackage), so no separate WP-uninit / TryUnloadPackage is
-						// needed for landscape worlds.
-						World->CleanupWorld();
-
-						UE_LOG(LogMonolithIndex, Verbose,
-							TEXT("LevelIndexer: '%s' has a landscape subsystem - unregistered %d landscape proxies and cleaned up the world (issue #67 optimization)."),
-							*WorldData.PackageName.ToString(), UnregisteredProxies);
-					}
-				}
-				else
-				{
-					// Uninitialize WorldPartition before unload - LoadPackage skips the editor teardown path, so GC would otherwise assert in UWorldPartitionSubsystem::Deinitialize
-					if (UWorldPartition* WP = World->GetWorldPartition())
-					{
-						if (WP->IsInitialized())
-						{
-							WP->Uninitialize();
-						}
-					}
-
-					// Mark world/package for unloading after indexing
-					FMonolithMemoryHelper::TryUnloadPackage(World, bWasLoaded);
-				}
-			}
-
-			LevelsProcessed++;
+			return EMonolithLevelIndexStepResult::Failed;
 		}
+		return EMonolithLevelIndexStepResult::Continue;
+	}
+	if (PressureAction == EMonolithMemoryPressureAction::Stop)
+	{
+		return StopDegraded(DB, DescribePressure(TEXT("before"), WorldData.PackageName, Snapshot));
+	}
+	bPressureCleanupAttempted = false;
+	++NextWorldIndex;
 
-		BatchNumber++;
+	FlushAsyncLoading();
+	const bool bWasAlreadyLoaded = FindPackage(nullptr, *WorldData.PackageName.ToString()) != nullptr;
+	FScopedPackageLoadCapture LoadCapture;
+	UPackage* Package = LoadPackage(nullptr, *WorldData.PackageName.ToString(), LOAD_NoWarn | LOAD_Quiet | LOAD_EditorOnly);
+	TArray<UPackage*> NewlyLoadedPackages = FilterToMapOwnedPackages(LoadCapture.Stop(), WorldData.PackageName, Package);
+	if (Package && !bWasAlreadyLoaded)
+	{
+		NewlyLoadedPackages.AddUnique(Package);
+	}
 
-		// GC after each batch to prevent memory accumulation
-		FMonolithMemoryHelper::ForceGarbageCollection(false);
-		FMonolithMemoryHelper::YieldToEditor();
+	TArray<UPackage*> PackagesToInspect = NewlyLoadedPackages;
+	if (Package)
+	{
+		PackagesToInspect.AddUnique(Package);
+	}
+	TArray<UObject*> ObjectsLoadedForIndexing;
+	GatherPackageObjects(PackagesToInspect, ObjectsLoadedForIndexing);
+	if (ObjectsLoadedForIndexing.Num() > 0)
+	{
+		FAssetCompilingManager::Get().FinishCompilationForObjects(ObjectsLoadedForIndexing);
+	}
 
-		// Log progress periodically
-		if (BatchNumber % 5 == 0 || BatchEnd == WorldAssets.Num())
+	TArray<UWorld*> LoadedWorlds;
+	for (UObject* Object : ObjectsLoadedForIndexing)
+	{
+		if (UWorld* World = Cast<UWorld>(Object))
 		{
-			UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: processed %d / %d levels"),
-				LevelsProcessed, WorldAssets.Num());
-
-			if (bLogMemory)
-			{
-				FMonolithMemoryHelper::LogMemoryStats(FString::Printf(TEXT("LevelIndexer batch %d"), BatchNumber));
-			}
+			LoadedWorlds.AddUnique(World);
 		}
 	}
 
-	// Final GC
-	FMonolithMemoryHelper::ForceGarbageCollection(true);
+	bool bDatabaseFailure = false;
+	if (!Package)
+	{
+		++LevelsFailed;
+		ProcessedPackages.Add(WorldData.PackageName);
+	}
+	else
+	{
+		for (UWorld* World : LoadedWorlds)
+		{
+			if (!World)
+			{
+				continue;
+			}
 
-	UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: indexed %d levels, %d actors total"),
-		LevelsProcessed, ActorsInserted);
+			const FName PackageName(*World->GetOutermost()->GetName());
+			const int64* LevelAssetId = CandidateAssetIds.Find(PackageName);
+			if (!LevelAssetId || ProcessedPackages.Contains(PackageName))
+			{
+				continue;
+			}
 
-	if (bLogMemory)
+			if (!World->PersistentLevel)
+			{
+				ProcessedPackages.Add(PackageName);
+				++LevelsFailed;
+				continue;
+			}
+
+			TArray<FIndexedActor> Actors;
+			BuildActorRows(World->PersistentLevel, *LevelAssetId, Actors);
+			if (!DB.ReplaceActorsForAsset(*LevelAssetId, Actors))
+			{
+				TerminalReason = FString::Printf(TEXT("actor row replacement failed for %s"), *PackageName.ToString());
+				bDatabaseFailure = true;
+				break;
+			}
+
+			ProcessedPackages.Add(PackageName);
+			ActorsInserted += Actors.Num();
+			++LevelsProcessed;
+		}
+
+		if (!bDatabaseFailure && !ProcessedPackages.Contains(WorldData.PackageName))
+		{
+			ProcessedPackages.Add(WorldData.PackageName);
+			++LevelsFailed;
+		}
+	}
+
+	TSet<UPackage*> NewlyLoadedSet;
+	NewlyLoadedSet.Append(NewlyLoadedPackages);
+	TArray<TWeakObjectPtr<UPackage>> ReleaseCandidateRefs;
+	TArray<TWeakObjectPtr<UWorld>> ProtectedWorldRefs;
+	for (UPackage* LoadedPackage : NewlyLoadedPackages)
+	{
+		if (IsReleaseCandidate(LoadedPackage, NewlyLoadedSet))
+		{
+			ReleaseCandidateRefs.Add(LoadedPackage);
+		}
+	}
+	for (UWorld* World : LoadedWorlds)
+	{
+		if (CanTearDownWorld(World, NewlyLoadedSet))
+		{
+			PrepareWorldForIndexingUnload(World);
+		}
+		else if (World)
+		{
+			ProtectedWorldRefs.Add(World);
+		}
+	}
+
+	const bool bReleased = FMonolithMemoryHelper::ReleasePackagesLoadedForIndexing(NewlyLoadedPackages);
+	if (GetDefault<UMonolithSettings>()->bLogMemoryStats)
+	{
+		int32 RetainedReleaseCandidates = 0;
+		for (const TWeakObjectPtr<UPackage>& PackageRef : ReleaseCandidateRefs)
+		{
+			RetainedReleaseCandidates += PackageRef.IsValid() ? 1 : 0;
+		}
+		int32 ProtectedWorldsAlive = 0;
+		for (const TWeakObjectPtr<UWorld>& WorldRef : ProtectedWorldRefs)
+		{
+			ProtectedWorldsAlive += WorldRef.IsValid() ? 1 : 0;
+		}
+		UE_LOG(LogMonolithIndex, Log,
+			TEXT("LevelIndexer: release after %s retained %d/%d candidate package(s); protected worlds alive %d/%d"),
+			*WorldData.PackageName.ToString(), RetainedReleaseCandidates, ReleaseCandidateRefs.Num(),
+			ProtectedWorldsAlive, ProtectedWorldRefs.Num());
+	}
+	if (bDatabaseFailure)
+	{
+		PersistState(DB, TEXT("failed"), TerminalReason);
+		UE_LOG(LogMonolithIndex, Error, TEXT("LevelIndexer: %s; previous rows were preserved"), *TerminalReason);
+		return EMonolithLevelIndexStepResult::Failed;
+	}
+	if (!bReleased)
+	{
+		// Not terminal: the GC lock is usually released within a frame or two.
+		// The next step retries the release before loading another map.
+		PendingReleasePackages.Reset();
+		for (UPackage* LoadedPackage : NewlyLoadedPackages)
+		{
+			PendingReleasePackages.Add(LoadedPackage);
+		}
+		PendingReleaseWorld = WorldData.PackageName;
+		PendingReleaseAttempts = 1;
+		UE_LOG(LogMonolithIndex, Warning, TEXT("LevelIndexer: Unreal deferred resource cleanup after %s; retrying"),
+			*WorldData.PackageName.ToString());
+		if (!PersistState(DB, TEXT("in_progress"), TEXT("waiting for deferred resource cleanup")))
+		{
+			return EMonolithLevelIndexStepResult::Failed;
+		}
+		return EMonolithLevelIndexStepResult::RetryLater;
+	}
+
+	if (!PersistState(DB, TEXT("in_progress")))
+	{
+		return EMonolithLevelIndexStepResult::Failed;
+	}
+
+	Snapshot = FMonolithMemoryHelper::CaptureMemorySnapshot(true);
+	Pressure = FMonolithMemoryHelper::ClassifyMemoryPressure(Snapshot, MemoryBudgetMB);
+	if (Pressure != EMonolithMemoryPressure::None)
+	{
+		bPressureCleanupAttempted = true;
+		UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: %s memory pressure after '%s'; reassessing before the next load"),
+			PressureName(Pressure), *WorldData.PackageName.ToString());
+		return EMonolithLevelIndexStepResult::Continue;
+	}
+
+	if (LevelsProcessed % 10 == 0 || ProcessedPackages.Num() == CandidateAssetIds.Num())
+	{
+		UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: processed %d / %d levels"),
+			ProcessedPackages.Num(), CandidateAssetIds.Num());
+		if (GetDefault<UMonolithSettings>()->bLogMemoryStats)
+		{
+			FMonolithMemoryHelper::LogMemoryStats(FString::Printf(TEXT("LevelIndexer level %d"), ProcessedPackages.Num()));
+		}
+	}
+
+	return NextWorldIndex >= WorldAssets.Num()
+		? EMonolithLevelIndexStepResult::Complete
+		: EMonolithLevelIndexStepResult::Continue;
+}
+
+bool FLevelIndexer::FinishIndex(FMonolithIndexDatabase& DB)
+{
+	if (!bSessionInitialized || !IsInGameThread())
+	{
+		return false;
+	}
+
+	bool bStateWritten = true;
+	if (LevelsFailed > 0)
+	{
+		bStateWritten = PersistState(DB, TEXT("partial"),
+			FString::Printf(TEXT("%d level package(s) could not be inspected"), LevelsFailed));
+	}
+	else
+	{
+		bStateWritten = DB.DeleteMeta(LevelIndexStateMetaKey);
+	}
+
+	UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: indexed %d levels, %d actors total, %d load failures"),
+		LevelsProcessed, ActorsInserted, LevelsFailed);
+	if (GetDefault<UMonolithSettings>()->bLogMemoryStats)
 	{
 		FMonolithMemoryHelper::LogMemoryStats(TEXT("LevelIndexer complete"));
 	}
 
-	return true;
+	ResetSession();
+	return bStateWritten;
 }
 
-int32 FLevelIndexer::IndexActorsInLevel(ULevel* Level, FMonolithIndexDatabase& DB, int64 AssetId)
+bool FLevelIndexer::RetryPendingRelease()
 {
-	if (!Level) return 0;
+	if (PendingReleaseAttempts == 0)
+	{
+		return true;
+	}
 
-	int32 Count = 0;
+	TArray<UPackage*> LivePackages;
+	for (const TWeakObjectPtr<UPackage>& WeakPackage : PendingReleasePackages)
+	{
+		if (UPackage* LivePackage = WeakPackage.Get())
+		{
+			LivePackages.Add(LivePackage);
+		}
+	}
+
+	if (LivePackages.Num() == 0 || FMonolithMemoryHelper::ReleasePackagesLoadedForIndexing(LivePackages))
+	{
+		UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: deferred cleanup after %s completed on attempt %d"),
+			*PendingReleaseWorld.ToString(), PendingReleaseAttempts + 1);
+		PendingReleasePackages.Reset();
+		PendingReleaseWorld = NAME_None;
+		PendingReleaseAttempts = 0;
+		return true;
+	}
+
+	++PendingReleaseAttempts;
+	return false;
+}
+
+EMonolithLevelIndexStepResult FLevelIndexer::StopDegraded(FMonolithIndexDatabase& DB, const FString& Reason)
+{
+	TArray<FString> SkippedMaps;
+	for (const FAssetData& WorldData : WorldAssets)
+	{
+		if (CandidateAssetIds.Contains(WorldData.PackageName) && !ProcessedPackages.Contains(WorldData.PackageName))
+		{
+			SkippedMaps.Add(WorldData.PackageName.ToString());
+		}
+	}
+
+	FString Detail = FString::Printf(TEXT("%s; skipped %d map(s)"), *Reason, SkippedMaps.Num());
+	if (SkippedMaps.Num() > 0)
+	{
+		const int32 Listed = FMath::Min(SkippedMaps.Num(), MaxSkippedMapsInState);
+		for (int32 Index = 0; Index < Listed; ++Index)
+		{
+			Detail += Index == 0 ? TEXT(": ") : TEXT(", ");
+			Detail += SkippedMaps[Index];
+		}
+		if (Listed < SkippedMaps.Num())
+		{
+			Detail += FString::Printf(TEXT(", ... (+%d more, see log)"), SkippedMaps.Num() - Listed);
+		}
+	}
+
+	TerminalReason = Reason;
+	const bool bStateWritten = PersistState(DB, TEXT("degraded"), Detail);
+	UE_LOG(LogMonolithIndex, Error,
+		TEXT("LevelIndexer: %s. The rest of the index continues; a later full reindex retries the skipped maps."),
+		*Detail);
+	for (const FString& SkippedMap : SkippedMaps)
+	{
+		UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: skipped map %s"), *SkippedMap);
+	}
+
+	ResetSession();
+	return bStateWritten ? EMonolithLevelIndexStepResult::Degraded : EMonolithLevelIndexStepResult::Failed;
+}
+
+bool FLevelIndexer::PersistState(FMonolithIndexDatabase& DB, const FString& Prefix, const FString& Detail) const
+{
+	FString State = FString::Printf(TEXT("%s: processed %d/%d levels"),
+		*Prefix, ProcessedPackages.Num(), CandidateAssetIds.Num());
+	if (!Detail.IsEmpty())
+	{
+		State += TEXT("; ");
+		State += Detail;
+	}
+	return DB.WriteMeta(LevelIndexStateMetaKey, State);
+}
+
+void FLevelIndexer::ResetSession()
+{
+	WorldAssets.Reset();
+	CandidateAssetIds.Reset();
+	ProcessedPackages.Reset();
+	NextWorldIndex = 0;
+	ActorsInserted = 0;
+	LevelsProcessed = 0;
+	LevelsFailed = 0;
+	bSessionInitialized = false;
+	bPressureCleanupAttempted = false;
+	TerminalReason.Reset();
+	PendingReleasePackages.Reset();
+	PendingReleaseWorld = NAME_None;
+	PendingReleaseAttempts = 0;
+}
+
+void FLevelIndexer::BuildActorRows(ULevel* Level, int64 AssetId, TArray<FIndexedActor>& OutActors)
+{
+	if (!Level)
+	{
+		return;
+	}
+
 	for (AActor* Actor : Level->Actors)
 	{
 		if (!Actor) continue;
@@ -285,10 +759,8 @@ int32 FLevelIndexer::IndexActorsInLevel(ULevel* Level, FMonolithIndexDatabase& D
 		IndexedActor.Transform = SerializeTransform(Actor->GetActorTransform());
 		IndexedActor.Components = SerializeComponents(Actor);
 
-		DB.InsertActor(IndexedActor);
-		Count++;
+		OutActors.Add(MoveTemp(IndexedActor));
 	}
-	return Count;
 }
 
 FString FLevelIndexer::SerializeTransform(const FTransform& Transform)
