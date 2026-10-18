@@ -34,7 +34,7 @@ namespace
 	/** Skipped map names written into level_index_state; the full list goes to the log. */
 	constexpr int32 MaxSkippedMapsInState = 10;
 
-	void ForEachPackageObject(UPackage* Package, TFunctionRef<bool(UObject*)> Operation)
+	void ForEachLevelPackageObject(UPackage* Package, TFunctionRef<bool(UObject*)> Operation)
 	{
 #if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8)
 		ForEachObjectWithPackage(Package, Operation, EGetObjectsFlags::IncludeNestedObjects);
@@ -205,7 +205,7 @@ namespace
 			{
 				continue;
 			}
-			ForEachPackageObject(Package, [&OutObjects](UObject* Object)
+			ForEachLevelPackageObject(Package, [&OutObjects](UObject* Object)
 			{
 				if (Object)
 				{
