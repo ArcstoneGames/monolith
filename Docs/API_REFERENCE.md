@@ -156,7 +156,7 @@ Full read/write access to Blueprint graphs, variables, components, functions, no
 
 **New in v0.18.1 (Motion Matching + thread-safe AnimBP authoring + inspection):**
 - `set_anim_class`, `apply_movement_preset`, `add_engine_component_typed`, `scaffold_locomotion_input`, `validate_animbp_variable_contract`, `scaffold_motion_matching_character` — character/actor scaffolding for a motion-matching setup (adds an `EnhancedInput` dep).
-- `add_property_access_node` (reflective `K2Node_PropertyAccess` for thread-safe property reads), `set_function_thread_safe` (mark a Blueprint function `BlueprintThreadSafe`). `scaffold_locomotion_anim_values` now emits a fully-wired thread-safe body via Property Access and can target a named function graph.
+- `add_property_access_node` (reflective `K2Node_PropertyAccess` for thread-safe property reads), `set_property_access_path` (re-point an existing Property Access node in place, nested graphs included; `node_guid` disambiguates), `set_function_thread_safe` (mark a Blueprint function `BlueprintThreadSafe`). `scaffold_locomotion_anim_values` now emits a fully-wired thread-safe body via Property Access and can target a named function graph.
 - `get_component_details` falls back to inherited native components (reports `is_inherited_native`, `skeletal_mesh`, `anim_class`, `animation_mode`); `get_blueprint_info` adds `native_component_count`; `get_inherited_component_override` reads the effective component template value + source; `seed_data_asset` gained `read_back_values`; `get_cdo_properties` routes through the shared reflection reader as the canonical verify-after-write path.
 
 **New in v0.22.0 (unified component resolver — issue #116, PR #102 part 1):**
@@ -195,7 +195,7 @@ Full read/write access to Blueprint graphs, variables, components, functions, no
 | Graph inspection | 9 | `list_graphs`, `get_graph_data`, `get_graph_summary`, `get_execution_flow`, `search_nodes`, `get_node_details` |
 | Variables | 9 | `get_variables`, `add_variable`, `remove_variable`, `rename_variable`, `set_variable_type`, `set_variable_defaults`, `add_local_variable`, `remove_local_variable`, `add_replicated_variable` |
 | Components | 7 | `get_components`, `get_component_details`, `add_component`, `remove_component`, `rename_component`, `reparent_component`, `set_component_property`, `duplicate_component` |
-| Functions / Macros / Events | 12 | `get_functions`, `add_function`, `remove_function`, `rename_function`, `add_macro`, `remove_macro`, `rename_macro`, `add_event_dispatcher`, `remove_event_dispatcher`, `set_function_params`, `set_event_dispatcher_params`, `get_function_signature` |
+| Functions / Macros / Events | 14 | `get_functions`, `add_function`, `remove_function`, `rename_function` (preserves function flags + metadata), `set_function_flags` (pure / const / Call In Editor / access / category / description on an existing function), `add_event_graph` (new ubergraph page), `add_macro`, `remove_macro`, `rename_macro`, `add_event_dispatcher`, `remove_event_dispatcher`, `set_function_params` (inputs take `is_reference` / `is_const`), `set_event_dispatcher_params`, `get_function_signature`. `add_function` can seed its signature from `prototype_class` + `prototype_function` |
 | Interfaces | 4 | `implement_interface`, `remove_interface`, `get_interfaces`, `scaffold_interface_implementation` |
 | Node ops | 11 | `add_node` (v0.21.0: `K2Node_SwitchEnum` user-enum resolution via `enum`/`enum_path`; `K2Node_CallFunction` resolves BP-defined funcs), `remove_node`, `connect_pins` (v0.21.0: cross-graph node-ID disambiguation, suggests `graph_name`), `disconnect_pins`, `set_pin_default`, `set_node_position`, `resolve_node` (shares both v0.21.0 resolvers), `add_event_node`, `add_comment_node`, `promote_pin_to_variable`, `add_nodes_bulk` |
 | Bulk / batch | 4 | `batch_execute`, `add_nodes_bulk`, `connect_pins_bulk`, `set_pin_defaults_bulk` |
@@ -204,11 +204,12 @@ Full read/write access to Blueprint graphs, variables, components, functions, no
 | Asset CRUD | 8 | `create_blueprint`, `duplicate_blueprint`, `save_asset`, `create_user_defined_struct`, `create_user_defined_enum`, `create_data_table`, `add_data_table_row`, `get_data_table_rows`, `create_data_asset` |
 | Dataset — DataTable (0.15.0) | 8 | `read_data_table`, `describe_data_table_schema`, `set_data_table_rows`, `remove_data_table_row`, `rename_data_table_row`, `duplicate_data_table_row`, `export_data_table`, `import_data_table` |
 | Dataset — CurveTable (0.15.0) | 5 | `read_curve_table`, `set_curve_table_keys`, `add_curve_table_row`, `remove_curve_table_row`, `rename_curve_table_row` |
+| Dataset — CurveFloat | 2 | `get_curve_float_keys`, `set_curve_float_keys` (standalone `UCurveFloat` keys: time, value, interp, tangent mode / tangents; `replace?`, `save?`) |
 | Dataset — StringTable (0.15.0) | 3 | `read_string_table`, `set_string_table_entries`, `remove_string_table_entry` |
 | Dataset — DataAsset (0.15.0) | 1 | `seed_data_asset` (create + bulk-fill in one atomic call) |
 | Dataset — User Defined Struct (0.23.0) | 5 | `get_struct_fields`, `add_struct_field`, `remove_struct_field`, `rename_struct_field`, `set_struct_field_type` |
 | Cross-class / overrides (0.15.0) | 3 | `add_property_access`, `override_parent_function`, `save_dirty_assets` |
-| CDO | 2 | `get_cdo_properties`, `set_cdo_property` |
+| CDO | 2 | `get_cdo_properties` (filters include `property_names` exact list and `name_pattern` / `name_filter` substring), `set_cdo_property` |
 | Templates / spec | 4 | `build_blueprint_from_spec`, `apply_template`, `list_templates`, `compare_blueprints` |
 | Layout | 2 | `auto_layout`, `export_graph` |
 | Spawn | 2 | `spawn_blueprint_actor`, `batch_spawn_blueprint_actors` |
@@ -290,6 +291,8 @@ Returns an `FDryRunReport`-shaped per-field `{path, current, proposed, ok, reaso
 | `set_curve_table_keys` | `asset_path`, `row_name`, `keys[{time,value}]`, `mode?`, `interp_mode?`, `save?` | First write locks rich-vs-simple; `cubic` → rich, others → simple |
 | `add_curve_table_row` | `asset_path`, `row_name`, `interp_mode?`, `save?` | Empty curve row |
 | `remove_curve_table_row` / `rename_curve_table_row` | `asset_path`, `row_name` / `old_name`+`new_name`, `save?` | Curve row CRUD |
+| `get_curve_float_keys` | `asset_path` | Standalone `UCurveFloat` keys + default value, extrapolation, ranges |
+| `set_curve_float_keys` | `asset_path`, `keys[{time,value,interp?,tangent_mode?,arrive_tangent?,leave_tangent?}]`, `replace?` (default true), `save?` | Validated up front; undoable; auto tangents recomputed |
 | `read_string_table` | `asset_path`, `include_meta?` | Returns namespace + `entries:[{key, source_string, meta?}]` |
 | `set_string_table_entries` | `asset_path`, `entries[{key, source_string}]`, `mode?` (`upsert`/`replace`), `namespace?`, `save?` | Upsert or full replace |
 | `remove_string_table_entry` | `asset_path`, `key`, `save?` | Entry delete |
@@ -441,6 +444,8 @@ This action **requires** the `{ "graph_spec": { ... } }` wrapper, not a bare spe
 { "graph_spec": { "expressions": [...], "connections": [...] } }
 ```
 
+`build_material_graph` and `clear_graph` preserve the authored shading model, including `FromMaterialExpression`. Every action that wires a material property input (`connect_expressions`, `build_material_graph`, `replace_expression`, `create_pbr_material_from_disk`) clears that input's `UseConstant` flag so the wired expression is what compiles.
+
 See `Plugins/Monolith/Docs/specs/SPEC_MonolithMaterial.md` for full graph_spec schema and the [§Pipelines](#pipelines) section for the canonical material build flow.
 
 ---
@@ -472,7 +477,7 @@ Animation curves, bone tracks, sync markers, root motion, compression, blend spa
 - **Locomotion authoring (3):** `get_root_motion_speed` (authored root-motion ground speed in cm/s, with an explicit "unknowable" signal for root-locked / no-root-motion clips), `bake_distance_curve` (bake a `Distance` curve onto a sequence via the engine `DistanceCurveModifier` — removes any existing same-named curve first, then persists into the asset's modifier stack), `bind_threadsafe_update_function` (wire a Blueprint-library static call into an AnimBP's `BlueprintThreadSafeUpdateAnimation` graph — v1a: known-signature).
 - **IK Rig bone settings (2):** `set_ik_rig_bone_settings` / `get_ik_rig_bone_settings` (write/read a bone's per-solver IK Rig bone settings, reflective).
 - **Inspection (1):** `get_animated_bone_transform` (FK-composed bone transform at a frame/time, component or world space).
-- **Extensions (no new actions):** `get_retargeter_info` now emits an `ops[]` array (per-op type + settings); `apply_anim_modifier` now accepts a `properties` reflective field set + a `persist` flag (register into the `AnimationModifiers` stack); `get_blend_space_info` now reports per-sample authored root-motion speed + `triangulation_baked` / `interpolate_using_grid`; `get_anim_node_pin_bindings` now also emits wire-linked input pins (`type:"Link"` with source node/pin); `derive_foot_sync_markers` gains a `from_bones` mode (foot plants from per-frame foot-bone height + planar-speed minima); `get_curve_keys` now reports `monotonic` + `sign` flags; `set_anim_node_function_binding` now calls `RequestRefreshExtensions` so the recompile regenerates the anim-subsystem set (prevents a null `NodeRelevancy` subsystem at runtime).
+- **Extensions (no new actions):** `get_retargeter_info` now emits an `ops[]` array (per-op type + settings); `apply_anim_modifier` now accepts a `properties` reflective field set + a `persist` flag (register into the `AnimationModifiers` stack); `get_blend_space_info` now reports per-sample authored root-motion speed + `triangulation_baked` / `interpolate_using_grid`; `get_anim_node_pin_bindings` now also emits wire-linked input pins (`type:"Link"` with source node/pin); `derive_foot_sync_markers` gains a `from_bones` mode (foot plants from per-frame foot-bone height + planar-speed minima); `get_curve_keys` now reports `monotonic` + `sign` flags; `set_anim_node_pin_binding` gains optional `array_index` (`FAnimGraphNodePropertyBinding::ArrayIndex`; omitted = keep the existing index, else derive it from an array-element pin name such as `BlendWeights_2`; `-1` = whole property) and reports `array_index` / `array_index_source`, and `get_anim_node_pin_bindings` reports `array_index` per binding; `set_anim_node_function_binding` now calls `RequestRefreshExtensions` so the recompile regenerates the anim-subsystem set (prevents a null `NodeRelevancy` subsystem at runtime).
 
 > For full param schemas, call `describe_query("action_schema", target_namespace="animation", target_action="<name>")` (or `monolith_discover("animation", detail=true)`). Plain `monolith_discover("animation")` is terse — names + one-line descriptions only.
 
@@ -553,6 +558,8 @@ Niagara VFX system editing — emitters, modules, params, renderers, HLSL, dynam
 | Modules | 10 | `add_module`, `remove_module`, `move_module`, `set_module_enabled`, `get_ordered_modules`, `get_module_inputs`, `get_module_graph`, `get_module_input_value`, `get_module_output_parameters`, `get_module_script_inputs`, `set_module_input_value`, `set_module_input_binding`, `set_module_input_di`, `clone_module_overrides`, `duplicate_module`, `list_module_scripts` |
 
 `get_ordered_modules` / `add_module` / `move_module` / `duplicate_module` support selector-based stages (PR #65): `usage: "particle_event"` with `usage_id` or `handler_index`, and `usage: "particle_simulation_stage"` with `usage_id`, `stage_name`, or `stage_index`.
+
+`add_module` refuses (clean error) a stack whose parameter-map chain the engine would reject with its fatal `Stack graph is invalid, can not connect module` assert. `move_module` refuses an invalid stack and re-validates after rewiring. `remove_module` reports `stack_valid` (+ `warning` when the removal broke the chain).
 
 | HLSL / scripts | 4 | `create_module_from_hlsl`, `create_function_from_hlsl`, `get_custom_hlsl_text`, `set_custom_hlsl_text` |
 | Parameters | 9 | `get_all_parameters`, `get_user_parameters`, `get_parameter_value`, `get_parameter_type`, `trace_parameter_binding`, `add_user_parameter`, `remove_user_parameter`, `set_parameter_default`, `set_curve_value`, `get_available_parameters`, `rename_user_parameter`, `set_static_switch_value`, `get_static_switch_value` |
@@ -691,7 +698,7 @@ Runs non-interactively: each target's package dirty flag is cleared and any open
 | `allowed_prefixes` | array | optional | Restrict to paths starting with one of these (e.g. `["/Game/AgentTraining/"]`) |
 | `force` | bool | optional | `false` (default): soft-delete after closing editors. `true`: `ForceDeleteObjects`, nulling referencers |
 
-**Result:** any assets that could not be deleted are returned in a `failed_to_delete` array rather than aborting the call.
+**Result:** any assets that could not be deleted are returned in a `failed_to_delete` array rather than aborting the call. Survivors are found by re-resolving each path after the delete. `failures[]` gives each survivor a `reason`, `referencers` (on-disk referencing packages from the asset registry, excluding the rest of the delete set, capped at 20) with `referencer_count`, `in_memory_referencers` (from `ObjectTools::GatherObjectReferencersForDeletion`, capped at 20) with `in_memory_referencer_count`, and `referenced_by_undo`. A holder with no reflected reference (e.g. native code keeping a raw pointer) cannot be named.
 
 > **Known limitation.** A NiagaraScript created and compiled in the same session can't be deleted until its compile state clears — a transient compilation graph holds a reference (the engine's own Content Browser hits the same wall). It becomes deletable after the state clears, e.g. on editor restart.
 
@@ -1095,7 +1102,7 @@ UMG widget Blueprint CRUD, templates, styling, animation (v1 + v2), the schema-d
 
 | Category | Actions | Examples |
 |----------|---------|----------|
-| Widget CRUD | 9 | `create_widget_blueprint`, `get_widget_tree`, `add_widget` (v0.21.0: `parent` alias for `parent_name`), `remove_widget`, `set_widget_property` (accepts `value` alias; v0.21.0: common `UWidget` props allowlisted by default), `compile_widget` (returns `errors[]`/`warnings[]`), `list_widget_types`, `rename_widget`, `dump_blueprint_compile_log` |
+| Widget CRUD | 9 | `create_widget_blueprint` (`editor_utility=true` creates an Editor Utility Widget Blueprint; auto-enabled for an `EditorUtilityWidget`-derived `parent_class`), `get_widget_tree`, `add_widget` (v0.21.0: `parent` alias for `parent_name`), `remove_widget`, `set_widget_property` (accepts `value` alias; v0.21.0: common `UWidget` props allowlisted by default), `compile_widget` (returns `errors[]`/`warnings[]`), `list_widget_types`, `rename_widget`, `dump_blueprint_compile_log` |
 | Variable flags (v0.15.0) | 3 | `add_widget_variable`, `set_widget_is_variable`, `list_widget_property_enums` |
 | Root / reparent (v0.15.0) | 1 | `reparent_widget_root` |
 | Slot / layout | 4 | `set_slot_property` (v0.21.0: grid-slot `row`/`column`/`row_span`/`column_span`), `set_anchor_preset`, `move_widget`, `set_brush` (v0.21.0: `property_name` optional/auto-resolved, `color` alias for `tint_color`) |
@@ -1189,7 +1196,7 @@ See `Plugins/Monolith/Docs/specs/SPEC_MonolithGAS.md` for the deep dive.
 
 ## input
 
-**New v0.23.0.** Enhanced Input asset inspection and authoring — `UInputAction` and `UInputMappingContext`. **13 actions** (5 read-only + 8 authoring).
+**New v0.23.0.** Enhanced Input asset inspection and authoring — `UInputAction` and `UInputMappingContext`. **15 actions** (5 read-only + 10 authoring).
 
 Registered from `MonolithGAS` but **not GAS**: its assets are engine assets, and it registers *before* the `bEnableGAS` gate, so it stays available when GAS integration is switched off. The namespace mixes read and write, so its dispatcher hint cannot claim read-only — the five read actions enforce their own no-mutation contract individually.
 
@@ -1244,16 +1251,18 @@ A row that fails to load reports `load_error` rather than being dropped.
 
 Reports missing actions, invalid keys, duplicate-key **warnings** (the same key legitimately drives different actions in different contexts), and two independent completeness facts: `page_complete` (the per-context mapping scan finished within `mapping_scan_limit`) and `all_contexts_covered` (pagination reached every context). `complete` requires both; `valid` additionally requires zero errors.
 
-### Authoring (8)
+### Authoring (10)
 
-Instanced `UInputModifier` / `UInputTrigger` subobjects, plus the `UInputAction`-level arrays. All eight take `save` (boolean, default `false` — `MarkPackageDirty` only).
+Key mapping rows on a `UInputMappingContext`, instanced `UInputModifier` / `UInputTrigger` subobjects, plus the `UInputAction`-level arrays. All ten take `save` (boolean, default `false` — `MarkPackageDirty` only).
 
-**Mapping selector.** The six mapping-scoped actions take `asset_path` (the `UInputMappingContext`) plus **either** `mapping_index` **or** the `(input_action, key)` pair, where `key` is an `FKey` name such as `SpaceBar`. The two forms are mutually exclusive, and an `(input_action, key)` pair matching more than one mapping is **refused rather than guessed**.
+**Mapping selector.** The seven mapping-scoped actions (`remove_key_mapping` plus the six modifier/trigger actions) take `asset_path` (the `UInputMappingContext`) plus **either** `mapping_index` **or** the `(input_action, key)` pair, where `key` is an `FKey` name such as `SpaceBar`. The two forms are mutually exclusive, and an `(input_action, key)` pair matching more than one mapping is **refused rather than guessed**.
 
 **Array entry grammar.** `modifiers` / `triggers` entries are either a class-name string or a `{ class, properties? }` object. Classes resolve from a `/Script` path, an exact name, or a short name (`Negate`, `Pulse`). An unknown property name on an authored modifier is **rejected, not quietly ignored**.
 
 | Action | Additional params | Description |
 |--------|-------------------|-------------|
+| `input.add_key_mapping` | `asset_path` (**required**, the `UInputMappingContext`), `input_action` (**required**), `key` (**required**, an `FKey` name) | Append a new key mapping row via `UInputMappingContext::MapKey`. Returns the new `mapping_index`, the row, `mapping_count`, and `duplicate_indices` (rows already binding the same action + key; duplicates are allowed, not refused). Not a mapping-selector action |
+| `input.remove_key_mapping` | mapping selector only | Remove one key mapping row. Remaining rows keep their order (unlike `UInputMappingContext::UnmapKey`, which swap-removes and renumbers the last row). Returns `removed_index`, `removed_mapping`, `mapping_count` |
 | `input.add_mapping_modifier` | `modifier_class` (**required**), `properties` (max 64 keys), `at_index` | Add one instanced modifier to a key mapping, outered so it survives save/reload |
 | `input.add_mapping_trigger` | `trigger_class` (**required**), `properties` (max 64 keys), `at_index` | Same for triggers |
 | `input.remove_mapping_modifier` | `index` **or** `modifier_class` (mutually exclusive) | Remove by array index, or every modifier of a class |

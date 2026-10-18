@@ -6,6 +6,11 @@
 
 ---
 
+## 2026-10-18 — OPEN: source index follow-ups (after the #155 / #156 parser and lookup fixes)
+
+1. **Parser gaps that remain after parser v2.** Template out-of-line definitions (`TFoo<T>::Bar`), out-of-line operator definitions, and caller bodies whose definition header spans several lines (the reference pass matches single-line headers only) are still missed. Call references also resolve callees by bare name through a first-wins map, so a call is attributed to one same-named symbol rather than the right overload or owner.
+2. **No automatic rebuild on a parser bump.** `meta.parser_version` is only checked to log a warning on DB open; an index built by parser v1 keeps serving incomplete results until someone runs `source.trigger_reindex`.
+
 ## 2026-09-28 — OPEN: source / asset index follow-ups (after the incremental project reindex fix)
 
 Scoped out while making `source.trigger_project_reindex` (and the Live Coding / hot-reload auto-kick) purge previously indexed project rows before re-indexing, bumping the source DB schema to v3, and making the startup asset delta rename `asset_name` on moves. None of these block that fix.
