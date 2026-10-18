@@ -34,7 +34,7 @@ These exist because Epic's `FNiagaraStackGraphUtilities` functions lack `NIAGARA
 
 > **Audit note (2026-04-26):** detailed per-category tables below sum to roughly 96 — the remainder are post-design-doc additions (NPC, effect types, scalability, layout, advanced query helpers) that have not yet been threaded into the per-category tables. The header count is the source-of-truth.
 
-> **Note:** All Niagara actions accept `asset_path` (preferred) or `system_path` (backward compatible) for the system asset path parameter.
+> **Note:** All Niagara actions accept `asset_path` (preferred) or `system_path` (backward compatible) for the system asset path parameter. The dispatcher moves a `system_path` value onto `asset_path` when `asset_path` is absent, so the alias also reaches handlers that read only `asset_path`; omitting both is rejected before dispatch as a missing `asset_path` (issue #157).
 >
 > **Input name conventions:** `get_module_inputs` returns short names (no `Module.` prefix). All write actions that accept input names (`set_module_input_value`, `set_module_input_binding`, `set_module_input_di`, `set_curve_value`) accept both short names and `Module.`-prefixed names. For CustomHlsl modules, `get_module_inputs` and `set_module_input_value` fall back to reading/writing the FunctionCall node's typed input pins directly (CustomHlsl inputs don't appear in the ParameterMap history).
 >
@@ -74,9 +74,9 @@ These exist because Epic's `FNiagaraStackGraphUtilities` functions lack `NIAGARA
 | `get_ordered_modules` | Get ordered modules in a script stage. Supports standard stages plus `usage: "particle_event"` with `usage_id`/`handler_index` and `usage: "particle_simulation_stage"` with `usage_id`/`stage_name`/`stage_index` (PR #65) |
 | `get_module_inputs` | Get all inputs (floats, vectors, colors, data interfaces, enums, bools) with override values, linked params, and actual DI curve data. Uses engine's `FNiagaraStackGraphUtilities::GetStackFunctionInputs`. Returns short names (no `Module.` prefix). LinearColor/vector defaults deserialized from JSON string if needed |
 | `get_module_graph` | Node graph of a module script |
-| `add_module` | Add module to script stage (uses FNiagaraStackGraphUtilities). Supports `usage: "particle_event"` with `usage_id`/`handler_index` and `usage: "particle_simulation_stage"` with `usage_id`/`stage_name`/`stage_index` (PR #65) |
-| `remove_module` | Remove module from stack |
-| `move_module` | Move module to new index (remove+re-add — **loses input overrides**). Accepts the `particle_event` / `particle_simulation_stage` selector forms (PR #65) |
+| `add_module` | Add module to script stage (uses FNiagaraStackGraphUtilities). Supports `usage: "particle_event"` with `usage_id`/`handler_index` and `usage: "particle_simulation_stage"` with `usage_id`/`stage_name`/`stage_index` (PR #65). Before inserting, validates the stack's parameter-map chain the way the engine's `ConnectModuleNode` consumes it (exact `UNiagaraNodeOutput`, one link per hop back to a `UNiagaraNodeInput`, parameter-map output pins present) and returns an error instead of letting `AddScriptModuleToStack` hit `checkf(StackNodeGroups.Num() >= 2, "Stack graph is invalid, can not connect module")`, which kills the editor (the engine creates the node before asserting) |
+| `remove_module` | Remove module from stack. Response adds `stack_valid` (and a `warning` when the removal left a chain that `add_module` would refuse) |
+| `move_module` | Move module to new index by splicing its node group (override node + function call) out of the parameter-map chain and back in, so input overrides are preserved. Groups mirror the engine's `GetStackNodeGroups` (start nodes = every node linked from the previous group's parameter-map output). Refuses an already-invalid stack; if the detach does not leave exactly one fewer module group it reconnects the module at its original position and errors; validates the chain again after the move. Accepts the `particle_event` / `particle_simulation_stage` selector forms (PR #65) |
 | `set_module_enabled` | Enable/disable a module |
 | `set_module_input_value` | Set input value (float, int, bool, vec2/3/4, color, string) |
 | `set_module_input_binding` | Bind input to a parameter |

@@ -51,7 +51,12 @@ public class MonolithUI : ModuleRules
             // SoftObject, String, Text, Struct, Wildcard, Enum) when parsing
             // var_type tokens into FEdGraphPinType. The constants are
             // dllimport'd from the BlueprintGraph module.
-            "BlueprintGraph"
+            "BlueprintGraph",
+            // create_widget_blueprint editor_utility=true creates a
+            // UEditorUtilityWidgetBlueprint (parent UEditorUtilityWidget).
+            // Blutility is an engine Editor module (Engine/Source/Editor/Blutility),
+            // not a plugin, so it is present in every editor build on 5.7 and 5.8.
+            "Blutility"
         });
 
         // CommonUI optional integration — detected across 3 install vectors so the

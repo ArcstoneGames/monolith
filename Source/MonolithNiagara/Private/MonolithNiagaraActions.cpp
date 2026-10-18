@@ -1085,75 +1085,157 @@ namespace MonolithNiagaraHelpers
 		UNiagaraNode* EndNode = nullptr;   // The terminal node of this group (function call or output)
 	};
 
+	// Validate the stack chain the way the engine's insertion path will consume it.
+	//
+	// FNiagaraStackGraphUtilities::AddScriptModuleToStack creates the new function-call node
+	// and then calls the file-local ConnectModuleNode, which builds the engine's stack node
+	// groups and does checkf(StackNodeGroups.Num() >= 2, "Stack graph is invalid, can not
+	// connect module") (NiagaraStackGraphUtilities.cpp; same code in 5.7 and 5.8). The engine
+	// GetStackNodeGroups (not exported) yields zero groups unless
+	//   1. the output node's exact class is UNiagaraNodeOutput, and
+	//   2. walking parameter-map input pins upstream from the output node, every hop has
+	//      exactly ONE link, ending at a UNiagaraNodeInput (GetEmitterInputNodeForStackNode).
+	// It then dereferences the parameter-map OUTPUT pin of the input node and of every
+	// ordered module node without null checks. All of that is mirrored here so callers can
+	// return a clean error instead of hitting a fatal assert / null dereference.
+	// On success OutInputNode (optional) receives the chain's input connector.
+	bool ValidateStackChain(UNiagaraNodeOutput& OutputNode, FString& OutReason, UNiagaraNodeInput** OutInputNode = nullptr)
+	{
+		OutReason.Reset();
+		if (OutInputNode) *OutInputNode = nullptr;
+
+		if (OutputNode.GetClass() != UNiagaraNodeOutput::StaticClass())
+		{
+			OutReason = FString::Printf(TEXT("output node '%s' is a %s, not a UNiagaraNodeOutput"),
+				*OutputNode.GetName(), *OutputNode.GetClass()->GetName());
+			return false;
+		}
+
+		TSet<UNiagaraNode*> Visited;
+		Visited.Add(&OutputNode);
+		UNiagaraNode* Previous = &OutputNode;
+		UNiagaraNodeInput* InputNode = nullptr;
+		while (Previous)
+		{
+			UEdGraphPin* MapIn = GetParameterMapPin(*Previous, EGPD_Input);
+			if (!MapIn)
+			{
+				OutReason = FString::Printf(TEXT("node '%s' has no parameter-map input pin"), *Previous->GetName());
+				return false;
+			}
+			if (MapIn->LinkedTo.Num() != 1)
+			{
+				OutReason = FString::Printf(
+					TEXT("node '%s' parameter-map input has %d links (the stack chain needs exactly 1)"),
+					*Previous->GetName(), MapIn->LinkedTo.Num());
+				return false;
+			}
+			UNiagaraNode* Current = MapIn->LinkedTo[0] ? Cast<UNiagaraNode>(MapIn->LinkedTo[0]->GetOwningNode()) : nullptr;
+			if (!Current)
+			{
+				OutReason = FString::Printf(TEXT("node '%s' parameter-map input is linked to a non-Niagara node"), *Previous->GetName());
+				return false;
+			}
+			if (UNiagaraNodeInput* AsInput = Cast<UNiagaraNodeInput>(Current))
+			{
+				InputNode = AsInput;
+				break;
+			}
+			if (Visited.Contains(Current))
+			{
+				OutReason = FString::Printf(TEXT("parameter-map chain loops at node '%s'"), *Current->GetName());
+				return false;
+			}
+			Visited.Add(Current);
+			Previous = Current;
+		}
+
+		if (!InputNode)
+		{
+			OutReason = TEXT("no UNiagaraNodeInput found upstream of the output node");
+			return false;
+		}
+		if (!GetParameterMapPin(*InputNode, EGPD_Output))
+		{
+			OutReason = FString::Printf(TEXT("input node '%s' has no parameter-map output pin"), *InputNode->GetName());
+			return false;
+		}
+
+		TArray<UNiagaraNodeFunctionCall*> ModuleNodes;
+		GetOrderedModuleNodes(OutputNode, ModuleNodes);
+		for (UNiagaraNodeFunctionCall* ModuleNode : ModuleNodes)
+		{
+			if (!ModuleNode || !GetParameterMapPin(*ModuleNode, EGPD_Output))
+			{
+				OutReason = FString::Printf(TEXT("module node '%s' has no parameter-map output pin"),
+					ModuleNode ? *ModuleNode->GetName() : TEXT("<null>"));
+				return false;
+			}
+		}
+
+		if (OutInputNode) *OutInputNode = InputNode;
+		return true;
+	}
+
 	// Build an ordered array of node groups from the PM chain anchored at OutputNode.
+	// Mirrors the engine's FNiagaraStackGraphUtilities::GetStackNodeGroups (not exported):
 	// Group 0: the chain input connector (UNiagaraNodeInput at the start of the chain).
-	// Groups 1..N: one per module, in execution order.
+	// Groups 1..N: one per module, in execution order. StartNodes are every node linked
+	//   from the previous group's parameter-map output (the override node, or the module
+	//   itself when it has no overrides).
 	// Final group: the output node itself.
-	void GetStackNodeGroups(UNiagaraNodeOutput& OutputNode, TArray<FStackNodeGroup>& OutGroups)
+	// Returns false (OutGroups empty, OutReason set) when the chain is not a valid stack --
+	// the same condition under which the engine's insertion path asserts.
+	bool GetStackNodeGroups(UNiagaraNodeOutput& OutputNode, TArray<FStackNodeGroup>& OutGroups, FString* OutReason = nullptr)
 	{
 		OutGroups.Reset();
 
-		// Get ordered modules via existing helper
-		TArray<UNiagaraNodeFunctionCall*> ModuleNodes;
-		GetOrderedModuleNodes(OutputNode, ModuleNodes);
+		FString Reason;
+		UNiagaraNodeInput* InputNode = nullptr;
+		if (!ValidateStackChain(OutputNode, Reason, &InputNode))
+		{
+			if (OutReason) *OutReason = Reason;
+			return false;
+		}
 
-		// Group 0: walk backwards from the first module (or the output node if no modules)
-		// to find the UNiagaraNodeInput that starts the PM chain.
 		{
 			FStackNodeGroup InputGroup;
-			UNiagaraNode* FirstChainNode = ModuleNodes.Num() > 0
-				? static_cast<UNiagaraNode*>(ModuleNodes[0])
-				: static_cast<UNiagaraNode*>(&OutputNode);
-
-			// Walk backwards through override nodes to find the chain start
-			UNiagaraNode* Current = FirstChainNode;
-			while (Current)
-			{
-				UEdGraphPin* MapIn = GetParameterMapPin(*Current, EGPD_Input);
-				if (!MapIn || MapIn->LinkedTo.Num() == 0) break;
-				UNiagaraNode* Prev = Cast<UNiagaraNode>(MapIn->LinkedTo[0]->GetOwningNode());
-				if (!Prev) break;
-				// If we hit the override node for the first module, keep walking
-				if (IsOverrideNode(Prev))
-				{
-					Current = Prev;
-					continue;
-				}
-				// Otherwise we found the input connector
-				Current = Prev;
-				break;
-			}
-			InputGroup.EndNode = Current;
-			InputGroup.StartNodes.Add(Current);
+			InputGroup.StartNodes.Add(InputNode);
+			InputGroup.EndNode = InputNode;
 			OutGroups.Add(MoveTemp(InputGroup));
 		}
 
-		// Groups 1..N: one per module
+		auto CollectStartNodes = [](UNiagaraNode& PreviousEnd, FStackNodeGroup& Group)
+		{
+			if (UEdGraphPin* PrevOut = GetParameterMapPin(PreviousEnd, EGPD_Output))
+			{
+				for (UEdGraphPin* Linked : PrevOut->LinkedTo)
+				{
+					if (UNiagaraNode* LinkedNode = Linked ? Cast<UNiagaraNode>(Linked->GetOwningNode()) : nullptr)
+					{
+						Group.StartNodes.Add(LinkedNode);
+					}
+				}
+			}
+		};
+
+		TArray<UNiagaraNodeFunctionCall*> ModuleNodes;
+		GetOrderedModuleNodes(OutputNode, ModuleNodes);
 		for (UNiagaraNodeFunctionCall* ModuleNode : ModuleNodes)
 		{
 			FStackNodeGroup ModuleGroup;
+			CollectStartNodes(*OutGroups.Last().EndNode, ModuleGroup);
 			ModuleGroup.EndNode = ModuleNode;
-
-			// Check if this module has an override node upstream
-			UEdGraphNode* OverrideNode = GetStackFunctionOverrideNode(*ModuleNode);
-			if (OverrideNode)
-			{
-				ModuleGroup.StartNodes.Add(CastChecked<UNiagaraNode>(OverrideNode));
-			}
-			else
-			{
-				ModuleGroup.StartNodes.Add(ModuleNode);
-			}
 			OutGroups.Add(MoveTemp(ModuleGroup));
 		}
 
-		// Final group: the output node
 		{
 			FStackNodeGroup OutputGroup;
+			CollectStartNodes(*OutGroups.Last().EndNode, OutputGroup);
 			OutputGroup.EndNode = &OutputNode;
-			OutputGroup.StartNodes.Add(&OutputNode);
 			OutGroups.Add(MoveTemp(OutputGroup));
 		}
+		return true;
 	}
 
 	// Disconnect a group from the PM chain, reconnecting its neighbors to each other.
@@ -3822,7 +3904,7 @@ FMonolithActionResult FMonolithNiagaraActions::HandleAddEmitter(const TSharedPtr
 	{
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		SaveArgs.Error = GError;
+		SaveArgs.Error = GWarn; // GError is fatal on a failed save (e.g. read-only file)
 		UPackage::SavePackage(SystemPkg, System, *PackageFilename, SaveArgs);
 	}
 
@@ -4122,7 +4204,7 @@ FMonolithActionResult FMonolithNiagaraActions::HandleCreateSystem(const TSharedP
 	{
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		SaveArgs.Error = GError;
+		SaveArgs.Error = GWarn; // GError is fatal on a failed save (e.g. read-only file)
 		UPackage::SavePackage(Pkg, NS, *PackageFilename, SaveArgs);
 	}
 
@@ -4175,7 +4257,7 @@ FMonolithActionResult FMonolithNiagaraActions::HandleCreateStatelessEmitter(cons
 	{
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		SaveArgs.Error = GError;
+		SaveArgs.Error = GWarn; // GError is fatal on a failed save (e.g. read-only file)
 		UPackage::SavePackage(Pkg, Emitter, *PackageFilename, SaveArgs);
 	}
 
@@ -4889,6 +4971,21 @@ FMonolithActionResult FMonolithNiagaraActions::HandleAddModule(const TSharedPtr<
 				"This can happen immediately after create_system. Call request_compile first to let "
 				"Niagara initialize the graph, then retry add_module."));
 		}
+
+		// A linked output pin is necessary but not sufficient: the engine needs an unbroken
+		// one-link-per-hop parameter-map chain back to the stack's input node (a chain left
+		// dangling by earlier remove/move edits passes the check above and still asserts).
+		// AddScriptModuleToStack creates the node BEFORE that assert fires, so this must be
+		// checked up front.
+		FString ChainError;
+		if (!MonolithNiagaraHelpers::ValidateStackChain(*OutputNode, ChainError))
+		{
+			return FMonolithActionResult::Error(FString::Printf(
+				TEXT("Stack graph for usage '%s' is invalid (%s); refusing to add a module because the engine ")
+				TEXT("would assert 'Stack graph is invalid, can not connect module'. Inspect the stack with ")
+				TEXT("get_ordered_modules, or restore the emitter, then retry."),
+				*UsageToString(Usage), *ChainError));
+		}
 	}
 
 	GEditor->BeginTransaction(NSLOCTEXT("Monolith", "AddMod", "Add Module"));
@@ -4966,7 +5063,9 @@ FMonolithActionResult FMonolithNiagaraActions::HandleRemoveModule(const TSharedP
 	UNiagaraSystem* System = LoadSystem(SystemPath);
 	if (!System) return FMonolithActionResult::Error(TEXT("Failed to load system"));
 
-	UNiagaraNodeFunctionCall* MN = FindModuleNode(System, EmitterHandleId, ModuleNodeGuid);
+	ENiagaraScriptUsage FoundUsage = ENiagaraScriptUsage::Function;
+	FGuid FoundUsageId;
+	UNiagaraNodeFunctionCall* MN = FindModuleNode(System, EmitterHandleId, ModuleNodeGuid, &FoundUsage, &FoundUsageId);
 	if (!MN) return FMonolithActionResult::Error(TEXT("Module node not found"));
 
 	FGuid EmitterGuid;
@@ -4979,7 +5078,23 @@ FMonolithActionResult FMonolithNiagaraActions::HandleRemoveModule(const TSharedP
 	GEditor->EndTransaction();
 	System->RequestCompile(false);
 
-	return NA_SuccessStr(TEXT("Module removed"));
+	TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>();
+	R->SetStringField(TEXT("result"), TEXT("Module removed"));
+	// Report whether the stack is still insertable. A broken parameter-map chain here is what
+	// later makes add_module hit the engine's 'Stack graph is invalid' assert.
+	if (UNiagaraNodeOutput* OutputNode = FindOutputNode(System, EmitterHandleId, FoundUsage, FoundUsageId))
+	{
+		FString ChainError;
+		const bool bStackValid = MonolithNiagaraHelpers::ValidateStackChain(*OutputNode, ChainError);
+		R->SetBoolField(TEXT("stack_valid"), bStackValid);
+		if (!bStackValid)
+		{
+			R->SetStringField(TEXT("warning"), FString::Printf(
+				TEXT("The stack chain is no longer valid after removal (%s). add_module on this stack will be refused; ")
+				TEXT("undo the 'Remove Module' transaction or restore the emitter."), *ChainError));
+		}
+	}
+	return FMonolithActionResult::Success(R);
 }
 
 FMonolithActionResult FMonolithNiagaraActions::HandleMoveModule(const TSharedPtr<FJsonObject>& Params)
@@ -5000,9 +5115,15 @@ FMonolithActionResult FMonolithNiagaraActions::HandleMoveModule(const TSharedPtr
 	UNiagaraNodeOutput* OutputNode = FindOutputNode(System, EmitterHandleId, FoundUsage, FoundUsageId);
 	if (!OutputNode) return FMonolithActionResult::Error(TEXT("No output node"));
 
-	// Build the node group array from the PM chain
+	// Build the node group array from the PM chain. Refuse to rewire an already-invalid stack:
+	// splicing groups out of a broken chain is what leaves a stack the engine cannot insert into.
 	TArray<MonolithNiagaraHelpers::FStackNodeGroup> Groups;
-	MonolithNiagaraHelpers::GetStackNodeGroups(*OutputNode, Groups);
+	FString ChainError;
+	if (!MonolithNiagaraHelpers::GetStackNodeGroups(*OutputNode, Groups, &ChainError))
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("Stack graph is invalid (%s); refusing to move the module."), *ChainError));
+	}
 
 	// Groups layout: [0]=input connector, [1..N]=modules, [N+1]=output node
 	// Find which group contains our module as its EndNode
@@ -5036,9 +5157,34 @@ FMonolithActionResult FMonolithNiagaraActions::HandleMoveModule(const TSharedPtr
 	// Disconnect from current position — splice neighbors together
 	MonolithNiagaraHelpers::DisconnectGroup(MovedGroup, Groups[GroupIdx - 1], Groups[GroupIdx + 1]);
 
-	// Re-fetch groups after the chain changed
+	// Re-fetch groups after the chain changed. The splice must leave a valid chain with exactly
+	// one fewer module group; otherwise put the module back where it was and fail cleanly
+	// rather than wiring into a chain the engine considers invalid.
 	TArray<MonolithNiagaraHelpers::FStackNodeGroup> UpdatedGroups;
-	MonolithNiagaraHelpers::GetStackNodeGroups(*OutputNode, UpdatedGroups);
+	FString SpliceError;
+	if (!MonolithNiagaraHelpers::GetStackNodeGroups(*OutputNode, UpdatedGroups, &SpliceError)
+		|| UpdatedGroups.Num() != Groups.Num() - 1)
+	{
+		if (UpdatedGroups.Num() >= GroupIdx + 1)
+		{
+			MonolithNiagaraHelpers::ConnectGroup(MovedGroup, UpdatedGroups[GroupIdx - 1], UpdatedGroups[GroupIdx]);
+		}
+		else
+		{
+			MonolithNiagaraHelpers::ConnectGroup(MovedGroup, Groups[GroupIdx - 1], Groups[GroupIdx + 1]);
+		}
+		GEditor->EndTransaction();
+		System->MarkPackageDirty();
+		System->RequestCompile(false);
+		FString RestoreError;
+		const bool bRestoredValid = MonolithNiagaraHelpers::ValidateStackChain(*OutputNode, RestoreError);
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("move_module aborted: detaching the module left an unexpected stack (%s; %d groups, expected %d). ")
+			TEXT("The module was reconnected at its original position (stack %s). Undo the transaction if the stack looks wrong."),
+			SpliceError.IsEmpty() ? TEXT("group count mismatch") : *SpliceError,
+			UpdatedGroups.Num(), Groups.Num() - 1,
+			bRestoredValid ? TEXT("valid") : *FString::Printf(TEXT("still invalid: %s"), *RestoreError)));
+	}
 
 	// Target group index: new_index + 1 (offset by 1 because UpdatedGroups[0] is the input connector)
 	// We insert AFTER TargetGroupIdx, so the moved group sits between TargetGroupIdx and TargetGroupIdx+1
@@ -5054,6 +5200,14 @@ FMonolithActionResult FMonolithNiagaraActions::HandleMoveModule(const TSharedPtr
 
 	System->MarkPackageDirty();
 	System->RequestCompile(false);
+
+	FString PostMoveError;
+	if (!MonolithNiagaraHelpers::ValidateStackChain(*OutputNode, PostMoveError))
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("move_module rewired the stack but the result is not a valid stack chain (%s). ")
+			TEXT("Undo the 'Move Module' transaction before adding modules to this stack."), *PostMoveError));
+	}
 
 	TSharedRef<FJsonObject> R = MakeShared<FJsonObject>();
 	R->SetStringField(TEXT("module_guid"), MN->NodeGuid.ToString());
@@ -6128,7 +6282,7 @@ FMonolithActionResult FMonolithNiagaraActions::CreateScriptFromHLSL(const TShare
 	{
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		SaveArgs.Error = GError;
+		SaveArgs.Error = GWarn; // GError is fatal on a failed save (e.g. read-only file)
 		UPackage::SavePackage(Pkg, Script, *PackageFilename, SaveArgs);
 	}
 
@@ -12257,7 +12411,7 @@ FMonolithActionResult FMonolithNiagaraActions::HandleCreateNPC(const TSharedPtr<
 	{
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		SaveArgs.Error = GError;
+		SaveArgs.Error = GWarn; // GError is fatal on a failed save (e.g. read-only file)
 		UPackage::SavePackage(Pkg, NPC, *PackageFilename, SaveArgs);
 	}
 
@@ -12615,7 +12769,7 @@ FMonolithActionResult FMonolithNiagaraActions::HandleCreateEffectType(const TSha
 	{
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		SaveArgs.Error = GError;
+		SaveArgs.Error = GWarn; // GError is fatal on a failed save (e.g. read-only file)
 		UPackage::SavePackage(Pkg, ET, *PackageFilename, SaveArgs);
 	}
 
@@ -14216,6 +14370,7 @@ FMonolithActionResult FMonolithNiagaraActions::HandleSaveEmitterAsTemplate(const
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
 
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	bool bSaved = UPackage::SavePackage(NewPackage, NewEmitter, *PackageFilename, SaveArgs);
 
@@ -14422,6 +14577,7 @@ FMonolithActionResult FMonolithNiagaraActions::HandleSaveSystem(const TSharedPtr
 
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(Pkg->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Standalone;
 	bool bSaved = UPackage::SavePackage(Pkg, LoadedAsset, *PackageFilename, SaveArgs);
 

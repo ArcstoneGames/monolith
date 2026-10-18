@@ -84,7 +84,7 @@ Counts re-verified against `RegisterAction(TEXT("ui"), ...)` call sites on 2026-
 **Widget CRUD (9)**
 | Action | Params | Description |
 |--------|--------|-------------|
-| `create_widget_blueprint` | `save_path`, `parent_class` | Create a new Widget Blueprint asset |
+| `create_widget_blueprint` | `save_path`, `parent_class`, `root_widget`, `editor_utility`, `skip_save` | Create a new Widget Blueprint asset. `editor_utility=true` creates a `UEditorUtilityWidgetBlueprint` (Blutility) instead, default parent `EditorUtilityWidget`, with `root_widget` honoured (default `CanvasPanel`). Omitting `editor_utility` with an `EditorUtilityWidget`-derived `parent_class` promotes automatically; `editor_utility=true` with a non-EUW parent is a structured `Type` error. Response adds `asset_class` and `editor_utility`. |
 | `get_widget_tree` | `asset_path` | Get the full widget hierarchy tree. An empty/missing `asset_path` now returns a clear `missing required asset_path parameter` error instead of a confusing downstream "not found" (2026-05-23). |
 | `add_widget` | `asset_path`, `widget_class`, `parent_slot`, `parent_name` (alias `parent`) | Add a widget to the widget tree. `parent` is accepted as an alias for `parent_name` (v0.21.0, #74), so a non-root panel can be targeted directly. |
 | `remove_widget` | `asset_path`, `widget_name` | Remove a widget from the widget tree |
@@ -604,7 +604,7 @@ ui::dump_ui_spec({
 
 | Action | Notable enum payloads in `valid_options` |
 |---|---|
-| `ui::create_widget_blueprint` | `UserWidget`, `CommonActivatableWidget`, `CommonUserWidget` |
+| `ui::create_widget_blueprint` | `UserWidget`, `CommonActivatableWidget`, `CommonUserWidget`, `EditorUtilityWidget` |
 | `ui::add_widget` | 16-entry common widget-class starter list (full set behind `ui::list_widget_types`) |
 | `ui::set_widget_property` | Live allowlist entries for the widget type (when the registry has classified the type); `raw_mode=true` named in `suggested_fix` as the bypass |
 | `ui::compile_widget` | n/a — surfaces `BS_Error` as a `Compile`-category structured failure instead of success-with-status=error |

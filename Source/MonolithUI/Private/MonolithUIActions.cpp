@@ -4,6 +4,9 @@
 #include "MonolithParamSchema.h"
 #include "MonolithPackagePathValidator.h"
 #include "WidgetBlueprintFactory.h"
+#include "EditorUtilityWidget.h"
+#include "EditorUtilityWidgetBlueprint.h"
+#include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/SavePackage.h"
 
@@ -49,12 +52,15 @@ void FMonolithUIActions::RegisterActions(FMonolithToolRegistry& Registry)
 {
     Registry.RegisterAction(
         TEXT("ui"), TEXT("create_widget_blueprint"),
-        TEXT("Create a UWidgetBlueprint at save_path. parent_class accepts /Script/Module.Class form OR short name ('TokenforgeActivatableWidget', 'CommonActivatableWidget', 'UserWidget') — short name resolves via UClass::FindClassByName."),
+        TEXT("Create a UWidgetBlueprint at save_path. parent_class accepts /Script/Module.Class form OR short name ('TokenforgeActivatableWidget', 'CommonActivatableWidget', 'UserWidget') — short name resolves via UClass::FindClassByName. "
+             "editor_utility=true creates an Editor Utility Widget Blueprint (UEditorUtilityWidgetBlueprint, default parent EditorUtilityWidget) instead; "
+             "it is enabled automatically when parent_class derives from EditorUtilityWidget and editor_utility is omitted."),
         FMonolithActionHandler::CreateStatic(&HandleCreateWidgetBlueprint),
         FParamSchemaBuilder()
             .RequiredAssetPath(TEXT("save_path"), TEXT("Asset path, e.g. /Game/UI/WBP_MyWidget"))
-            .Optional(TEXT("parent_class"), TEXT("string"), TEXT("Parent class name (default: UserWidget)"), TEXT("UserWidget"))
+            .Optional(TEXT("parent_class"), TEXT("string"), TEXT("Parent class name (default: UserWidget, or EditorUtilityWidget when editor_utility=true)"), TEXT("UserWidget"))
             .Optional(TEXT("root_widget"), TEXT("string"), TEXT("Root widget type (default: CanvasPanel)"), TEXT("CanvasPanel"))
+            .Optional(TEXT("editor_utility"), TEXT("boolean"), TEXT("Create an Editor Utility Widget Blueprint (parent must derive from EditorUtilityWidget). Default: false, or true when parent_class is an EditorUtilityWidget subclass."), TEXT("false"))
             .Optional(TEXT("skip_save"), TEXT("boolean"), TEXT("Skip saving to disk"), TEXT("false"))
             .Build()
     );
@@ -185,8 +191,11 @@ FMonolithActionResult FMonolithUIActions::HandleCreateWidgetBlueprint(const TSha
         return FMonolithActionResult::Error(ValidationError);
     }
 
+    const bool bEditorUtilityExplicit = Params.IsValid() && Params->HasField(TEXT("editor_utility"));
+    bool bEditorUtility = MonolithUIInternal::GetOptionalBool(Params, TEXT("editor_utility"), false);
+
     FString ParentClassName = MonolithUIInternal::GetOptionalString(Params, TEXT("parent_class"));
-    if (ParentClassName.IsEmpty()) ParentClassName = TEXT("UserWidget");
+    if (ParentClassName.IsEmpty()) ParentClassName = bEditorUtility ? TEXT("EditorUtilityWidget") : TEXT("UserWidget");
 
     FString RootWidgetType = MonolithUIInternal::GetOptionalString(Params, TEXT("root_widget"));
     if (RootWidgetType.IsEmpty()) RootWidgetType = TEXT("CanvasPanel");
@@ -211,7 +220,34 @@ FMonolithActionResult FMonolithUIActions::HandleCreateWidgetBlueprint(const TSha
             TEXT("/parent_class"),
             FString::Printf(TEXT("Parent class '%s' not found or not a UUserWidget subclass."), *ParentClassName),
             TEXT("Use a token (UserWidget / CommonActivatableWidget / CommonUserWidget) or a full /Script/Module.Class path."),
-            { TEXT("UserWidget"), TEXT("CommonActivatableWidget"), TEXT("CommonUserWidget") }));
+            { TEXT("UserWidget"), TEXT("CommonActivatableWidget"), TEXT("CommonUserWidget"), TEXT("EditorUtilityWidget") }));
+    }
+
+    // A plain UWidgetBlueprint parented to an EditorUtilityWidget subclass is not
+    // treated as an editor utility (no Run Utility Widget, editor-only function
+    // calls rejected by the K2 compile gate), so promote implicitly unless the
+    // caller explicitly asked for a plain widget blueprint.
+    const bool bParentIsEditorUtility = ParentClass->IsChildOf(UEditorUtilityWidget::StaticClass());
+    if (!bEditorUtilityExplicit && bParentIsEditorUtility)
+    {
+        bEditorUtility = true;
+    }
+    if (bEditorUtility && !bParentIsEditorUtility)
+    {
+        return MonolithUIInternal::MakeErrorFromSpecError(MonolithUIInternal::MakeSpecError(
+            TEXT("Type"),
+            TEXT("/parent_class"),
+            FString::Printf(TEXT("editor_utility=true requires parent_class to derive from EditorUtilityWidget; '%s' does not."), *ParentClass->GetName()),
+            TEXT("Omit parent_class (defaults to EditorUtilityWidget) or pass an EditorUtilityWidget subclass."),
+            { TEXT("EditorUtilityWidget") }));
+    }
+    if (bEditorUtility && !FKismetEditorUtilities::CanCreateBlueprintOfClass(ParentClass))
+    {
+        return MonolithUIInternal::MakeErrorFromSpecError(MonolithUIInternal::MakeSpecError(
+            TEXT("Type"),
+            TEXT("/parent_class"),
+            FString::Printf(TEXT("Cannot create a blueprint based on class '%s'."), *ParentClass->GetName()),
+            TEXT("Pick a Blueprintable EditorUtilityWidget subclass.")));
     }
 
     // Create package
@@ -256,20 +292,39 @@ FMonolithActionResult FMonolithUIActions::HandleCreateWidgetBlueprint(const TSha
             TEXT("Pick a different save_path, or delete the existing asset first.")));
     }
 
-    // Create widget blueprint via factory
-    UWidgetBlueprintFactory* Factory = NewObject<UWidgetBlueprintFactory>();
-    Factory->BlueprintType = BPTYPE_Normal;
-    Factory->ParentClass = ParentClass;
-
-    UObject* CreatedObj = Factory->FactoryCreateNew(
-        UWidgetBlueprint::StaticClass(), Package,
-        FName(*AssetName), RF_Public | RF_Standalone,
-        nullptr, GWarn);
-
-    UWidgetBlueprint* WBP = Cast<UWidgetBlueprint>(CreatedObj);
-    if (!WBP)
+    UWidgetBlueprint* WBP = nullptr;
+    if (bEditorUtility)
     {
-        return FMonolithActionResult::Error(TEXT("UWidgetBlueprintFactory::FactoryCreateNew returned null"));
+        // Mirrors UEditorUtilityWidgetBlueprintFactory::FactoryCreateNew without its
+        // modal failure dialog and its forced CanvasPanel root (the factory ignores
+        // any caller root choice unless the project's template selector is enabled).
+        // The root widget is constructed below so root_widget is honoured.
+        WBP = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(
+            ParentClass, Package, FName(*AssetName), BPTYPE_Normal,
+            UEditorUtilityWidgetBlueprint::StaticClass(),
+            UWidgetBlueprintGeneratedClass::StaticClass(), NAME_None));
+        if (!WBP)
+        {
+            return FMonolithActionResult::Error(TEXT("FKismetEditorUtilities::CreateBlueprint returned null for EditorUtilityWidgetBlueprint"));
+        }
+    }
+    else
+    {
+        // Create widget blueprint via factory
+        UWidgetBlueprintFactory* Factory = NewObject<UWidgetBlueprintFactory>();
+        Factory->BlueprintType = BPTYPE_Normal;
+        Factory->ParentClass = ParentClass;
+
+        UObject* CreatedObj = Factory->FactoryCreateNew(
+            UWidgetBlueprint::StaticClass(), Package,
+            FName(*AssetName), RF_Public | RF_Standalone,
+            nullptr, GWarn);
+
+        WBP = Cast<UWidgetBlueprint>(CreatedObj);
+        if (!WBP)
+        {
+            return FMonolithActionResult::Error(TEXT("UWidgetBlueprintFactory::FactoryCreateNew returned null"));
+        }
     }
 
     // Set root widget if tree is empty
@@ -295,6 +350,7 @@ FMonolithActionResult FMonolithUIActions::HandleCreateWidgetBlueprint(const TSha
         FAssetRegistryModule::AssetCreated(WBP);
         Package->MarkPackageDirty();
         FSavePackageArgs SaveArgs;
+        SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
         SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
         UPackage::SavePackage(Package, WBP,
             *FPackageName::LongPackageNameToFilename(SavePath, FPackageName::GetAssetPackageExtension()),
@@ -306,6 +362,8 @@ FMonolithActionResult FMonolithUIActions::HandleCreateWidgetBlueprint(const TSha
     Result->SetStringField(TEXT("asset_path"), SavePath);
     Result->SetStringField(TEXT("asset_name"), AssetName);
     Result->SetStringField(TEXT("parent_class"), ParentClass->GetName());
+    Result->SetStringField(TEXT("asset_class"), WBP->GetClass()->GetName());
+    Result->SetBoolField(TEXT("editor_utility"), bEditorUtility);
     Result->SetStringField(TEXT("root_widget"), RootWidgetType);
     Result->SetBoolField(TEXT("compiled"), true);
     Result->SetBoolField(TEXT("saved"), !bSkipSave);

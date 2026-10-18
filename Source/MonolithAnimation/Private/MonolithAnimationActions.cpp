@@ -358,7 +358,7 @@ void FMonolithAnimationActions::RegisterActions(FMonolithToolRegistry& Registry)
 
 	Registry.RegisterAction(TEXT("animation"), TEXT("get_anim_node_pin_bindings"),
 		TEXT("Read the property-access PIN bindings on an animation graph node (distinct from function bindings). ")
-		TEXT("Each entry reports pin, path (the property-access chain), type (Property/Function) and is_bound. ")
+		TEXT("Each entry reports pin, path (the property-access chain), type (Property/Function), is_bound and array_index (-1 = whole property; >= 0 = array element). ")
 		TEXT("Omit node_id to list every node that has any pin binding. ")
 		TEXT("Example: { asset_path: '/Game/Anim/ABP_Char', node_id: 'AnimGraphNode_ModifyBone_0' }."),
 		FMonolithActionHandler::CreateStatic(&HandleGetAnimNodePinBindings),
@@ -380,6 +380,7 @@ void FMonolithAnimationActions::RegisterActions(FMonolithToolRegistry& Registry)
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node name or NodeGuid"))
 			.Required(TEXT("pin"), TEXT("string"), TEXT("Pin (property) name to bind"))
 			.Optional(TEXT("path"), TEXT("array"), TEXT("Property-access chain as a string array. Empty/omitted clears the binding."))
+			.Optional(TEXT("array_index"), TEXT("integer"), TEXT("Element index for an array-element pin (e.g. BlendWeights_2 -> 2). -1 = whole-property binding. Omitted: keeps the existing binding's index, else derives it from the pin name suffix when the pin is an element of an FNode array property."))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Filter to a specific graph"))
 			.Optional(TEXT("recompile"), TEXT("bool"), TEXT("Recompile the Animation Blueprint after the change"), TEXT("true"))
 			.Build());
@@ -11814,6 +11815,43 @@ FMonolithActionResult FMonolithAnimationActions::HandleGetAnimNodePinBindings(co
 		FString Note;
 		MonolithAnimNodeBindingReader::ReadPinBindings(AnimNode, Entries, Note);
 
+		// Annotate each property/function binding with its ArrayIndex. Array-element pins
+		// (BlendWeights_0, DesiredAlphas_1, ...) only drive their element when ArrayIndex
+		// is >= 0; INDEX_NONE (-1) means the binding targets the whole property.
+		{
+			FMapProperty* MapProp = nullptr;
+			void* MapPtr = nullptr;
+			UObject* BindingObj = nullptr;
+			FStructProperty* ValueStructProp = nullptr;
+			if (MonolithAnimNodeBindingReader::ResolvePropertyBindingsMap(AnimNode, MapProp, MapPtr, BindingObj)
+				&& (ValueStructProp = CastField<FStructProperty>(MapProp->ValueProp)) != nullptr
+				&& ValueStructProp->Struct == FAnimGraphNodePropertyBinding::StaticStruct())
+			{
+				TMap<FString, int32> ArrayIndexByPin;
+				FScriptMapHelper Helper(MapProp, MapPtr);
+				for (FScriptMapHelper::FIterator It(Helper); It; ++It)
+				{
+					const FAnimGraphNodePropertyBinding* PinBinding =
+						reinterpret_cast<const FAnimGraphNodePropertyBinding*>(Helper.GetValuePtr(It.GetInternalIndex()));
+					if (PinBinding)
+					{
+						ArrayIndexByPin.Add(PinBinding->PropertyName.ToString(), PinBinding->ArrayIndex);
+					}
+				}
+				for (const TSharedPtr<FJsonValue>& V : Entries)
+				{
+					const TSharedPtr<FJsonObject>* EntryObj = nullptr;
+					if (!V.IsValid() || !V->TryGetObject(EntryObj) || !EntryObj || !EntryObj->IsValid()) continue;
+					FString EntryPin;
+					if (!(*EntryObj)->TryGetStringField(TEXT("pin"), EntryPin)) continue;
+					if (const int32* Found = ArrayIndexByPin.Find(EntryPin))
+					{
+						(*EntryObj)->SetNumberField(TEXT("array_index"), *Found);
+					}
+				}
+			}
+		}
+
 		// --- T3-1: ALSO emit WIRE-LINKED input pins (graph-edge bindings). ---
 		// The reader above surfaces only PROPERTY/FUNCTION bindings (the node's
 		// PropertyBindings map). A pin can instead be driven by a graph wire from an
@@ -11930,6 +11968,20 @@ FMonolithActionResult FMonolithAnimationActions::HandleSetAnimNodePinBinding(con
 	}
 	const bool bClearing = (Path.Num() == 0);
 
+	// array_index: optional element index for array-element pins (BlendWeights_N etc.).
+	// -1 forces a whole-property binding. Omitted -> preserved from the existing entry,
+	// else derived from the pin name's numeric suffix.
+	int32 ExplicitArrayIndex = INDEX_NONE;
+	double ArrayIndexNumber = 0.0;
+	const bool bHasExplicitArrayIndex = Params->TryGetNumberField(TEXT("array_index"), ArrayIndexNumber);
+	if (bHasExplicitArrayIndex)
+	{
+		ExplicitArrayIndex = FMath::FloorToInt32(ArrayIndexNumber);
+	}
+	int32 ResolvedArrayIndex = INDEX_NONE;
+	FString ArrayIndexSource = TEXT("none");
+	TArray<TSharedPtr<FJsonValue>> RemovedConflictingKeys;
+
 	if (Pin.IsEmpty()) return FMonolithActionResult::Error(TEXT("pin (PropertyName) is required"));
 
 	UAnimBlueprint* ABP = FMonolithAssetUtils::LoadAssetByPath<UAnimBlueprint>(AssetPath);
@@ -12045,11 +12097,91 @@ FMonolithActionResult FMonolithAnimationActions::HandleSetAnimNodePinBinding(con
 		NewBinding.Type = EAnimGraphNodePropertyBindingType::Property;
 		NewBinding.bIsBound = true;
 
+		// --- ArrayIndex resolution (array-element pins such as BlendWeights_0) ---
+		// The engine splits an FNode array property into one pin per element; each pin's
+		// FName carries the element in its number suffix ("BlendWeights_0" == FName
+		// "BlendWeights" number 1). Its own binding write (AnimGraphNodeBinding_Base.cpp,
+		// OnAddBinding) keys the map by that pin name and sets
+		// ArrayIndex = PinName.GetNumber() - 1 when the pin property is an array that
+		// lives on the FNode. With ArrayIndex left at INDEX_NONE the compiler copies the
+		// source into the WHOLE array ("Cannot copy property (float -> TArray)") and the
+		// element is never driven. Precedence: explicit array_index param > the existing
+		// entry's non-INDEX_NONE value (rebind preserves it) > derived from the pin name.
+		FProperty* PinProperty = AnimNode->GetPinProperty(PinName);
+		const bool bPinIsArray = PinProperty && PinProperty->IsA<FArrayProperty>();
+		bool bPropertyIsOnFNode = false;
+		if (PinProperty)
+		{
+			const FStructProperty* FNodeProp = AnimNode->GetFNodeProperty();
+			const UScriptStruct* OwnerStruct = PinProperty->GetOwner<UScriptStruct>();
+			bPropertyIsOnFNode = FNodeProp && FNodeProp->Struct && OwnerStruct && FNodeProp->Struct->IsChildOf(OwnerStruct);
+		}
+		const bool bIsArrayElementPin = bPinIsArray && bPropertyIsOnFNode && PinName.GetNumber() > 0;
+		const bool bIsWholeArrayPin = bPinIsArray && bPropertyIsOnFNode && PinName.GetNumber() == 0;
+
+		FScriptMapHelper Helper(MapProp, MapPtr);
+
+		int32 ExistingArrayIndex = INDEX_NONE;
+		if (const uint8* ExistingValue = Helper.FindValueFromHash(&PinName))
+		{
+			ExistingArrayIndex = reinterpret_cast<const FAnimGraphNodePropertyBinding*>(ExistingValue)->ArrayIndex;
+		}
+
+		if (bHasExplicitArrayIndex)
+		{
+			if (ExplicitArrayIndex < INDEX_NONE)
+			{
+				return FMonolithActionResult::Error(TEXT("array_index must be >= 0, or -1 for a whole-property binding"));
+			}
+			if (ExplicitArrayIndex >= 0 && !bPinIsArray)
+			{
+				return FMonolithActionResult::Error(FString::Printf(
+					TEXT("array_index %d given but pin '%s' does not resolve to an array property on this node"),
+					ExplicitArrayIndex, *Pin));
+			}
+			NewBinding.ArrayIndex = ExplicitArrayIndex;
+			ArrayIndexSource = TEXT("param");
+		}
+		else if (ExistingArrayIndex != INDEX_NONE)
+		{
+			NewBinding.ArrayIndex = ExistingArrayIndex;
+			ArrayIndexSource = TEXT("preserved");
+		}
+		else if (bIsArrayElementPin)
+		{
+			NewBinding.ArrayIndex = PinName.GetNumber() - 1;
+			ArrayIndexSource = TEXT("pin_name");
+		}
+		ResolvedArrayIndex = NewBinding.ArrayIndex;
+
 		if (BindingObj) BindingObj->Modify();
+
+		// Mirror the engine's whole-array / element exclusivity (OnAddBinding): binding the
+		// whole array drops every element binding of that property; binding an element
+		// drops a whole-array binding of the same property.
+		if (bIsWholeArrayPin || bIsArrayElementPin)
+		{
+			const FName BaseName(PinName, 0);
+			TArray<FName> KeysToRemove;
+			for (FScriptMapHelper::FIterator It(Helper); It; ++It)
+			{
+				const FName Key = *reinterpret_cast<const FName*>(Helper.GetKeyPtr(It.GetInternalIndex()));
+				if (Key == PinName) continue; // overwritten by AddPair below
+				const bool bSameProperty = (FName(Key, 0) == BaseName);
+				if (bIsWholeArrayPin ? bSameProperty : (Key == BaseName))
+				{
+					KeysToRemove.Add(Key);
+				}
+			}
+			for (const FName& Key : KeysToRemove)
+			{
+				Helper.RemovePair(&Key);
+				RemovedConflictingKeys.Add(MakeShared<FJsonValueString>(Key.ToString()));
+			}
+		}
 
 		// AddPair overwrites an existing entry for the same key (engine PropertyBindings.Add
 		// semantics) and rehashes internally — no manual pre-remove / Rehash needed.
-		FScriptMapHelper Helper(MapProp, MapPtr);
 		Helper.AddPair(&PinName, &NewBinding);
 	}
 
@@ -12084,6 +12216,12 @@ FMonolithActionResult FMonolithAnimationActions::HandleSetAnimNodePinBinding(con
 		TArray<TSharedPtr<FJsonValue>> PathOut;
 		for (const FString& Seg : Path) PathOut.Add(MakeShared<FJsonValueString>(Seg));
 		Root->SetArrayField(TEXT("path"), PathOut);
+		Root->SetNumberField(TEXT("array_index"), ResolvedArrayIndex);
+		Root->SetStringField(TEXT("array_index_source"), ArrayIndexSource);
+		if (RemovedConflictingKeys.Num() > 0)
+		{
+			Root->SetArrayField(TEXT("removed_conflicting_bindings"), RemovedConflictingKeys);
+		}
 	}
 	Root->SetBoolField(TEXT("recompiled"), bCompiled);
 	return FMonolithActionResult::Success(Root);
