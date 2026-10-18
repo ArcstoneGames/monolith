@@ -142,7 +142,9 @@ public:
 	static FMonolithActionResult StartTimeseriesSession(const TSharedPtr<FJsonObject>& Params);
 
 	// Read-only scan of loaded UBlueprints for the engine's PIE compile-error
-	// condition (BS_Error && bDisplayCompilePIEWarning). Returns {count, blueprints:[{name, path}]}.
+	// condition (BS_Error && bDisplayCompilePIEWarning), plus non-data-only BS_Dirty
+	// Blueprints, which the engine recompiles before PIE, whose last compile left Error
+	// annotations on their nodes. Returns {count, blueprints:[{name, path, status}]}.
 	// Same scan run_pie_smoke's on_compile_errors=refuse gate uses to avoid starting
 	// PIE on a broken world (which would raise a game-thread-blocking modal).
 	static FMonolithActionResult HandleListErroredBlueprints(const TSharedPtr<FJsonObject>& Params);

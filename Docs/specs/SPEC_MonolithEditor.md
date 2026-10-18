@@ -103,7 +103,7 @@ Pattern table:
 
 Starting PIE with a Blueprint in an unresolved error state raises the engine's blocking compile-error modal. That modal runs a nested modal loop on the game thread, which **starves the in-process MCP server** — the session hangs rather than returning a result.
 
-`start_pie` now pre-flights every loaded Blueprint against the engine's own unresolved-error condition (`BS_Error && bDisplayCompilePIEWarning` — the exact test `FInternalPlayLevelUtils::ResolveDirtyBlueprints` uses) and applies `on_compile_errors`:
+`start_pie` now pre-flights every loaded Blueprint against the engine's own unresolved-error condition (`BS_Error && bDisplayCompilePIEWarning` — the test `FInternalPlayLevelUtils::ResolveDirtyBlueprints` uses — plus a non-data-only `BS_Dirty` Blueprint, which that function recompiles before PIE, whose last compile left Error annotations on its nodes) and applies `on_compile_errors`:
 
 | Value | Effect |
 |-------|--------|
@@ -161,7 +161,7 @@ Two caveats, both reported rather than hidden:
 
 | Action | Description |
 |--------|-------------|
-| `list_errored_blueprints` | Read-only scan of all loaded `UBlueprint`s for unresolved compile errors (`Status == BS_Error && bDisplayCompilePIEWarning`) — the exact condition the engine tests before raising its blocking PIE compile-error modal. Returns `{ count, blueprints: [{ name, path }] }`. Run before `run_pie_smoke` to know in advance whether PIE will be refused or blocked. No params. |
+| `list_errored_blueprints` | Read-only scan of all loaded `UBlueprint`s for unresolved compile errors (`Status == BS_Error && bDisplayCompilePIEWarning`, status `"error"`; or a non-data-only `BS_Dirty` Blueprint, which the engine recompiles before PIE, whose last compile left Error annotations on its nodes, status `"dirty_with_errors"`) — what the engine collects before raising its blocking PIE compile-error modal. Compiles nothing, so a Dirty Blueprint newly broken since its last compile is not seen. Returns `{ count, blueprints: [{ name, path, status }] }`. Run before `run_pie_smoke` to know in advance whether PIE will be refused or blocked. No params. |
 
 **Test/Profiling Harness — Wave 3 (1 — skeletal-animation preview capture)**
 
