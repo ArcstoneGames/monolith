@@ -459,7 +459,8 @@ FMonolithActionResult FMonolithToolRegistry::ExecuteAction(
 			return FMonolithActionResult::Error(
 				FString::Printf(TEXT("Missing required param(s): [%s]. Provided keys: [%s] — inspect the action's parameter schema via monolith_discover(\"<namespace>\") and supply all required fields."),
 					*FString::Join(Missing, TEXT(", ")),
-					*FString::Join(Provided, TEXT(", "))));
+					*FString::Join(Provided, TEXT(", "))),
+				FMonolithJsonUtils::ErrInvalidParams);
 		}
 	}
 
