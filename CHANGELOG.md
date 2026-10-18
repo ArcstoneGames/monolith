@@ -6,8 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-18
+
+> **Action count is approximate.** **~1,400+ actions across 26 in-tree namespaces** — query `monolith_discover()` for the live figure.
+
+A queue-clearing release: every open PR and issue was triaged, ten issues fixed, seven PRs landed, and a set of tooling gaps hit during real project work closed. The theme is actions that reported success while doing nothing, and editor crashes behind ordinary failures.
+
 ### Added
 
+- **`-NoMonolithMcp` command-line switch** skips the MCP HTTP listener for one process (tools still register). Lets automated test runs (`UnrealEditor-Cmd ... -ExecCmds="Automation RunTests ..."`) stay off the port a working editor or an MCP client is using. From PR #154 by **@whalemenace**.
 - **`ui create_widget_blueprint` can create Editor Utility Widget Blueprints.** `editor_utility=true` creates a `UEditorUtilityWidgetBlueprint` (default parent `EditorUtilityWidget`) with the requested `root_widget`; it is enabled automatically when `parent_class` derives from `EditorUtilityWidget`. Previously the action always produced a plain `UWidgetBlueprint`, which the editor does not treat as an editor utility even with an EUW parent.
 - **`blueprint set_function_flags` (#150, reported by @altarfinch).** Edits pure, const, Call In Editor, access specifier, category and description on an existing function graph; only the fields passed change. Writes the function entry node's extra flags and metadata plus the skeleton `UFunction` (as the My Blueprint details panel does), marks the Blueprint structurally modified, and reconstructs the Blueprint's own call sites when purity changes. Also available as a `batch_execute` op.
 - **`blueprint add_event_graph` (#150, reported by @altarfinch).** Adds a new Event Graph (ubergraph page), matching **Add New > Event Graph**. Optional `name` (validated with the Kismet name validator, default a unique `NewEventGraph`); the page reuses the schema of the Blueprint's existing event graph.
@@ -19,6 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The PIE pre-flight also reports Dirty Blueprints whose last compile failed.** `ScanErroredBlueprints` (behind `list_errored_blueprints`, `start_pie`, `run_pie_smoke`, `sample_pie_timeseries`) only counted `BS_Error`, but the engine also recompiles every non-data-only `BS_Dirty` Blueprint before play and raises the blocking error dialog when that fails, so `on_compile_errors="refuse"` could still let PIE hang the editor. Those Blueprints are now reported with `status: "dirty_with_errors"`. From PR #151 by **@whalemenace**.
+- **`source search_source` validates the cursor before checking the source DB**, so a bad cursor is `INVALID_CURSOR` even on a machine without `EngineSource.db`. From PR #152 by **@whalemenace**.
+- **ReflectionIntel tests stage fixtures under an absolute path**, so they scan their fixtures on layouts where the project and engine share a root (Linux/Mac source builds, same-drive Windows). From PR #153 by **@whalemenace**.
+- **`MonolithChooserReadActions.cpp` includes `EnumProperty.h` and `TextProperty.h`**, so it compiles without unity or a shared PCH. From PR #144 by **@itismyfield**.
 - **A missing required parameter is reported as invalid params (`-32602`).** The dispatcher's required-param check returned its error with no code, so it surfaced as `-32603` (internal error) for every action; clients that branch on the code treated a caller mistake as a server fault.
 - **Auto-updater source and unrelated ZIP archives are rejected.** Update discovery now accepts only explicit `Monolith-*.zip` release assets and fails closed when a release exposes only GitHub's `zipball_url` or another ZIP, because repository source archives and unrelated artifacts do not carry the precompiled plugin binaries required by Blueprint-only installations. Thanks **@kunkunGames** (#104).
 - **`animation set_anim_node_pin_binding` keeps `ArrayIndex` on array-element pins.** Every write reset `FAnimGraphNodePropertyBinding::ArrayIndex` to `-1`, so pins such as `BlendWeights_N` / `DesiredAlphas_N` bound the whole array, compiled with `Cannot copy property (float -> TArray)` warnings, and never drove their element. New optional `array_index`; when omitted, a rebind keeps the existing index and otherwise it is derived from the pin name as the engine binding widget does. Binding an element now drops a whole-array binding of the same property and vice versa, as in the editor. `get_anim_node_pin_bindings` reports `array_index` per binding.
