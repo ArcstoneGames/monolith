@@ -994,12 +994,6 @@ FMonolithActionResult FMonolithSourceActions::HandleSearchSource(const TSharedPt
 	// de-dup at the slice site continues to use the existing TSet<FString>
 	// keyed on (FileId, LineNumber).
 
-	FMonolithSourceDatabase* DB = GetDB();
-	if (!DB || !DB->IsOpen())
-	{
-		return FMonolithActionResult::Error(TEXT("Engine source DB not available."));
-	}
-
 	const FString Query = Params->GetStringField(TEXT("query"));
 	const FString Scope = Params->HasField(TEXT("scope")) ? Params->GetStringField(TEXT("scope")) : TEXT("all");
 	const int32 RequestedLimit = Params->HasField(TEXT("limit")) ? static_cast<int32>(Params->GetNumberField(TEXT("limit"))) : 20;
@@ -1054,6 +1048,14 @@ FMonolithActionResult FMonolithSourceActions::HandleSearchSource(const TSharedPt
 		SourcePage = State.SourcePage;
 		CachedTotalEstimate = State.CachedTotalEstimate;
 		bHasCursor = true;
+	}
+
+	// The params, cursor included, are validated before the environment: a bad cursor is the
+	// caller's error whether or not the source index has been built on this machine.
+	FMonolithSourceDatabase* DB = GetDB();
+	if (!DB || !DB->IsOpen())
+	{
+		return FMonolithActionResult::Error(TEXT("Engine source DB not available."));
 	}
 
 	const bool bIsPageZero = !bHasCursor;
