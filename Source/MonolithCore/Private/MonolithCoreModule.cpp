@@ -1,5 +1,7 @@
 #include "MonolithCoreModule.h"
 #include "Misc/Paths.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
@@ -51,6 +53,15 @@ void FMonolithCoreModule::StartupModule()
 	{
 		UE_LOG(LogMonolith, Log,
 			TEXT("Monolith — MCP server disabled in settings (bMcpServerEnabled=false), skipping HTTP listener startup"));
+		return;
+	}
+
+	// -NoMonolithMcp: the same kill-switch for one process. bMcpServerEnabled lives in Monolith's own
+	// config file, which command-line -ini: overrides do not reach. Automated test runs use this so the
+	// test editor neither takes the port from a working editor nor serves other clients mid-suite.
+	if (FParse::Param(FCommandLine::Get(), TEXT("NoMonolithMcp")))
+	{
+		UE_LOG(LogMonolith, Log, TEXT("Monolith — -NoMonolithMcp on the command line, skipping HTTP listener startup"));
 		return;
 	}
 

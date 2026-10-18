@@ -11,7 +11,8 @@
  */
 namespace MonolithSourceSchema
 {
-	static const int32 SchemaVersion = 2;
+	// v3: symbol_deprecations.file_id (per-file purge on incremental project reindex).
+	static const int32 SchemaVersion = 3;
 
 	// ----------------------------------------------------------------
 	// Core tables + indexes
@@ -89,13 +90,19 @@ namespace MonolithSourceSchema
 		// declaration text after the macro and stores symbol_id = NULL when it
 		// cannot resolve a symbols row. Lookups (check_deprecations) key on
 		// symbol_name, so a NULL symbol_id does not break the read path.
+		//
+		// Schema v3: file_id links each row to the file it was extracted from, so an
+		// incremental project reindex can purge a file's rows even when symbol_id is
+		// NULL. Pre-v3 databases gain the column via ALTER TABLE in
+		// CreateTablesIfNeeded(); their existing rows keep file_id = NULL.
 		TEXT("CREATE TABLE IF NOT EXISTS symbol_deprecations (")
 		TEXT("    id          INTEGER PRIMARY KEY AUTOINCREMENT,")
 		TEXT("    symbol_id   INTEGER REFERENCES symbols(id),")
 		TEXT("    symbol_name TEXT NOT NULL,")
 		TEXT("    version     TEXT,")
 		TEXT("    message     TEXT,")
-		TEXT("    kind        TEXT NOT NULL")
+		TEXT("    kind        TEXT NOT NULL,")
+		TEXT("    file_id     INTEGER REFERENCES files(id)")
 		TEXT(");")
 
 		TEXT("CREATE INDEX IF NOT EXISTS idx_deprecations_name ON symbol_deprecations(symbol_name);")

@@ -58,7 +58,7 @@ namespace MonolithCppErgoTestDetail
 
 // ---------------------------------------------------------------------------
 // Test 1: DeprecationSchemaBootstrap — empty-DB CreateTablesIfNeeded() creates
-// symbol_deprecations and stamps SchemaVersion 2.
+// symbol_deprecations and stamps SchemaVersion 3.
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCppErgoDeprecationSchemaBootstrapTest,
@@ -75,8 +75,8 @@ bool FCppErgoDeprecationSchemaBootstrapTest::RunTest(const FString& /*Parameters
 		TestTrue(TEXT("OpenForWriting"), DB.OpenForWriting(DbPath));
 		TestTrue(TEXT("CreateTablesIfNeeded"), DB.CreateTablesIfNeeded());
 
-		// schema_version meta == 2
-		TestEqual(TEXT("schema_version stamped to 2"), DB.GetMeta(TEXT("schema_version")), FString(TEXT("2")));
+		// schema_version meta == 3 (v3 added symbol_deprecations.file_id)
+		TestEqual(TEXT("schema_version stamped to 3"), DB.GetMeta(TEXT("schema_version")), FString(TEXT("3")));
 
 		// Inserting a deprecation row succeeds (table exists) and counts.
 		DB.InsertDeprecation(/*SymbolId=*/0, TEXT("Foo"), TEXT("5.4"), TEXT("Use Bar"), TEXT("UE_DEPRECATED"));

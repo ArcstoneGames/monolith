@@ -1019,7 +1019,7 @@ Unreal Engine C++ source code navigation. 1M+ symbols indexed. **12 actions** (1
 
 ### `source.trigger_reindex` · `source.trigger_project_reindex`
 
-`trigger_reindex` does a full clean build (engine + shaders + project). `trigger_project_reindex` is incremental (project Source/ + Plugins/ only). Both take *no parameters*.
+`trigger_reindex` does a full clean build (engine + shaders + project). `trigger_project_reindex` is incremental (project Source/ + Plugins/ only): it first purges every row previously indexed under those two trees, then re-indexes them, so files, symbols, modules and plugins deleted since the last run disappear from the index and nothing is duplicated. Engine rows are untouched. The same incremental pass runs automatically after Live Coding / hot reload. Both take *no parameters*.
 
 **Returns:** a text confirmation that indexing started. Since 0.22.0 both report failure honestly: if the run does not start — a reindex is already in flight, the worker thread could not be created, or (for `trigger_project_reindex`) `EngineSource.db` does not exist yet — the action returns an **error** naming the cause instead of a success message. Earlier builds always claimed the reindex had started.
 

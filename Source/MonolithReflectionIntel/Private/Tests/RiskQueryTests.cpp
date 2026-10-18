@@ -134,8 +134,10 @@ bool FRiskConditionalGateSweepTest::RunTest(const FString& /*Parameters*/)
 	}
 
 	// Stage into a transient dir with real `.Build.cs` / `.cpp` extensions.
-	const FString WorkDir = FPaths::AutomationTransientDir()
-		/ FString::Printf(TEXT("risk-gates-%s"), *FGuid::NewGuid().ToString());
+	// Absolute: the indexer resolves a relative root against the project dir, but
+	// AutomationTransientDir() can be relative to the engine binaries.
+	const FString WorkDir = FPaths::ConvertRelativePathToFull(FPaths::AutomationTransientDir()
+		/ FString::Printf(TEXT("risk-gates-%s"), *FGuid::NewGuid().ToString()));
 	FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*WorkDir);
 
 	const FString StagedBuildCs = WorkDir / TEXT("Sample.Build.cs");

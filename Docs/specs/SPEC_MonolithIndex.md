@@ -162,10 +162,12 @@ The project indexer uses a 3-layer architecture to keep `ProjectIndex.db` in syn
 On editor startup, `UMonolithIndexSubsystem` runs a fast delta engine:
 1. `EnumerateAllPackages()` collects all discoverable `.uasset` packages with their `FIoHash` (Blake3).
 2. Hash comparison against the `saved_hash` column in the `assets` table identifies added, removed, and changed assets. Move detection uses a `TMultiMap<FIoHash, FString>` to match removed→added pairs with identical hashes.
-3. Delta application (inserts, updates, deletes, renames) executes in a single SQLite transaction.
+3. Delta application (inserts, updates, deletes, renames) executes in a single SQLite transaction. A detected move rewrites both `package_path` and `asset_name` (the new name is read from the Asset Registry; if it cannot be resolved the old `asset_name` is kept), matching what the live `OnAssetRenamed` path does.
 4. Hash updates are deferred until after commit for crash recovery — if the editor crashes mid-index, the next startup re-detects the delta.
 
 Performance: ~14K assets compared in ~20ms. <1s total startup time with no changes.
+
+**Known gap:** the startup delta deep-indexes added/changed assets but does not run the scoped sentinel indexers (Phase 9 of `StartIncrementalIndex` is a commented-out stub), so sentinel-owned data (dependencies, tag references, level actors) is not refreshed for assets modified while the editor was closed. The Layer 2 drain does call `RunScopedSentinels`, but it only invokes indexers whose `SupportsIncrementalIndex()` returns true, and no indexer currently overrides the `false` default, so that call is a no-op too. Tracked in `MISSING_FEATURES.md`.
 
 **Layer 2 — Live Asset Registry Callbacks**
 

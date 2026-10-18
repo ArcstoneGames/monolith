@@ -27,7 +27,7 @@
 **Important:** `monolith_reindex` is the **asset/project** indexer (Blueprints, materials, textures via `MonolithIndex`). It does NOT update the C++ source DB. Source-symbol freshness is owned by this module via:
 
 1. `source.trigger_reindex` — full clean rebuild (engine + shaders + project).
-2. `source.trigger_project_reindex` — incremental, project C++ only.
+2. `source.trigger_project_reindex` — incremental, project C++ only. Purges every previously indexed project file first, then re-indexes (see *Incremental Project Reindex* below).
 3. **F17 auto-hook (2026-04-26):** `UMonolithSourceSubsystem` listens on `FCoreUObjectDelegates::ReloadCompleteDelegate`. After every Live Coding patch and after every UBT-driven editor restart that fires hot-reload, the subsystem auto-kicks `TriggerProjectReindex()` (async). Guarded by a 5-second cooldown and an in-flight `bIsIndexing` flag so multi-module reload bursts don't storm. Skips silently if `EngineSource.db` doesn't yet exist (first-install bootstrap requires a manual `source.trigger_reindex`).
 
 After F17, agents do not need to invoke any source-reindex action manually in the common dev loop — just run UBT or Live Coding and `source_query` reflects the new symbols within ~1 second.
@@ -41,6 +41,21 @@ The auto-hook stamps its 5-second cooldown only when `TriggerProjectReindex()` r
 Every exit from `FMonolithSourceIndexer` now routes through `CompleteRun()`, which clears the running flag and broadcasts `OnComplete`. Two exits used to return silently — a failed `FRunnableThread::Create` in `StartAsync`, and a failed `OpenForWriting` in `Run`. Because the subsystem clears `bIsIndexing` from that callback, either one latched the flag and every later request was refused with "Indexing already in progress" until the editor restarted. `Source/MonolithSource/Private/Tests/MonolithSourceIndexerFailureTest.cpp` covers the writer-open exit.
 
 The completion callback hops to the game thread and cannot be cancelled once queued, so it holds a `TWeakObjectPtr` to the subsystem (never `this`) and re-checks a shutdown flag before reopening the database. `Deinitialize` clears the indexer's delegates before stopping and deleting it, so a worker broadcasting on its way out cannot re-enter a subsystem that is already tearing down.
+
+### Incremental Project Reindex (schema v3)
+
+`TriggerProjectReindex()` (and the F17 auto-kick) runs `FMonolithSourceIndexer` with `SetCleanBuild(false)`, no engine source path, project phase only. It keeps the engine rows and **replaces** the project rows:
+
+1. **Purge.** Before `LoadExistingSymbols`, `FMonolithSourceDatabase::PurgeFilesUnderPaths({<Project>/Source, <Project>/Plugins})` deletes every `files` row whose path lies under either root, plus everything derived from those files, in one transaction: `references` (by `file_id`, and by `from_symbol_id` / `to_symbol_id` in the purged symbol set — type references carry `from_symbol_id = 0` and are reachable only through `file_id`), `inheritance` (child or parent purged), `symbol_deprecations` (`file_id` or `symbol_id` purged), `includes`, `source_fts` chunks, `symbols` (the `symbols_ad` trigger keeps `symbols_fts` in sync), and the `files` rows. Surviving symbols whose `parent_symbol_id` pointed into the purged set are set to NULL, and `modules` rows at or under the roots that no longer own a file are removed. Id sets are staged in connection-private TEMP tables so each delete is a single set-based statement. Paths are matched by prefix with `\` folded to `/` and ASCII case folded on both sides.
+2. **Re-index.** Project modules are rediscovered and indexed from scratch, so files deleted from disk, symbols removed from a file, and modules or plugins deleted entirely all disappear, and nothing is duplicated.
+
+Purging by path prefix rather than by the discovered module set is what catches modules and plugins that no longer exist on disk. The Monolith plugin itself lives under `<Project>/Plugins`, so it is purged and re-indexed like any other project plugin. A full `source.trigger_reindex` is unaffected — it drops and recreates every table via `ResetDatabase()`.
+
+**Cost.** `source_fts.file_id` is `UNINDEXED` and `references` / `includes` have no `file_id` index, so the purge scans those tables once per run. On a full engine index (~2.3M source chunks, ~4.7M references) that is about a second with a warm page cache and noticeably longer cold.
+
+**Id resolution.** `InsertModule` / `InsertFile` look the row up first and only INSERT when it is absent. They previously ran `INSERT OR IGNORE` and read `GetLastInsertRowId()`, which SQLite does not reset when an insert is ignored — an existing file or module resolved to the rowid of an unrelated earlier insert (typically a symbol). An existing row now has its metadata refreshed (`files`: module_id, file_type, line_count, last_modified; `modules`: module_type, build_cs_path).
+
+**Schema v3.** `symbol_deprecations` gained a nullable `file_id` column (below) so the purge can reach rows whose `symbol_id` is NULL. `CreateTablesIfNeeded()` adds the column in place (`PRAGMA table_info` check, then `ALTER TABLE ... ADD COLUMN`) on a pre-v3 database, and the indexer now stamps `meta.schema_version` with the schema constant rather than a literal `1`. **Legacy rows** written before v3 keep `file_id = NULL`; those that also have `symbol_id = NULL` cannot be attributed to a file, so a stale project deprecation of that kind survives incremental passes until one full `source.trigger_reindex`.
 
 ### Actions (~20 — namespace: "source")
 
@@ -56,7 +71,7 @@ The completion callback hops to the game thread and cannot be cancelled once que
 | `get_symbol_context` | `symbol`, `context_lines` | Definition with surrounding context |
 | `read_file` | `file_path`, `start_line`, `end_line` | Read source lines by path (absolute -> DB exact -> DB suffix match) |
 | `trigger_reindex` | none | Trigger full C++ engine source re-index (replaces entire EngineSource.db) |
-| `trigger_project_reindex` | none | Trigger incremental project-only C++ source re-index (updates project symbols in EngineSource.db without a full rebuild) |
+| `trigger_project_reindex` | none | Trigger incremental project-only C++ source re-index: purges all previously indexed project rows, then re-indexes project source, without touching engine rows |
 | `get_include_path` | `symbol` | Canonical `#include` form for a symbol, derived from its indexed file path (Phase 1). See contract below. |
 | `get_signature` | `symbol` | Exact overload signature(s) for a function/method. Declaration-read primary (Phase 1). See contract below. |
 | `check_deprecations` | `symbols[]` | Batch deprecation status for a symbol list, read from the `symbol_deprecations` index (Phase 1). See contract below. |
@@ -126,6 +141,7 @@ Two actions for header pre-flight + class scaffolding. Both are read-only / idem
 | `version` | e.g. `"5.4"` — may be empty |
 | `message` | the deprecation message string |
 | `kind` | `UE_DEPRECATED` \| `UE_DEPRECATED_FORENGINE` \| `UE_DEPRECATED_FORGAME` \| `DeprecatedFunction` |
+| `file_id` | **NULLABLE**, schema v3 — the file the row was extracted from. Used only by the incremental purge; read paths ignore it. NULL on rows written before v3. |
 
 **Bootstrap requirement:** the table is created via `CREATE TABLE IF NOT EXISTS`, so it appears empty on the next index pass after schema v2 lands. **Engine deprecation rows require one FULL `source.trigger_reindex`** — the F17 project-only reindex (and `trigger_project_reindex`) covers project symbols only, not engine deprecations. Until that full pass runs, `check_deprecations` returns the `index_state: "empty"` state above.
 
