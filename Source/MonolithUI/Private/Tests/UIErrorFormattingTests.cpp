@@ -246,6 +246,7 @@ namespace MonolithUI::ErrorFormattingTests
             FAssetRegistryModule::AssetCreated(Built);
             Package->MarkPackageDirty();
             FSavePackageArgs SaveArgs;
+            SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
             SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
             UPackage::SavePackage(Package, Built,
                 *FPackageName::LongPackageNameToFilename(AssetPath, FPackageName::GetAssetPackageExtension()),

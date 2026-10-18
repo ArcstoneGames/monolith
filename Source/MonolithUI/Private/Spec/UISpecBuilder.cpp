@@ -838,6 +838,7 @@ namespace MonolithUI::SpecBuilderInternal
         WBP->GetPackage()->MarkPackageDirty();
 
         FSavePackageArgs SaveArgs;
+        SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
         SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
         const FString PackageFilename = FPackageName::LongPackageNameToFilename(
             AssetPath, FPackageName::GetAssetPackageExtension());

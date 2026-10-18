@@ -68,6 +68,7 @@ namespace MonolithCommonUI
 		if (!bSkipSave)
 		{
 			FSavePackageArgs SaveArgs;
+			SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 			UPackage::SavePackage(
 				Package, NewAsset,
@@ -143,6 +144,7 @@ namespace MonolithCommonUI
 		Package->MarkPackageDirty();
 
 		FSavePackageArgs SaveArgs;
+		SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 		const FString PackageName = Package->GetName();
 		UPackage::SavePackage(

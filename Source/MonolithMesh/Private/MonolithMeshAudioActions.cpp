@@ -1855,6 +1855,7 @@ FMonolithActionResult FMonolithMeshAudioActions::CreateSurfaceDataTable(const TS
 	// Save the package
 	FString FilePath = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	UPackage::SavePackage(Package, DataTable, *FilePath, SaveArgs);
 

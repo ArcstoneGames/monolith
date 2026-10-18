@@ -117,6 +117,7 @@ void MarkModified_Effect(UBlueprint* BP)
 		const FString PackageFilename = FPackageName::LongPackageNameToFilename(
 			OuterPackage->GetName(), FPackageName::GetAssetPackageExtension());
 		FSavePackageArgs SaveArgs;
+		SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 		SaveArgs.TopLevelFlags = RF_Standalone;
 		UPackage::SavePackage(OuterPackage, BP, *PackageFilename, SaveArgs);
 	}
@@ -1005,6 +1006,7 @@ FMonolithActionResult FMonolithGASEffectActions::HandleCreateGameplayEffect(cons
 
 	// Save to disk
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	FSavePackageResultStruct SaveResult = UPackage::Save(Package, NewBP,
 		*FPackageName::LongPackageNameToFilename(SavePath, FPackageName::GetAssetPackageExtension()), SaveArgs);
@@ -2276,6 +2278,7 @@ namespace
 		FAssetRegistryModule::AssetCreated(BP);
 
 		FSavePackageArgs SaveArgs;
+		SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 		FSavePackageResultStruct SaveResult = UPackage::Save(Package, BP,
 			*FPackageName::LongPackageNameToFilename(SavePath, FPackageName::GetAssetPackageExtension()), SaveArgs);

@@ -556,6 +556,7 @@ FMonolithActionResult FMonolithMeshQualityActions::GenerateProxyMesh(const TShar
 		// Save the package
 		FString PackageFilename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
 		FSavePackageArgs SaveArgs;
+		SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 		UPackage::SavePackage(Package, MergedMesh, *PackageFilename, SaveArgs);
 
@@ -665,6 +666,7 @@ FMonolithActionResult FMonolithMeshQualityActions::SetupHlod(const TSharedPtr<FJ
 
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	UPackage::SavePackage(Package, HLODLayer, *PackageFilename, SaveArgs);
 

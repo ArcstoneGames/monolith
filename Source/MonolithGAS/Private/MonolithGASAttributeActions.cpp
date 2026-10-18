@@ -679,6 +679,7 @@ FMonolithActionResult FMonolithGASAttributeActions::HandleCreateAttributeSet(con
 		FString PackageFilename = FPackageName::LongPackageNameToFilename(
 			Package->GetName(), FPackageName::GetAssetPackageExtension());
 		FSavePackageArgs SaveArgs;
+		SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 		SaveArgs.TopLevelFlags = RF_Standalone;
 		UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
 
@@ -860,6 +861,7 @@ FMonolithActionResult FMonolithGASAttributeActions::HandleAddAttribute(const TSh
 			FString PackageFilename = FPackageName::LongPackageNameToFilename(
 				OuterPackage->GetName(), FPackageName::GetAssetPackageExtension());
 			FSavePackageArgs SaveArgs;
+			SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 			SaveArgs.TopLevelFlags = RF_Standalone;
 			UPackage::SavePackage(OuterPackage, BP, *PackageFilename, SaveArgs);
 		}
@@ -2308,6 +2310,7 @@ FMonolithActionResult FMonolithGASAttributeActions::HandleCreateAttributeInitDat
 	FAssetRegistryModule::AssetCreated(DataTable);
 
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	FSavePackageResultStruct SaveResult = UPackage::Save(Package, DataTable,
 		*FPackageName::LongPackageNameToFilename(SavePath, FPackageName::GetAssetPackageExtension()), SaveArgs);

@@ -410,6 +410,7 @@ namespace MonolithCommonUIButton
 								FAssetRegistryModule::AssetCreated(BP);
 								Pkg->MarkPackageDirty();
 								FSavePackageArgs SaveArgs;
+								SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 								SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 								UPackage::SavePackage(Pkg, BP,
 									*FPackageName::LongPackageNameToFilename(DefaultPath, FPackageName::GetAssetPackageExtension()),

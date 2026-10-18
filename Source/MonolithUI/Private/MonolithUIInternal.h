@@ -434,6 +434,7 @@ namespace MonolithUIInternal
         FAssetRegistryModule::AssetCreated(WBP);
         WBP->GetPackage()->MarkPackageDirty();
         FSavePackageArgs SaveArgs;
+        SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
         SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
         UPackage::SavePackage(WBP->GetPackage(), WBP,
             *FPackageName::LongPackageNameToFilename(SavePath, FPackageName::GetAssetPackageExtension()),

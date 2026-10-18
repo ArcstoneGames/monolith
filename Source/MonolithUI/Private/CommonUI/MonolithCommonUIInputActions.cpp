@@ -61,6 +61,7 @@ namespace MonolithCommonUIInput
 		// Save now that RowStruct is set.
 		UPackage* Pkg = DT->GetOutermost();
 		FSavePackageArgs SaveArgs;
+		SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 		const FString PackageName = Pkg->GetName();
 		UPackage::SavePackage(
@@ -125,6 +126,7 @@ namespace MonolithCommonUIInput
 		// Save
 		UPackage* Pkg = DT->GetOutermost();
 		FSavePackageArgs SaveArgs;
+		SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 		UPackage::SavePackage(
 			Pkg, DT,

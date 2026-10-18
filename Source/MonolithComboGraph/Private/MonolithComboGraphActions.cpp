@@ -415,6 +415,7 @@ namespace
 		FString PackageFilename = FPackageName::LongPackageNameToFilename(
 			Package->GetName(), FPackageName::GetAssetPackageExtension());
 		FSavePackageArgs SaveArgs;
+		SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 		return UPackage::SavePackage(Package, Graph, *PackageFilename, SaveArgs);
 	}
@@ -1753,6 +1754,7 @@ FMonolithActionResult FMonolithComboGraphActions::HandleCreateComboAbility(const
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		Package->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	bool bSaved = UPackage::SavePackage(Package, NewBP, *PackageFilename, SaveArgs);
 
@@ -1928,6 +1930,7 @@ FMonolithActionResult FMonolithComboGraphActions::HandleLinkAbilityToComboGraph(
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		BP->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	bool bSaved = UPackage::SavePackage(BP->GetPackage(), BP, *PackageFilename, SaveArgs);
 
