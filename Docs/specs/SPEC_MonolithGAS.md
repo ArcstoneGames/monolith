@@ -9,7 +9,7 @@
 ## MonolithGAS
 
 **Dependencies:** Core, CoreUObject, Engine, MonolithCore, GameplayAbilities, GameplayTags, EnhancedInput
-**Namespaces:** `gas` (135 actions) + 4 cross-namespace aliases into `ui`, plus `input` (13 actions — Enhanced Input, NOT GAS; see [Input Namespace](#input-namespace-13--namespace-input)) | **Tool:** `gas_query(action, params)` / `input_query(action, params)` | **Actions:** 135 (Phase J F8: +`grant_ability_to_pawn`)
+**Namespaces:** `gas` (135 actions) + 4 cross-namespace aliases into `ui`, plus `input` (15 actions — Enhanced Input, NOT GAS; see [Input Namespace](#input-namespace-15--namespace-input)) | **Tool:** `gas_query(action, params)` / `input_query(action, params)` | **Actions:** 135 (Phase J F8: +`grant_ability_to_pawn`)
 **Conditional:** GBA (Blueprint Attributes) features wrapped in `#if WITH_GBA`. Core GAS engine modules (GameplayAbilities, GameplayTags, GameplayTasks) are always available. When GBA is absent, Blueprint AttributeSet creation is disabled but all 135 actions still register and compile cleanly. When `bEnableGAS` is disabled in settings, 0 `gas` actions are registered — **the 13 `input` actions are unaffected**, because they register before that gate.
 **Settings toggle:** `bEnableGAS` (default: True)
 
@@ -110,7 +110,7 @@ Returns:
 
 ---
 
-## Input Namespace (13 — namespace: "input")
+## Input Namespace (15 — namespace: "input")
 
 **New in v0.23.0.** Enhanced Input asset inspection and authoring: `UInputAction` and `UInputMappingContext`. This namespace lives in `MonolithGAS` for historical proximity to ability input binding, but it is **not GAS** — its assets are engine assets, and it **registers before the `bEnableGAS` gate**, so Input Actions and Mapping Contexts stay reachable when GAS integration is switched off entirely.
 
@@ -130,12 +130,14 @@ Canonical mounted package paths (or the matching top-level object path) only. Ev
 
 **`validate_input_mappings` completeness contract.** Two independent facts are reported separately, because they fail for different reasons: `page_complete` says the per-context mapping scan finished within `mapping_scan_limit`; `all_contexts_covered` says pagination reached every context. `complete` requires **both**. `valid` additionally requires zero errors. **Duplicate key assignments are warnings, not errors** — the same key legitimately drives different actions in different contexts.
 
-### Authoring (8)
+### Authoring (10)
 
-Instanced `UInputModifier` / `UInputTrigger` subobjects, plus the `UInputAction`-level arrays. All eight take `save` (default `false` — `MarkPackageDirty` only).
+Key mapping rows on a `UInputMappingContext`, instanced `UInputModifier` / `UInputTrigger` subobjects, plus the `UInputAction`-level arrays. All ten take `save` (default `false` — `MarkPackageDirty` only).
 
 | Action | Params | Description |
 |--------|--------|-------------|
+| `add_key_mapping` | `asset_path` (required), `input_action` (required), `key` (required) | Append a new key mapping row via `UInputMappingContext::MapKey`; returns the new `mapping_index`, the row, `mapping_count` and `duplicate_indices` (existing rows with the same action + key — reported, not refused). Bounded by `MaxMappingScanLimit` (10000) so every row stays addressable by the selector. Issue #148 |
+| `remove_key_mapping` | mapping selector | Remove one key mapping row. Remaining rows keep their order: the array is reached through reflection (`DefaultKeyMappings.Mappings`, address-checked against `GetMappings()`) because `UnmapKey` swap-removes and would renumber the last row. Returns `removed_index`, `removed_mapping`, `mapping_count`. Issue #148 |
 | `add_mapping_modifier` | mapping selector + `modifier_class` (required), `properties` (max 64 keys), `at_index` | Add one instanced modifier to a key mapping, outered so it survives save/reload |
 | `add_mapping_trigger` | mapping selector + `trigger_class` (required), `properties` (max 64 keys), `at_index` | Same for triggers |
 | `remove_mapping_modifier` | mapping selector + `index` **or** `modifier_class` (mutually exclusive) | Remove by array index, or every modifier of a class |
@@ -145,7 +147,7 @@ Instanced `UInputModifier` / `UInputTrigger` subobjects, plus the `UInputAction`
 | `set_input_action_modifiers` | `asset_path` (required), `modifiers` (required, max 256) | Replace the modifier array on the `UInputAction` asset itself |
 | `set_input_action_triggers` | `asset_path` (required), `triggers` (required, max 256) | Same for triggers |
 
-**Mapping selector.** The six mapping-scoped actions take `asset_path` (the `UInputMappingContext`) plus **either** `mapping_index` **or** the `(input_action, key)` pair — `key` is an `FKey` name such as `SpaceBar`. The two addressing forms are mutually exclusive, and **an `(input_action, key)` pair matching more than one mapping is refused rather than guessed**.
+**Mapping selector.** The seven mapping-scoped actions (`remove_key_mapping` plus the six modifier/trigger actions) take `asset_path` (the `UInputMappingContext`) plus **either** `mapping_index` **or** the `(input_action, key)` pair — `key` is an `FKey` name such as `SpaceBar`. The two addressing forms are mutually exclusive, and **an `(input_action, key)` pair matching more than one mapping is refused rather than guessed**.
 
 **Array entry grammar.** `modifiers` / `triggers` entries are either a class-name string or a `{ class, properties? }` object. Classes resolve from a `/Script` path, an exact name, or a short name (`Negate`, `Pulse`). **An unknown property name on an authored modifier is rejected, not quietly ignored.**
 

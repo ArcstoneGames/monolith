@@ -154,6 +154,50 @@ FProperty* FMonolithReflectionWalker::FindPropertyForwarding(UStruct* Struct, co
 	return nullptr;
 }
 
+bool FMonolithReflectionWalker::IsDeprecatedProperty(const FProperty* Prop, FString& OutReason)
+{
+	OutReason.Reset();
+	if (!Prop)
+	{
+		return false;
+	}
+
+	bool bDeprecated = Prop->HasAnyPropertyFlags(CPF_Deprecated);
+	FString Message;
+#if WITH_METADATA
+	if (Prop->HasMetaData(TEXT("DeprecatedProperty")))
+	{
+		bDeprecated = true;
+	}
+	if (bDeprecated && Prop->HasMetaData(TEXT("DeprecationMessage")))
+	{
+		Message = Prop->GetMetaData(TEXT("DeprecationMessage"));
+	}
+#endif
+	if (!bDeprecated)
+	{
+		return false;
+	}
+
+	const UStruct* Owner = Prop->GetOwnerStruct();
+	const FString OwnerName = Owner ? Owner->GetName() : FString(TEXT("<unknown>"));
+	OutReason = FString::Printf(
+		TEXT("field '%s' on %s is deprecated and no longer holds the live data (writes are not read by the engine, reads see an empty or stale value)"),
+		*Prop->GetName(), *OwnerName);
+	if (!Message.IsEmpty())
+	{
+		OutReason += FString::Printf(TEXT(": %s"), *Message);
+	}
+
+	// UInputMappingContext::Mappings (deprecated in UE 5.7) is the common case: point at
+	// the replacement path and the dedicated input actions.
+	if (OwnerName == TEXT("InputMappingContext") && Prop->GetName() == TEXT("Mappings"))
+	{
+		OutReason += TEXT(" Use the path 'DefaultKeyMappings.Mappings[N]' for existing rows, or input_query add_key_mapping / remove_key_mapping to add or remove rows.");
+	}
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Dotted+bracket path tokeniser.
 //
@@ -308,6 +352,15 @@ FMonolithReflectionWalker::FPathResolveResult FMonolithReflectionWalker::Resolve
 			{
 				Result.Error = FString::Printf(TEXT("unknown field '%s' on %s"),
 					*Seg.Member, *CurStruct->GetName());
+				return Result;
+			}
+			// A deprecated member resolves, but addresses storage the engine no longer
+			// reads — refuse it so a write (or a dry-run size check) cannot silently
+			// target the wrong array. Issue #148.
+			FString DeprecatedReason;
+			if (IsDeprecatedProperty(MemberProp, DeprecatedReason))
+			{
+				Result.Error = DeprecatedReason;
 				return Result;
 			}
 			MemberPtr = MemberProp->ContainerPtrToValuePtr<void>(CurPtr);
@@ -1090,6 +1143,12 @@ FDryRunReport FMonolithReflectionWalker::WriteTree(
 			Report.FieldWrites.Add(W);
 			continue;
 		}
+		if (IsDeprecatedProperty(Prop, W.Reason))
+		{
+			W.bOk = false;
+			Report.FieldWrites.Add(W);
+			continue;
+		}
 		void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Container);
 		DispatchByPropertyType(Prop, ValuePtr, Pair.Value, OwnerForCradle, Spec, Report, PairKeyStr, W);
 		Report.FieldWrites.Add(W);
@@ -1136,6 +1195,12 @@ FDryRunReport FMonolithReflectionWalker::InspectTree(
 		{
 			W.bOk = false;
 			W.Reason = FString::Printf(TEXT("unknown field '%s' on %s"), *PairKeyStr, *TopStruct->GetName());
+			Report.FieldWrites.Add(W);
+			continue;
+		}
+		if (IsDeprecatedProperty(Prop, W.Reason))
+		{
+			W.bOk = false;
 			Report.FieldWrites.Add(W);
 			continue;
 		}

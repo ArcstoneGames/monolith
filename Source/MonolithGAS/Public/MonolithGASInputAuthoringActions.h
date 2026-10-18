@@ -4,8 +4,9 @@
 #include "MonolithToolRegistry.h"
 
 /**
- * Enhanced Input authoring: per-key modifiers/triggers on a UInputMappingContext,
- * and the direct trigger/modifier arrays on a UInputAction.
+ * Enhanced Input authoring: adding/removing key mapping rows on a UInputMappingContext,
+ * per-key modifiers/triggers on those rows, and the direct trigger/modifier arrays on a
+ * UInputAction.
  *
  * These exist because instanced (EditInline) modifiers and triggers cannot be
  * authored correctly from script. Scripted writes that assign the whole mappings
@@ -39,4 +40,6 @@ private:
 	static FMonolithActionResult HandleSetMappingTriggers(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleSetInputActionModifiers(const TSharedPtr<FJsonObject>& Params);
 	static FMonolithActionResult HandleSetInputActionTriggers(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult HandleAddKeyMapping(const TSharedPtr<FJsonObject>& Params);
+	static FMonolithActionResult HandleRemoveKeyMapping(const TSharedPtr<FJsonObject>& Params);
 };

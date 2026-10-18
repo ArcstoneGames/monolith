@@ -39,6 +39,8 @@ namespace MonolithInputActionsTestDetail
 	};
 
 	const TArray<FString> AuthoringActions = {
+		TEXT("add_key_mapping"),
+		TEXT("remove_key_mapping"),
 		TEXT("add_mapping_modifier"),
 		TEXT("add_mapping_trigger"),
 		TEXT("remove_mapping_modifier"),
@@ -235,7 +237,7 @@ bool FMonolithInputRegistrationTest::RunTest(const FString& /*Parameters*/)
 		bPassed &= TestTrue(*FString::Printf(TEXT("input.%s is registered"), *Action),
 			Registry.HasAction(TEXT("input"), Action));
 	}
-	bPassed &= TestEqual(TEXT("The input namespace owns exactly five read and eight authoring actions"),
+	bPassed &= TestEqual(TEXT("The input namespace owns exactly five read and ten authoring actions"),
 		Registry.GetActions(TEXT("input")).Num(), ReadActions.Num() + AuthoringActions.Num());
 
 	// The namespace mixes reads and writes, so the dispatcher must not claim read-only.

@@ -371,15 +371,36 @@ FMonolithActionResult FMonolithToolRegistry::ExecuteAction(
 	}
 
 	// Validate required params from schema before dispatching.
-	// Skip asset_path — GetAssetPath() accepts both asset_path and system_path aliases
-	// and produces a clear error message itself.
+	//
+	// asset_path is validated like any other required param (issue #157). A small
+	// set of legacy, undeclared aliases is still honoured, each scoped to the one
+	// namespace whose handlers actually read it in place of asset_path:
+	//   - niagara: system_path (the GetAssetPath / NA_GetAssetPath / NL_GetAssetPath
+	//              helpers fall back to it)
+	//   - project: package_path (find_references / get_asset_details /
+	//              get_saved_asset_state fall back to it)
+	// When asset_path is absent and the namespace's alias is present, the alias
+	// value is rewritten onto asset_path (same shape as the K2 rewrite above), so
+	// every handler in that namespace sees it, including ones that only read
+	// asset_path. Outside those namespaces the alias is NOT accepted: the loaders
+	// there read only asset_path, and letting it through would reproduce the
+	// "<Thing> not found: " empty-path error this check exists to prevent.
 	if (ActionInfo.ParamSchema.IsValid())
 	{
+		struct FAssetPathAlias
+		{
+			const TCHAR* Namespace;
+			const TCHAR* Alias;
+		};
+		static const FAssetPathAlias AssetPathAliases[] = {
+			{ TEXT("niagara"), TEXT("system_path") },
+			{ TEXT("project"), TEXT("package_path") },
+		};
+
 		TArray<FString> Missing;
 		for (const auto& Pair : ActionInfo.ParamSchema->Values)
 		{
 			const FString PairKeyStr = MonolithKeyToString(Pair.Key);
-			if (PairKeyStr == TEXT("asset_path")) continue;
 
 			const TSharedPtr<FJsonObject>* ParamDef = nullptr;
 			if (Pair.Value->TryGetObject(ParamDef) && ParamDef)
@@ -392,6 +413,41 @@ FMonolithActionResult FMonolithToolRegistry::ExecuteAction(
 					// (only fires for schemas not migrated to K2 aliases).
 					if (PairKeyStr == TEXT("wbp_path") && EffectiveParams->HasField(TEXT("asset_path")))
 						continue;
+
+					if (PairKeyStr == TEXT("asset_path"))
+					{
+						TArray<FString> AcceptedAliases;
+						bool bSatisfied = false;
+						for (const FAssetPathAlias& Entry : AssetPathAliases)
+						{
+							if (!Namespace.Equals(Entry.Namespace, ESearchCase::IgnoreCase))
+							{
+								continue;
+							}
+							AcceptedAliases.Add(Entry.Alias);
+							if (!bSatisfied && EffectiveParams->HasField(Entry.Alias))
+							{
+								const TSharedPtr<FJsonValue> AliasValue = EffectiveParams->TryGetField(Entry.Alias);
+								if (AliasValue.IsValid())
+								{
+									EffectiveParams->SetField(TEXT("asset_path"), AliasValue);
+									EffectiveParams->RemoveField(Entry.Alias);
+									bSatisfied = true;
+								}
+							}
+						}
+						if (bSatisfied)
+						{
+							continue;
+						}
+						if (AcceptedAliases.Num() > 0)
+						{
+							Missing.Add(FString::Printf(TEXT("asset_path (or alias: %s)"),
+								*FString::Join(AcceptedAliases, TEXT(", "))));
+							continue;
+						}
+					}
+
 					Missing.Add(PairKeyStr);
 				}
 			}

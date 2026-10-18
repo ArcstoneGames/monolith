@@ -720,6 +720,35 @@ namespace MonolithInputAuthoring
 		FinalizeEdit(Action, ChangedPropertyName, bSave, Result);
 		return FMonolithActionResult::Success(Result);
 	}
+
+	/**
+	 * Mutable access to the live mapping array (DefaultKeyMappings.Mappings).
+	 *
+	 * UInputMappingContext only exposes GetMappings() const and UnmapKey(), and UnmapKey
+	 * removes with RemoveAtSwap — it moves the last row into the hole, silently renumbering
+	 * a mapping the caller may still be addressing by mapping_index. Removal goes through
+	 * reflection instead so the remaining rows keep their order, as the details panel does.
+	 * The resolved address is checked against GetMappings() so a layout change in a future
+	 * engine version fails loudly instead of writing to the wrong array.
+	 */
+	TArray<FEnhancedActionKeyMapping>* FindMutableMappings(UInputMappingContext* Context, FMonolithActionResult& OutError)
+	{
+		const FStructProperty* DataProp = CastField<FStructProperty>(
+			UInputMappingContext::StaticClass()->FindPropertyByName(MappingsPropertyName()));
+		const FArrayProperty* ArrayProp = DataProp && DataProp->Struct
+			? CastField<FArrayProperty>(DataProp->Struct->FindPropertyByName(TEXT("Mappings")))
+			: nullptr;
+		TArray<FEnhancedActionKeyMapping>* Mappings = ArrayProp
+			? ArrayProp->ContainerPtrToValuePtr<TArray<FEnhancedActionKeyMapping>>(DataProp->ContainerPtrToValuePtr<void>(Context))
+			: nullptr;
+		if (!Mappings || Mappings != &Context->GetMappings())
+		{
+			OutError = FMonolithActionResult::Error(
+				TEXT("Could not locate UInputMappingContext::DefaultKeyMappings.Mappings through reflection"));
+			return nullptr;
+		}
+		return Mappings;
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -729,6 +758,22 @@ namespace MonolithInputAuthoring
 void FMonolithGASInputAuthoringActions::RegisterActions(FMonolithToolRegistry& Registry)
 {
 	using namespace MonolithInputAuthoring;
+
+	Registry.RegisterAction(TEXT("input"), TEXT("add_key_mapping"),
+		TEXT("Append a new key mapping row (input action + key) to an InputMappingContext via UInputMappingContext::MapKey; returns the new mapping_index"),
+		FMonolithActionHandler::CreateStatic(&HandleAddKeyMapping),
+		FParamSchemaBuilder()
+			.RequiredAssetPath(TEXT("asset_path"), TEXT("Canonical InputMappingContext package or object path"))
+			.RequiredAssetPath(TEXT("input_action"), TEXT("InputAction path the new row maps"))
+			.Required(TEXT("key"), TEXT("string"), TEXT("FKey name for the new row (e.g. SpaceBar, Gamepad_FaceButton_Bottom)"))
+			.Optional(TEXT("save"), TEXT("boolean"), TEXT("If true, save the package after the edit. Default: MarkPackageDirty only."), TEXT("false"))
+			.Build());
+
+	Registry.RegisterAction(TEXT("input"), TEXT("remove_key_mapping"),
+		TEXT("Remove one key mapping row from an InputMappingContext, by mapping_index or by input_action + key; remaining rows keep their order"),
+		FMonolithActionHandler::CreateStatic(&HandleRemoveKeyMapping),
+		MappingSchema()
+			.Build());
 
 	Registry.RegisterAction(TEXT("input"), TEXT("add_mapping_modifier"),
 		TEXT("Add an instanced input modifier to one key mapping of an InputMappingContext, outered so it survives save/reload"),
@@ -849,6 +894,114 @@ FMonolithActionResult FMonolithGASInputAuthoringActions::HandleSetInputActionTri
 	using namespace MonolithInputAuthoring;
 	return SetActionArray<UInputTrigger>(Params, TriggerKind(), &UInputAction::Triggers,
 		GET_MEMBER_NAME_CHECKED(UInputAction, Triggers));
+}
+
+FMonolithActionResult FMonolithGASInputAuthoringActions::HandleAddKeyMapping(const TSharedPtr<FJsonObject>& Params)
+{
+	using namespace MonolithInputAuthoring;
+
+	FString AssetPath;
+	FString ActionPath;
+	FString KeyName;
+	bool bSave = false;
+	FMonolithActionResult Error;
+	if (!ReadRequiredString(Params, TEXT("asset_path"), AssetPath, Error)
+		|| !ReadRequiredString(Params, TEXT("input_action"), ActionPath, Error)
+		|| !ReadRequiredString(Params, TEXT("key"), KeyName, Error)
+		|| !ReadOptionalBool(Params, TEXT("save"), false, bSave, Error))
+	{
+		return Error;
+	}
+
+	UObject* ContextAsset = LoadExact(UInputMappingContext::StaticClass(), AssetPath, TEXT("asset_path"),
+		TEXT("UInputMappingContext"), Error);
+	if (!ContextAsset)
+	{
+		return Error;
+	}
+	UInputMappingContext* Context = CastChecked<UInputMappingContext>(ContextAsset);
+
+	UObject* ActionAsset = LoadExact(UInputAction::StaticClass(), ActionPath, TEXT("input_action"),
+		TEXT("UInputAction"), Error);
+	if (!ActionAsset)
+	{
+		return Error;
+	}
+	const UInputAction* Action = CastChecked<UInputAction>(ActionAsset);
+
+	const FKey Key(*KeyName);
+	if (!Key.IsValid())
+	{
+		return InvalidParam(TEXT("key"), FString::Printf(TEXT("'%s' is not a known FKey"), *KeyName));
+	}
+
+	// Same bound the selector and validator scan to, so every authored row stays addressable.
+	const TArray<FEnhancedActionKeyMapping>& Mappings = Context->GetMappings();
+	if (Mappings.Num() >= MaxMappingScanLimit)
+	{
+		return FMonolithActionResult::Error(FString::Printf(
+			TEXT("'%s' already holds %d mappings, the per-context maximum"), *Context->GetName(), Mappings.Num()));
+	}
+
+	// Duplicates are legal (the same action + key with different triggers), so they are
+	// reported rather than refused.
+	TArray<TSharedPtr<FJsonValue>> DuplicateIndices;
+	for (int32 Index = 0; Index < Mappings.Num(); ++Index)
+	{
+		if (Mappings[Index].Action == Action && Mappings[Index].Key == Key)
+		{
+			DuplicateIndices.Add(MakeShared<FJsonValueNumber>(Index));
+		}
+	}
+
+	Context->SetFlags(RF_Transactional);
+	FScopedTransaction Transaction(LOCTEXT("AddKeyMapping", "Monolith: Add Input Key Mapping"));
+	Context->Modify();
+
+	Context->MapKey(Action, Key);
+	const int32 NewIndex = Context->GetMappings().Num() - 1;
+
+	TSharedPtr<FJsonObject> Result = MakeMappingResult(Context, NewIndex);
+	Result->SetNumberField(TEXT("mapping_count"), Context->GetMappings().Num());
+	Result->SetArrayField(TEXT("duplicate_indices"), DuplicateIndices);
+	FinalizeEdit(Context, MappingsPropertyName(), bSave, Result);
+	return FMonolithActionResult::Success(Result);
+}
+
+FMonolithActionResult FMonolithGASInputAuthoringActions::HandleRemoveKeyMapping(const TSharedPtr<FJsonObject>& Params)
+{
+	using namespace MonolithInputAuthoring;
+
+	int32 MappingIndex = INDEX_NONE;
+	bool bSave = false;
+	FMonolithActionResult Error;
+	UInputMappingContext* Context = OpenMapping(Params, MappingIndex, bSave, Error);
+	if (!Context)
+	{
+		return Error;
+	}
+
+	TArray<FEnhancedActionKeyMapping>* Mappings = FindMutableMappings(Context, Error);
+	if (!Mappings)
+	{
+		return Error;
+	}
+
+	const TSharedPtr<FJsonObject> Removed = MappingToJson((*Mappings)[MappingIndex], MappingIndex);
+
+	Context->SetFlags(RF_Transactional);
+	FScopedTransaction Transaction(LOCTEXT("RemoveKeyMapping", "Monolith: Remove Input Key Mapping"));
+	Context->Modify();
+
+	Mappings->RemoveAt(MappingIndex);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), Context->GetPathName());
+	Result->SetNumberField(TEXT("removed_index"), MappingIndex);
+	Result->SetObjectField(TEXT("removed_mapping"), Removed);
+	Result->SetNumberField(TEXT("mapping_count"), Mappings->Num());
+	FinalizeEdit(Context, MappingsPropertyName(), bSave, Result);
+	return FMonolithActionResult::Success(Result);
 }
 
 #undef LOCTEXT_NAMESPACE

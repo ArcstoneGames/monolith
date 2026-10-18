@@ -65,6 +65,17 @@ public:
 	static FProperty* FindPropertyForwarding(UStruct* Struct, const FString& Name);
 
 	/**
+	 * True when Prop is a deprecated UPROPERTY: CPF_Deprecated (the _DEPRECATED suffix
+	 * form, never saved) or meta=(DeprecatedProperty) (kept for load-time migration only,
+	 * e.g. UInputMappingContext::Mappings since UE 5.7, superseded by
+	 * DefaultKeyMappings.Mappings). Such a property no longer holds the live data, so a
+	 * reflection write to it looks applied but is never read by the engine — and a read
+	 * sees an empty or stale value. OutReason carries a caller-facing explanation,
+	 * including the property's DeprecationMessage when it has one.
+	 */
+	static bool IsDeprecatedProperty(const FProperty* Prop, FString& OutReason);
+
+	/**
 	 * Result of resolving a dotted+bracket property path down to a single leaf.
 	 *
 	 * On success: LeafProp + LeafPtr address exactly the value to overwrite, and
