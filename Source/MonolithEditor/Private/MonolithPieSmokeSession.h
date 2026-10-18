@@ -323,6 +323,13 @@ struct FPieSmokeSession
 	FString ActiveViewTargetClass;
 	int32 ValidFrames = 0;            // captured frames that looked like a real render
 	int32 InvalidFrames = 0;         // all-black / single-uniform-colour frames
+	// Issue #149: capture slots skipped because the PIE viewport had no render-thread target
+	// yet (not drawn / minimized window). Reported as not_drawn_frames; never read.
+	int32 NotDrawnFrames = 0;
+	// Largest sample-time gap between two consecutive saved frames. A hitch or debugger pause
+	// shows up here (frame scheduling runs on wall-clock time, not world time).
+	double MaxCaptureGapSeconds = 0.0;
+	double LastSavedFrameSeconds = -1.0; // sample time of the last saved ReadPixels frame
 
 	// #8 staged startup hooks.
 	FPieSmokeStages Stages;

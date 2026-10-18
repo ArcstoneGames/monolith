@@ -44,6 +44,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "Misc/FeedbackContext.h" // GWarn as FSavePackageArgs::Error
 
 // =============================================================================
 //  Helpers
@@ -197,6 +198,7 @@ FMonolithActionResult FMonolithEditorMapActions::HandleCreateEmptyMap(const TSha
 	Package->MarkPackageDirty();
 
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		Package->GetName(), FPackageName::GetMapPackageExtension());

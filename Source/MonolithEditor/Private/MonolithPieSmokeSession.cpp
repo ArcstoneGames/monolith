@@ -23,6 +23,7 @@
 
 #include "UnrealClient.h"        // FViewport (PIE frame capture)
 #include "RenderingThread.h"     // FlushRenderingCommands (render-flush before first ReadPixels)
+#include "RHICommandList.h"      // FRHICommandListImmediate::ReadSurfaceData (guarded PIE read)
 #include "ImageUtils.h"          // FImageUtils::SaveImageAutoFormat
 #include "ImageCore.h"           // FImage / ERawImageFormat / EGammaSpace
 #include "Misc/Paths.h"
@@ -185,6 +186,7 @@ namespace
 		bool bSaved = false;     // PNG written to disk
 		bool bUniform = false;   // every pixel is the same colour (incl. all-black)
 		bool bValid = false;     // bSaved && !bUniform — looks like a real render
+		bool bNotDrawn = false;  // viewport has no render-thread target yet (undrawn / minimized)
 	};
 
 	// #7 scan a captured pixel buffer for the unrendered signature. GetPIEViewport
@@ -237,8 +239,42 @@ namespace
 			FlushRenderingCommands();
 		}
 
+		// Issue #149: FRenderTarget::ReadPixels hands GetShaderResourceTexture() straight to
+		// RHIReadSurfaceData. FSceneViewport only sets its render-thread target in
+		// BeginRenderFrame, so before the PIE viewport has drawn (or while the editor window
+		// is minimized) that texture is null and D3D12 hits ensure(InRHITexture). Do the read
+		// in our own render command that checks the render-thread texture first and skips
+		// the read when it is missing or smaller than the viewport (stale size).
 		TArray<FColor> Pixels;
-		if (!Viewport->ReadPixels(Pixels) || Pixels.Num() < Size.X * Size.Y)
+		bool bTextureMissing = false;
+		const FIntRect SrcRect(0, 0, Size.X, Size.Y);
+		ENQUEUE_RENDER_COMMAND(MonolithPieCaptureReadSurface)(
+			[Viewport, SrcRect, OutPixels = &Pixels, OutMissing = &bTextureMissing](FRHICommandListImmediate& RHICmdList)
+			{
+				FRHITexture* Texture = Viewport->GetShaderResourceTexture();
+				if (!Texture)
+				{
+					*OutMissing = true;
+					return;
+				}
+				const FIntPoint TexSize = Texture->GetSizeXY();
+				if (TexSize.X < SrcRect.Max.X || TexSize.Y < SrcRect.Max.Y)
+				{
+					*OutMissing = true;
+					return;
+				}
+				RHICmdList.ReadSurfaceData(Texture, SrcRect, *OutPixels,
+					FReadSurfaceDataFlags(RCM_UNorm, CubeFace_MAX));
+			});
+		// The command captures stack pointers, so the flush is mandatory before returning.
+		FlushRenderingCommands();
+
+		if (bTextureMissing)
+		{
+			Out.bNotDrawn = true;
+			return Out;
+		}
+		if (Pixels.Num() < Size.X * Size.Y)
 		{
 			return Out;
 		}
@@ -1342,8 +1378,28 @@ void FPieSmokeSessionManager::AdvanceSession(FPieSmokeSession& Session)
 					{
 						if (Cap.bValid) { ++Session.ValidFrames; } else { ++Session.InvalidFrames; }
 					}
+					if (Session.LastSavedFrameSeconds >= 0.0)
+					{
+						Session.MaxCaptureGapSeconds = FMath::Max(Session.MaxCaptureGapSeconds,
+							SampleTime - Session.LastSavedFrameSeconds);
+					}
+					Session.LastSavedFrameSeconds = SampleTime;
 					Session.LastCaptureSeconds = SampleTime;
 					++Session.CaptureFrameIndex;
+				}
+				else if (Cap.bNotDrawn)
+				{
+					// Issue #149: the viewport has not drawn yet (or the window is minimized).
+					// Consume this capture slot as a skipped "not drawn" frame instead of
+					// reading a null RHI texture; the next slot retries.
+					++Session.NotDrawnFrames;
+					Session.LastCaptureSeconds = SampleTime;
+					if (Session.NotDrawnFrames == 3)
+					{
+						UE_LOG(LogMonolithPieSmoke, Warning,
+							TEXT("capture_pie_movement_clip: PIE viewport has not drawn for session %s (minimized window or realtime off?); skipping frames until it does."),
+							*Session.Id);
+					}
 				}
 				else if (Session.CaptureFrameIndex == 0 && SampleTime > Session.CaptureInterval * 2.0)
 				{

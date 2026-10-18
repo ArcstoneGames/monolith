@@ -61,6 +61,9 @@
 #include "Slate/WidgetRenderer.h"
 #include "RenderDeferredCleanup.h"
 #include "UObject/SavePackage.h"
+#include "SourceControlHelpers.h"           // save_packages read-only checkout (issue #147)
+#include "HAL/FileManager.h"
+#include "Misc/FeedbackContext.h"            // GWarn as FSavePackageArgs::Error
 #include "LevelEditorViewport.h"
 #include "PixelFormat.h"
 #include "ObjectTools.h"
@@ -69,6 +72,8 @@
 #include "CoreGlobals.h"                     // GIsRunningUnattendedScript
 #include "UObject/Package.h"                 // UPackage::SetDirtyFlag
 #include "Subsystems/AssetEditorSubsystem.h" // CloseAllEditorsForAsset
+#include "AssetRegistry/AssetRegistryModule.h" // delete_assets failure referencers
+#include "AssetRegistry/IAssetRegistry.h"
 
 // Scripting action includes (HOFF 7)
 #include "IPythonScriptPlugin.h"
@@ -551,7 +556,7 @@ void FMonolithEditorActions::RegisterActions(FMonolithLogCapture* LogCapture)
 			.Build());
 
 	Registry.RegisterAction(TEXT("editor"), TEXT("save_packages"),
-		TEXT("Save the requested packages to disk (UPackage::SavePackage + FSavePackageArgs). When fail_on_unrequested_dirty=true, errors before saving anything if any dirty package exists outside the requested set (within scope_paths if given). Returns per-package save status."),
+		TEXT("Save the requested packages to disk (UPackage::SavePackage + FSavePackageArgs). When fail_on_unrequested_dirty=true, errors before saving anything if any dirty package exists outside the requested set (within scope_paths if given). Returns per-package save status. A read-only target file (e.g. Perforce, not checked out) is checked out through source control first; if source control is off or the checkout fails, that package is skipped with error \"read-only on disk, not checked out\" and nothing is written."),
 		FMonolithActionHandler::CreateStatic(&HandleSavePackages),
 		FParamSchemaBuilder()
 			.Required(TEXT("packages"), TEXT("array"), TEXT("Array of long package names (e.g. [\"/Game/Tests/Monolith/DA_Foo\"]) to save."))
@@ -605,7 +610,7 @@ void FMonolithEditorActions::RegisterActions(FMonolithLogCapture* LogCapture)
 			.Build());
 
 	Registry.RegisterAction(TEXT("editor"), TEXT("capture_pie_movement_clip"),
-		TEXT("Start an async PIE-smoke session (same model as run_pie_smoke) that ALSO captures a PIE viewport frame every capture_interval seconds into output_path, plus per-frame AnimInstance sampling. Returns {session_id, status:'running', started:true} immediately; poll_pie_smoke returns the sampled values + captured frame paths. If viewport capture is unavailable during PIE the session continues and poll reports capture_deferred."),
+		TEXT("Start an async PIE-smoke session (same model as run_pie_smoke) that ALSO captures a PIE viewport frame every capture_interval seconds into output_path, plus per-frame AnimInstance sampling. Returns {session_id, status:'running', started:true} immediately; poll_pie_smoke returns the sampled values + captured frame paths. If viewport capture is unavailable during PIE the session continues and poll reports capture_deferred. Capture slots where the PIE viewport has not drawn yet (or the window is minimized) are skipped and counted as capture_validity.not_drawn_frames; capture_validity reports expected_frames vs captured_frames and captured_ok is false when fewer than half the expected frames were saved."),
 		FMonolithActionHandler::CreateStatic(&HandleCapturePieMovementClip),
 		FParamSchemaBuilder()
 			.OptionalAssetPath(TEXT("map"), TEXT("Level asset path to load before PIE. Omit to use the current editor level."))
@@ -779,7 +784,7 @@ void FMonolithEditorActions::RegisterActions(FMonolithLogCapture* LogCapture)
 			.Build());
 
 	Registry.RegisterAction(TEXT("editor"), TEXT("delete_assets"),
-		TEXT("Delete UE assets by path. Optional safety: restrict to allowed path prefixes"),
+		TEXT("Delete UE assets by path. Optional safety: restrict to allowed path prefixes. When some assets survive, failed_to_delete lists them and failures[] gives per-asset {path, reason, referencers (on-disk packages, capped at 20), referencer_count, in_memory_referencers (capped at 20), in_memory_referencer_count, referenced_by_undo}."),
 		FMonolithActionHandler::CreateStatic(&HandleDeleteAssets),
 		FParamSchemaBuilder()
 			.Required(TEXT("asset_paths"), TEXT("array"), TEXT("Array of UE asset paths to delete"))
@@ -3528,6 +3533,7 @@ FMonolithActionResult FMonolithEditorActions::HandleImportTexture(
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		Package->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	UPackage::SavePackage(Package, Texture, *PackageFilename, SaveArgs);
 
 	// Return result
@@ -3771,6 +3777,7 @@ FMonolithActionResult FMonolithEditorActions::HandleStitchFlipbook(
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		Package->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
+	SaveArgs.Error = GWarn; // GError (the default) is fatal on a failed save
 	bool bSaved = UPackage::SavePackage(Package, Texture, *PackageFilename, SaveArgs);
 
 	if (!bSaved)
@@ -4009,18 +4016,135 @@ FMonolithActionResult FMonolithEditorActions::HandleDeleteAssets(
 	Result->SetNumberField(TEXT("requested"), AssetPaths.Num());
 	Result->SetNumberField(TEXT("found"), ObjectsToDelete.Num());
 
-	// Surface partial failures. The ObjectTools API returns only a count, not
-	// which objects survived, so this is count-derived: when fewer objects were
-	// deleted than were found, report the requested-and-found paths (pass
-	// force=true to delete referenced assets the soft path refuses).
+	// Surface partial failures. The ObjectTools API returns only a count, so the
+	// survivors are found by re-resolving each attempted path after the delete.
+	// For each survivor, explain why: on-disk package referencers from the asset
+	// registry (excluding the rest of this delete set), then in-memory referencers
+	// from the same reference search ObjectTools runs. The in-memory list cannot
+	// name every holder (e.g. native code holding a raw pointer shows no referencer).
 	if (NumDeleted < ObjectsToDelete.Num())
 	{
-		TArray<TSharedPtr<FJsonValue>> FailedArr;
+		constexpr int32 MaxReferencersListed = 20;
+		IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+		TSet<FName> DeleteSetPackages;
 		for (const FString& P : AttemptedPaths)
 		{
+			DeleteSetPackages.Add(FName(*FPackageName::ObjectPathToPackageName(P)));
+		}
+
+		TArray<TSharedPtr<FJsonValue>> FailedArr;
+		TArray<TSharedPtr<FJsonValue>> FailuresArr;
+		for (const FString& P : AttemptedPaths)
+		{
+			UObject* Survivor = FindObject<UObject>(nullptr, *P);
+			const bool bInMemory = IsValid(Survivor);
+			const bool bInRegistry = AR.GetAssetByObjectPath(FSoftObjectPath(P)).IsValid();
+			if (!bInMemory && !bInRegistry)
+			{
+				continue; // deleted
+			}
 			FailedArr.Add(MakeShared<FJsonValueString>(P));
+
+			TSharedPtr<FJsonObject> Failure = MakeShared<FJsonObject>();
+			Failure->SetStringField(TEXT("path"), P);
+
+			// On-disk referencers (package-level, as recorded by the asset registry).
+			const FName PackageName(*FPackageName::ObjectPathToPackageName(P));
+			TArray<FName> PackageReferencers;
+			AR.GetReferencers(PackageName, PackageReferencers);
+			TArray<FString> ExternalPackageRefs;
+			for (const FName& Ref : PackageReferencers)
+			{
+				if (Ref != PackageName && !DeleteSetPackages.Contains(Ref))
+				{
+					ExternalPackageRefs.Add(Ref.ToString());
+				}
+			}
+			ExternalPackageRefs.Sort();
+
+			// In-memory referencers (same search ObjectTools uses to refuse the delete).
+			bool bReferenced = false;
+			bool bReferencedByUndo = false;
+			TArray<FString> MemoryRefs;
+			int32 MemoryRefCount = 0;
+			if (bInMemory)
+			{
+				FReferencerInformationList MemoryReferences;
+				ObjectTools::GatherObjectReferencersForDeletion(Survivor, bReferenced, bReferencedByUndo, &MemoryReferences);
+				TSet<FString> Seen;
+				for (const FReferencerInformation& Info : MemoryReferences.ExternalReferences)
+				{
+					if (Info.Referencer)
+					{
+						const FString RefPath = Info.Referencer->GetPathName();
+						if (!Seen.Contains(RefPath))
+						{
+							Seen.Add(RefPath);
+							++MemoryRefCount;
+							if (MemoryRefs.Num() < MaxReferencersListed)
+							{
+								MemoryRefs.Add(RefPath);
+							}
+						}
+					}
+				}
+			}
+
+			FString Reason;
+			if (ExternalPackageRefs.Num() > 0)
+			{
+				Reason = FString::Printf(TEXT("referenced by %d other package(s) on disk"), ExternalPackageRefs.Num());
+			}
+			else if (MemoryRefCount > 0 || bReferenced)
+			{
+				Reason = TEXT("referenced in memory (open editor, loaded level, or another loaded object)");
+			}
+			else if (bReferencedByUndo)
+			{
+				Reason = TEXT("referenced by the undo buffer (transaction history)");
+			}
+			else
+			{
+				Reason = TEXT("delete refused for an unreported cause (see LogObjectTools in the editor log)");
+			}
+			if (!bForce)
+			{
+				Reason += TEXT("; force=true deletes it anyway and nulls the referencers");
+			}
+			Failure->SetStringField(TEXT("reason"), Reason);
+			Failure->SetBoolField(TEXT("referenced_by_undo"), bReferencedByUndo);
+
+			TArray<TSharedPtr<FJsonValue>> PkgRefArr;
+			for (int32 i = 0; i < ExternalPackageRefs.Num() && i < MaxReferencersListed; ++i)
+			{
+				PkgRefArr.Add(MakeShared<FJsonValueString>(ExternalPackageRefs[i]));
+			}
+			Failure->SetArrayField(TEXT("referencers"), PkgRefArr);
+			Failure->SetNumberField(TEXT("referencer_count"), ExternalPackageRefs.Num());
+
+			TArray<TSharedPtr<FJsonValue>> MemRefArr;
+			for (const FString& R : MemoryRefs)
+			{
+				MemRefArr.Add(MakeShared<FJsonValueString>(R));
+			}
+			Failure->SetArrayField(TEXT("in_memory_referencers"), MemRefArr);
+			Failure->SetNumberField(TEXT("in_memory_referencer_count"), MemoryRefCount);
+
+			FailuresArr.Add(MakeShared<FJsonValueObject>(Failure));
+		}
+
+		// Survivor detection found nothing although the count is short: fall back to
+		// the old count-derived report so a failure is never silently dropped.
+		if (FailedArr.Num() == 0)
+		{
+			for (const FString& P : AttemptedPaths)
+			{
+				FailedArr.Add(MakeShared<FJsonValueString>(P));
+			}
 		}
 		Result->SetArrayField(TEXT("failed_to_delete"), FailedArr);
+		Result->SetArrayField(TEXT("failures"), FailuresArr);
 	}
 
 	if (NotFound.Num() > 0)
@@ -4856,10 +4980,16 @@ FMonolithActionResult FMonolithEditorActions::HandleSavePackages(const TSharedPt
 		Row->SetBoolField(TEXT("is_map"), bIsMap);
 		Row->SetStringField(TEXT("disk_path"), Filename);
 
+		IFileManager& FileManager = IFileManager::Get();
+		const bool bOnDiskReadOnly = FileManager.FileExists(*Filename) && FileManager.IsReadOnly(*Filename);
+		Row->SetBoolField(TEXT("read_only"), bOnDiskReadOnly);
+
 		if (bDryRun)
 		{
 			// Report intent only — nothing is written. A package "would save" if it is
-			// currently dirty; clean packages are reported as no-op.
+			// currently dirty; clean packages are reported as no-op. A read-only target
+			// is still reported as would_save (a real run attempts a source-control
+			// checkout first); read_only tells the caller a checkout will be needed.
 			const bool bWouldSave = Package->IsDirty();
 			Row->SetBoolField(TEXT("would_save"), bWouldSave);
 			Row->SetBoolField(TEXT("dirty"), bWouldSave);
@@ -4868,13 +4998,58 @@ FMonolithActionResult FMonolithEditorActions::HandleSavePackages(const TSharedPt
 			continue;
 		}
 
+		// Issue #147: a read-only target (e.g. a Perforce file that is not checked
+		// out) makes the engine's FinalizeTempOutputFiles fail. Try a source-control
+		// checkout first; if that is unavailable or fails, skip the package with a
+		// clean error instead of attempting the save.
+		if (bOnDiskReadOnly)
+		{
+			bool bCheckedOut = false;
+			FString CheckoutError;
+			if (USourceControlHelpers::IsEnabled())
+			{
+				bCheckedOut = USourceControlHelpers::CheckOutFile(Filename, /*bSilent=*/true);
+				if (!bCheckedOut)
+				{
+					CheckoutError = USourceControlHelpers::LastErrorMsg().ToString();
+				}
+			}
+			const bool bStillReadOnly = FileManager.IsReadOnly(*Filename);
+			Row->SetBoolField(TEXT("checked_out"), bCheckedOut);
+			if (bStillReadOnly)
+			{
+				FString Error = TEXT("read-only on disk, not checked out");
+				if (!USourceControlHelpers::IsEnabled())
+				{
+					Error += TEXT(" (source control is not enabled; check the file out or clear the read-only flag)");
+				}
+				else if (!CheckoutError.IsEmpty())
+				{
+					Error += FString::Printf(TEXT(" (checkout failed: %s)"), *CheckoutError);
+				}
+				else
+				{
+					Error += TEXT(" (checkout did not make the file writable)");
+				}
+				Row->SetBoolField(TEXT("saved"), false);
+				Row->SetStringField(TEXT("error"), Error);
+				Rows.Add(MakeShared<FJsonValueObject>(Row));
+				continue;
+			}
+		}
+
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		// FSavePackageArgs::Error defaults to GError. On a save failure the engine
+		// logs "Error saving ..." through that device, and the Windows GError device
+		// (FWindowsErrorOutputDevice) is fatal regardless of verbosity. Route it to
+		// GWarn so a failed save returns false instead of taking the editor down.
+		SaveArgs.Error = GWarn;
 		const bool bSaved = UPackage::SavePackage(Package, nullptr, *Filename, SaveArgs);
 
 		Row->SetBoolField(TEXT("saved"), bSaved);
 		if (bSaved) { ++SavedCount; }
-		else { Row->SetStringField(TEXT("error"), TEXT("UPackage::SavePackage returned false")); }
+		else { Row->SetStringField(TEXT("error"), TEXT("UPackage::SavePackage returned false (see LogSavePackage in the editor log)")); }
 		Rows.Add(MakeShared<FJsonValueObject>(Row));
 	}
 
@@ -5593,12 +5768,43 @@ namespace MonolithEditorPieSmoke
 
 			// #7 capture-validity report. Uniform / all-black frames (the hidden-editor /
 			// no-active-level-viewport failure mode) are flagged invalid; captured_ok is
-			// true only when at least one valid frame landed and none were invalid.
+			// true only when at least one valid frame landed, none were invalid, and the
+			// clip is not short of frames (issue #149).
 			TSharedPtr<FJsonObject> Validity = MakeShared<FJsonObject>();
 			Validity->SetNumberField(TEXT("valid_frames"), S.ValidFrames);
 			Validity->SetNumberField(TEXT("invalid_frames"), S.InvalidFrames);
-			const bool bCapturedOk = (S.ValidFrames > 0) && (S.InvalidFrames == 0);
+			Validity->SetNumberField(TEXT("not_drawn_frames"), S.NotDrawnFrames);
+
+			// Issue #149: expected frames over the observed capture window (wall-clock, so a
+			// hitch or debugger pause still counts against the clip). A clip that saved fewer
+			// than half the expected frames is a shortfall and fails captured_ok. The 50%
+			// threshold leaves room for tick quantisation (each capture lands on the first
+			// tick past the interval, so low editor frame rates stretch the effective interval).
+			const double ObservedWindow = (S.LastObservedSeconds > S.StartTimeSeconds)
+				? FMath::Min(S.LastObservedSeconds - S.StartTimeSeconds, S.DurationSeconds)
+				: 0.0;
+			const int32 ExpectedFrames = (S.CaptureInterval > 0.0)
+				? FMath::Max(1, FMath::FloorToInt32(ObservedWindow / S.CaptureInterval))
+				: 1;
+			const int32 CapturedFrames = S.CaptureFrameIndex;
+			const int32 MinFrames = FMath::CeilToInt32(ExpectedFrames * 0.5);
+			const bool bShortfall = CapturedFrames < MinFrames;
+			Validity->SetNumberField(TEXT("expected_frames"), ExpectedFrames);
+			Validity->SetNumberField(TEXT("captured_frames"), CapturedFrames);
+			Validity->SetNumberField(TEXT("min_frames_required"), MinFrames);
+			Validity->SetBoolField(TEXT("frame_shortfall"), bShortfall);
+			Validity->SetNumberField(TEXT("max_capture_gap_seconds"), S.MaxCaptureGapSeconds);
+
+			const bool bCapturedOk = (S.ValidFrames > 0) && (S.InvalidFrames == 0) && !bShortfall;
 			Validity->SetBoolField(TEXT("captured_ok"), bCapturedOk);
+			if (bShortfall)
+			{
+				Validity->SetStringField(TEXT("shortfall_hint"), FString::Printf(
+					TEXT("Captured %d of ~%d expected frames (%d skipped as not drawn, largest gap %.2fs). ")
+					TEXT("Frame scheduling uses wall-clock time, so a hitch, debugger pause, minimized ")
+					TEXT("window, or realtime-off viewport consumes the clip duration."),
+					CapturedFrames, ExpectedFrames, S.NotDrawnFrames, S.MaxCaptureGapSeconds));
+			}
 			// include_ui frames are written asynchronously at end-of-frame by the engine
 			// screenshot path, so no pixel buffer reaches this accounting — the counts are
 			// frames REQUESTED, not frames verified. Say so rather than implying a check ran.

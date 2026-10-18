@@ -55,7 +55,9 @@ public class MonolithEditor : ModuleRules
 			// MaterialEditor = UMaterialEditingLibrary (Phase 2 inspect_material_pbr — declared up front so the dep delta lands in one cohesive Build.cs edit).
 			"UMG",
 			"UMGEditor",
-			"MaterialEditor"
+			"MaterialEditor",
+			// save_packages: check out read-only (e.g. Perforce) targets before saving (issue #147).
+			"SourceControl"
 		});
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
