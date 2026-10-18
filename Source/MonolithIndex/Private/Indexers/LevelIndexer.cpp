@@ -9,6 +9,8 @@
 #include "Editor.h"
 #include "Engine/World.h"
 #include "Engine/Level.h"
+#include "Engine/LevelStreaming.h"
+#include "ExternalPackageHelper.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/WorldSettings.h"
 #include "EngineUtils.h"
@@ -26,6 +28,11 @@
 namespace
 {
 	const TCHAR* LevelIndexStateMetaKey = TEXT("level_index_state");
+
+	/** Deferred-GC release retries before the pass is recorded as degraded (~5s at 0.25s apart). */
+	constexpr int32 MaxPendingReleaseAttempts = 20;
+	/** Skipped map names written into level_index_state; the full list goes to the log. */
+	constexpr int32 MaxSkippedMapsInState = 10;
 
 	void ForEachPackageObject(UPackage* Package, TFunctionRef<bool(UObject*)> Operation)
 	{
@@ -83,6 +90,112 @@ namespace
 		FDelegateHandle Handle;
 		TArray<TWeakObjectPtr<UPackage>> CapturedPackages;
 	};
+
+	/**
+	 * PackageCreatedForLoad is global: anything else that loads during the map load
+	 * is captured too. Keep only packages that belong to the map being indexed --
+	 * the map package, its streaming sub-level packages, and the external actor /
+	 * external object packages of those maps. Everything else is left alone.
+	 * RootPackage is only consulted to discover sub-levels; it is never added.
+	 */
+	TArray<UPackage*> FilterToMapOwnedPackages(const TArray<UPackage*>& Captured, const FName& RootMapName, UPackage* RootPackage)
+	{
+		TArray<UPackage*> DiscoveryPackages = Captured;
+		if (RootPackage)
+		{
+			DiscoveryPackages.AddUnique(RootPackage);
+		}
+
+		TSet<FName> MapNames;
+		MapNames.Add(RootMapName);
+		TArray<FString> OwnedPrefixes;
+		TSet<FName> MapsWithPrefixes;
+		auto AddFolderPrefix = [&OwnedPrefixes](FString Folder)
+		{
+			if (Folder.IsEmpty())
+			{
+				return;
+			}
+			if (!Folder.EndsWith(TEXT("/")))
+			{
+				Folder += TEXT("/");
+			}
+			OwnedPrefixes.AddUnique(MoveTemp(Folder));
+		};
+
+		bool bChanged = true;
+		while (bChanged)
+		{
+			bChanged = false;
+			for (UPackage* Package : DiscoveryPackages)
+			{
+				if (!Package || !MapNames.Contains(Package->GetFName()))
+				{
+					continue;
+				}
+				UWorld* World = UWorld::FindWorldInPackage(Package);
+				if (!World)
+				{
+					continue;
+				}
+				for (const ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
+				{
+					if (!StreamingLevel)
+					{
+						continue;
+					}
+					const FName SubLevelName = StreamingLevel->GetWorldAssetPackageFName();
+					if (!SubLevelName.IsNone() && !MapNames.Contains(SubLevelName))
+					{
+						MapNames.Add(SubLevelName);
+						bChanged = true;
+					}
+				}
+			}
+		}
+
+		for (const FName& MapName : MapNames)
+		{
+			if (MapsWithPrefixes.Contains(MapName))
+			{
+				continue;
+			}
+			MapsWithPrefixes.Add(MapName);
+			const FString MapString = MapName.ToString();
+			for (const FString& ActorsPath : ULevel::GetExternalActorsPaths(MapString))
+			{
+				AddFolderPrefix(ActorsPath);
+			}
+			AddFolderPrefix(FExternalPackageHelper::GetExternalObjectsPath(MapString));
+		}
+
+		TArray<UPackage*> Owned;
+		for (UPackage* Package : Captured)
+		{
+			if (!Package)
+			{
+				continue;
+			}
+			bool bOwned = MapNames.Contains(Package->GetFName());
+			if (!bOwned)
+			{
+				const FString PackageName = Package->GetName();
+				for (const FString& Prefix : OwnedPrefixes)
+				{
+					if (PackageName.StartsWith(Prefix))
+					{
+						bOwned = true;
+						break;
+					}
+				}
+			}
+			if (bOwned)
+			{
+				Owned.AddUnique(Package);
+			}
+		}
+		return Owned;
+	}
 
 	void GatherPackageObjects(const TArray<UPackage*>& Packages, TArray<UObject*>& OutObjects)
 	{
@@ -186,7 +299,8 @@ bool FLevelIndexer::IndexAsset(const FAssetData& AssetData, UObject* LoadedAsset
 	for (;;)
 	{
 		const EMonolithLevelIndexStepResult Result = ProcessNextWorld(DB);
-		if (Result == EMonolithLevelIndexStepResult::Continue)
+		if (Result == EMonolithLevelIndexStepResult::Continue ||
+			Result == EMonolithLevelIndexStepResult::RetryLater)
 		{
 			continue;
 		}
@@ -268,6 +382,19 @@ EMonolithLevelIndexStepResult FLevelIndexer::ProcessNextWorld(FMonolithIndexData
 		return EMonolithLevelIndexStepResult::Failed;
 	}
 
+	// A release Unreal deferred (GC lock held) is retried before anything else
+	// loads. Only a bounded number of failures in a row degrades the pass.
+	if (!RetryPendingRelease())
+	{
+		if (PendingReleaseAttempts >= MaxPendingReleaseAttempts)
+		{
+			return StopDegraded(DB, FString::Printf(
+				TEXT("Unreal deferred resource cleanup after %s %d times"),
+				*PendingReleaseWorld.ToString(), PendingReleaseAttempts));
+		}
+		return EMonolithLevelIndexStepResult::RetryLater;
+	}
+
 	while (NextWorldIndex < WorldAssets.Num() &&
 		(!CandidateAssetIds.Contains(WorldAssets[NextWorldIndex].PackageName) ||
 			ProcessedPackages.Contains(WorldAssets[NextWorldIndex].PackageName)))
@@ -299,13 +426,7 @@ EMonolithLevelIndexStepResult FLevelIndexer::ProcessNextWorld(FMonolithIndexData
 	}
 	if (PressureAction == EMonolithMemoryPressureAction::Stop)
 	{
-		TerminalReason = DescribePressure(TEXT("before"), WorldData.PackageName, Snapshot);
-		if (!PersistState(DB, TEXT("degraded"), TerminalReason))
-		{
-			return EMonolithLevelIndexStepResult::Failed;
-		}
-		UE_LOG(LogMonolithIndex, Error, TEXT("LevelIndexer: %s"), *TerminalReason);
-		return EMonolithLevelIndexStepResult::Degraded;
+		return StopDegraded(DB, DescribePressure(TEXT("before"), WorldData.PackageName, Snapshot));
 	}
 	bPressureCleanupAttempted = false;
 	++NextWorldIndex;
@@ -314,7 +435,7 @@ EMonolithLevelIndexStepResult FLevelIndexer::ProcessNextWorld(FMonolithIndexData
 	const bool bWasAlreadyLoaded = FindPackage(nullptr, *WorldData.PackageName.ToString()) != nullptr;
 	FScopedPackageLoadCapture LoadCapture;
 	UPackage* Package = LoadPackage(nullptr, *WorldData.PackageName.ToString(), LOAD_NoWarn | LOAD_Quiet | LOAD_EditorOnly);
-	TArray<UPackage*> NewlyLoadedPackages = LoadCapture.Stop();
+	TArray<UPackage*> NewlyLoadedPackages = FilterToMapOwnedPackages(LoadCapture.Stop(), WorldData.PackageName, Package);
 	if (Package && !bWasAlreadyLoaded)
 	{
 		NewlyLoadedPackages.AddUnique(Package);
@@ -440,13 +561,22 @@ EMonolithLevelIndexStepResult FLevelIndexer::ProcessNextWorld(FMonolithIndexData
 	}
 	if (!bReleased)
 	{
-		TerminalReason = FString::Printf(TEXT("Unreal deferred resource cleanup after %s"), *WorldData.PackageName.ToString());
-		if (!PersistState(DB, TEXT("degraded"), TerminalReason))
+		// Not terminal: the GC lock is usually released within a frame or two.
+		// The next step retries the release before loading another map.
+		PendingReleasePackages.Reset();
+		for (UPackage* LoadedPackage : NewlyLoadedPackages)
+		{
+			PendingReleasePackages.Add(LoadedPackage);
+		}
+		PendingReleaseWorld = WorldData.PackageName;
+		PendingReleaseAttempts = 1;
+		UE_LOG(LogMonolithIndex, Warning, TEXT("LevelIndexer: Unreal deferred resource cleanup after %s; retrying"),
+			*WorldData.PackageName.ToString());
+		if (!PersistState(DB, TEXT("in_progress"), TEXT("waiting for deferred resource cleanup")))
 		{
 			return EMonolithLevelIndexStepResult::Failed;
 		}
-		UE_LOG(LogMonolithIndex, Error, TEXT("LevelIndexer: %s"), *TerminalReason);
-		return EMonolithLevelIndexStepResult::Degraded;
+		return EMonolithLevelIndexStepResult::RetryLater;
 	}
 
 	if (!PersistState(DB, TEXT("in_progress")))
@@ -508,6 +638,76 @@ bool FLevelIndexer::FinishIndex(FMonolithIndexDatabase& DB)
 	return bStateWritten;
 }
 
+bool FLevelIndexer::RetryPendingRelease()
+{
+	if (PendingReleaseAttempts == 0)
+	{
+		return true;
+	}
+
+	TArray<UPackage*> LivePackages;
+	for (const TWeakObjectPtr<UPackage>& WeakPackage : PendingReleasePackages)
+	{
+		if (UPackage* LivePackage = WeakPackage.Get())
+		{
+			LivePackages.Add(LivePackage);
+		}
+	}
+
+	if (LivePackages.Num() == 0 || FMonolithMemoryHelper::ReleasePackagesLoadedForIndexing(LivePackages))
+	{
+		UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: deferred cleanup after %s completed on attempt %d"),
+			*PendingReleaseWorld.ToString(), PendingReleaseAttempts + 1);
+		PendingReleasePackages.Reset();
+		PendingReleaseWorld = NAME_None;
+		PendingReleaseAttempts = 0;
+		return true;
+	}
+
+	++PendingReleaseAttempts;
+	return false;
+}
+
+EMonolithLevelIndexStepResult FLevelIndexer::StopDegraded(FMonolithIndexDatabase& DB, const FString& Reason)
+{
+	TArray<FString> SkippedMaps;
+	for (const FAssetData& WorldData : WorldAssets)
+	{
+		if (CandidateAssetIds.Contains(WorldData.PackageName) && !ProcessedPackages.Contains(WorldData.PackageName))
+		{
+			SkippedMaps.Add(WorldData.PackageName.ToString());
+		}
+	}
+
+	FString Detail = FString::Printf(TEXT("%s; skipped %d map(s)"), *Reason, SkippedMaps.Num());
+	if (SkippedMaps.Num() > 0)
+	{
+		const int32 Listed = FMath::Min(SkippedMaps.Num(), MaxSkippedMapsInState);
+		for (int32 Index = 0; Index < Listed; ++Index)
+		{
+			Detail += Index == 0 ? TEXT(": ") : TEXT(", ");
+			Detail += SkippedMaps[Index];
+		}
+		if (Listed < SkippedMaps.Num())
+		{
+			Detail += FString::Printf(TEXT(", ... (+%d more, see log)"), SkippedMaps.Num() - Listed);
+		}
+	}
+
+	TerminalReason = Reason;
+	const bool bStateWritten = PersistState(DB, TEXT("degraded"), Detail);
+	UE_LOG(LogMonolithIndex, Error,
+		TEXT("LevelIndexer: %s. The rest of the index continues; a later full reindex retries the skipped maps."),
+		*Detail);
+	for (const FString& SkippedMap : SkippedMaps)
+	{
+		UE_LOG(LogMonolithIndex, Log, TEXT("LevelIndexer: skipped map %s"), *SkippedMap);
+	}
+
+	ResetSession();
+	return bStateWritten ? EMonolithLevelIndexStepResult::Degraded : EMonolithLevelIndexStepResult::Failed;
+}
+
 bool FLevelIndexer::PersistState(FMonolithIndexDatabase& DB, const FString& Prefix, const FString& Detail) const
 {
 	FString State = FString::Printf(TEXT("%s: processed %d/%d levels"),
@@ -532,6 +732,9 @@ void FLevelIndexer::ResetSession()
 	bSessionInitialized = false;
 	bPressureCleanupAttempted = false;
 	TerminalReason.Reset();
+	PendingReleasePackages.Reset();
+	PendingReleaseWorld = NAME_None;
+	PendingReleaseAttempts = 0;
 }
 
 void FLevelIndexer::BuildActorRows(ULevel* Level, int64 AssetId, TArray<FIndexedActor>& OutActors)

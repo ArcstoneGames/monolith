@@ -66,7 +66,12 @@ SIZE_T FMonolithMemoryHelper::GetAvailableMemoryMB()
 
 bool FMonolithMemoryHelper::ShouldThrottle(SIZE_T BudgetMB)
 {
-	return ClassifyMemoryPressure(CaptureMemorySnapshot(false), BudgetMB) != EMonolithMemoryPressure::None;
+	// Deep-pass / per-indexer throttle: process memory against the budget only,
+	// measured the way it always has been. The free-RAM headroom and VRAM checks
+	// in ClassifyMemoryPressure are for the level pass; applying them here would
+	// force a full-purge GC on every batch on low-RAM machines.
+	const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+	return Stats.UsedPhysical / BytesPerMB > BudgetMB;
 }
 
 FMonolithMemorySnapshot FMonolithMemoryHelper::CaptureMemorySnapshot(bool bIncludeGPUStats)
@@ -327,7 +332,9 @@ void FMonolithMemoryHelper::LogMemoryStats(const FString& Context)
 
 bool FMonolithMemoryHelper::IsMemoryCritical()
 {
-	return ClassifyMemoryPressure(CaptureMemorySnapshot(IsInGameThread()), GetResolvedMemoryBudgetMB()) == EMonolithMemoryPressure::Critical;
+	// Deep-pass emergency check; the level pass uses ClassifyMemoryPressure.
+	constexpr SIZE_T CriticalThresholdMB = 2048;
+	return GetAvailableMemoryMB() < CriticalThresholdMB;
 }
 
 // ---- RAM tier auto-detect (v0.13.0) ----

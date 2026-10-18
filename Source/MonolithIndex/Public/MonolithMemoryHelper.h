@@ -50,7 +50,9 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 	static SIZE_T GetAvailableMemoryMB();
 
 	/**
-	 * Check if memory usage exceeds the given budget and throttling is needed.
+	 * Check if process memory usage exceeds the given budget and throttling is needed.
+	 * Used by the deep pass and per-indexer batches. Deliberately does NOT include
+	 * the system-RAM headroom or VRAM checks of ClassifyMemoryPressure (level pass only).
 	 * @param BudgetMB Maximum memory budget in megabytes
 	 * @return true if current usage exceeds budget and we should throttle
 	 */
@@ -59,7 +61,7 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 	/** Capture process/system memory and, on the game thread, available RHI budget data. */
 	static FMonolithMemorySnapshot CaptureMemorySnapshot(bool bIncludeGPUStats);
 
-	/** Classify a snapshot. Critical pressure blocks the next map load. */
+	/** Classify a snapshot for the level pass (process budget, free RAM headroom, VRAM). Critical pressure blocks the next map load. */
 	static EMonolithMemoryPressure ClassifyMemoryPressure(const FMonolithMemorySnapshot& Snapshot, SIZE_T BudgetMB);
 
 	/** Choose the next admission step after a pressure sample. */
@@ -98,7 +100,7 @@ struct MONOLITHINDEX_API FMonolithMemoryHelper
 	 */
 	static void LogMemoryStats(const FString& Context);
 
-	/** Return whether the current process, system, or GPU snapshot is critical. */
+	/** Return whether available system RAM is below 2 GB (deep-pass emergency check). */
 	static bool IsMemoryCritical();
 
 	// ---- RAM tier auto-detect (v0.13.0) ----

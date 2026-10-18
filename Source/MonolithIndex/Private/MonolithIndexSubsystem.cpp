@@ -747,7 +747,12 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 	// them would mean one bad asset re-runs the whole index on every launch, which
 	// is the #117 symptom reached from the other direction.
 	TAtomic<bool> bTransactionFailure{false};
-	TAtomic<bool> bLevelPassIncomplete{false};
+	// A level pass stopped by memory pressure is recorded as degraded in
+	// meta.level_index_state, but it is NOT a cancellation: the remaining
+	// post-pass indexers still run and the index is still marked complete, so a
+	// machine under persistent pressure does not re-run the whole index forever.
+	// A later full reindex retries the skipped maps.
+	bool bLevelPassDegraded = false;
 	auto RequireTransaction = [&bTransactionFailure](bool bOk, const TCHAR* What) -> bool
 	{
 		if (!bOk)
@@ -1366,9 +1371,9 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 	};
 
 	// Helper to check for cancellation
-	auto CheckCancellation = [this, &bLevelPassIncomplete]() -> bool
+	auto CheckCancellation = [this]() -> bool
 	{
-		if (bShouldStop || bLevelPassIncomplete) return true;
+		if (bShouldStop) return true;
 		if (Owner->TaskNotification && Owner->TaskNotification->GetPromptAction() == EAsyncTaskNotificationPromptAction::Cancel)
 		{
 			bShouldStop = true;
@@ -1431,7 +1436,6 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 				if (!bLevelBegan)
 				{
 					bTransactionFailure = true;
-					bLevelPassIncomplete = true;
 				}
 				else
 				{
@@ -1451,15 +1455,28 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 						{
 							continue;
 						}
+						if (StepResult == EMonolithLevelIndexStepResult::RetryLater)
+						{
+							// Deferred GC: give the engine time to release its GC
+							// lock before the indexer retries the release.
+							constexpr float RetryDelaySeconds = 0.25f;
+							FPlatformProcess::Sleep(RetryDelaySeconds);
+							continue;
+						}
 						if (StepResult == EMonolithLevelIndexStepResult::Degraded)
 						{
-							bLevelPassIncomplete = true;
+							// level_index_state already records the reason and the
+							// skipped maps; fall through to the remaining indexers.
+							bLevelPassDegraded = true;
+							UE_LOG(LogMonolithIndex, Warning,
+								TEXT("Level indexer stopped early after %.2fs (degraded); continuing with the remaining indexers"),
+								FPlatformTime::Seconds() - SentinelStart);
+							GCBetweenIndexers();
 							break;
 						}
 						if (StepResult == EMonolithLevelIndexStepResult::Failed)
 						{
 							bTransactionFailure = true;
-							bLevelPassIncomplete = true;
 							break;
 						}
 
@@ -1476,7 +1493,6 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 						else if (!bShouldStop.Load())
 						{
 							bTransactionFailure = true;
-							bLevelPassIncomplete = true;
 						}
 						break;
 					}
@@ -1643,14 +1659,18 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 	//
 	// The old `Indexed < 500` guard is gone with it: it made every project with
 	// fewer than 500 assets re-index from scratch on every single launch.
-	const bool bStructurallyComplete = !bShouldStop.Load() && !bTransactionFailure.Load() && !bLevelPassIncomplete.Load();
+	//
+	// A degraded level pass is deliberately not a gate either (see
+	// bLevelPassDegraded); it is reported through meta.level_index_state.
+	const bool bStructurallyComplete = !bShouldStop.Load() && !bTransactionFailure.Load();
 	if (bStructurallyComplete)
 	{
 		// Writes last_full_index and clears the in-progress marker in one
 		// transaction — the only place either happens.
 		if (DB->CompleteFullIndex(FDateTime::UtcNow().ToString()))
 		{
-			UE_LOG(LogMonolithIndex, Log, TEXT("Full index complete (%d assets indexed, %d errors)"), Indexed, Errors);
+			UE_LOG(LogMonolithIndex, Log, TEXT("Full index complete (%d assets indexed, %d errors)%s"), Indexed, Errors,
+				bLevelPassDegraded ? TEXT("; level pass degraded, see level_index_state") : TEXT(""));
 		}
 		else
 		{
@@ -1662,8 +1682,7 @@ uint32 UMonolithIndexSubsystem::FIndexingTask::Run()
 	{
 		UE_LOG(LogMonolithIndex, Warning,
 			TEXT("Index did not complete (%s) — progress is checkpointed and the next launch will resume it"),
-			bShouldStop.Load() ? TEXT("cancelled") :
-				bTransactionFailure.Load() ? TEXT("transaction failure") : TEXT("level pass interrupted by memory pressure"));
+			bShouldStop.Load() ? TEXT("cancelled") : TEXT("transaction failure"));
 	}
 
 	if (bLogMemory)

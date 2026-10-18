@@ -25,8 +25,9 @@ Scoped out while making `source.trigger_project_reindex` (and the Live Coding / 
 
 Four items known-open at the 0.23.0 release. None of them blocks it; each is stated here so nobody rediscovers them.
 
-1. **PR #123 (index memory-pressure hardening) is deferred, not rejected.** It overlaps the editor-exit deadlock fix that shipped in 0.23.0 — both rework the same indexing-worker wait/dispatch paths in the same file, and the deadlock fix changed the shape those waits have (bounded polling with a provably-stopped abandon condition, plus an abort token on game-thread dispatches). Landing #123 on top of that as a merge would produce a file neither change was designed against.
-   - **Add:** a combined design pass over the worker's wait, dispatch and memory-pressure behaviour, then reimplement #123's intent against the post-0.23.0 shape.
+1. **PR #123 (index memory-pressure hardening) — LANDED (Unreleased), rebased onto the post-0.23.0 worker.** Remaining follow-ups:
+   - **A degraded level pass has no per-map resume.** Skipped maps are listed in `level_index_state` and the log, but only a later full reindex retries them. **Add:** a scoped level reindex for just the skipped maps.
+   - **Dependency assets a map pulls in stay resident.** The post-load release only touches the map's own packages (map, streaming sub-levels, external actor/object packages); meshes, materials and textures loaded as dependencies keep `RF_Standalone`, as they did before #123. **Add:** a safe way to tell map-only dependencies from packages something else is using, if map-heavy projects still run out of memory.
 
 2. **PR #104 (updater release-asset selection) is still open, pending an end-to-end Windows install rehearsal.** The auto-update path is client-side and time-shifted — it only runs when a NEWER release exists, and the code that runs is the *old installed version's*, not HEAD. "It compiles and the dialog appears" is not the path; v0.14.7 shipped an install path that could never once succeed on Windows and no release in fifteen cycles noticed (issues #90/#94).
    - **Add:** point a client at a real release and drive the full Install click through hash verification to staged swap, on Windows, before merging. This is the standing rule for any change to the update path, not a one-off for this PR.
